@@ -15,3 +15,4 @@ export { default as TableView } from './TableView.svelte';
 export { default as ProgressBar } from './ProgressBar.svelte';
 export { default as FieldBorder } from './FieldBorder.svelte';
 export { default as LoadingWindow } from './LoadingWindow.svelte';
+export { default as WarningWindow } from './WarningWindow.svelte';

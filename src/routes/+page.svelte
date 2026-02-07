@@ -7,6 +7,7 @@
     TreeView,
     StatusBar,
     LoadingWindow,
+    WarningWindow,
   } from "$lib/components/98css";
   import FontGridRenderer from "$lib/components/firmware/FontGridRenderer.svelte";
   import ImageRenderer from "$lib/components/firmware/ImageRenderer.svelte";
@@ -16,6 +17,8 @@
     debugMode,
     debugAnimationComplete,
   } from "$lib/stores";
+  import { fileIO } from "$lib/rse/utils/file-io";
+  import { imageToRgb565 } from "$lib/rse/utils/bitmap";
 
   // Types
   interface FontPlaneInfo {
@@ -46,6 +49,7 @@
 
   // State
   let firmwareData = $state<Uint8Array | null>(null);
+  let originalFirmwareData = $state<Uint8Array | null>(null); // For rollback
   let worker: Worker | null = null;
   let isProcessing = $state(false);
   let progress = $state(0);
@@ -71,6 +75,11 @@
     height: number;
     rgb565Data: Uint8Array;
   } | null>(null);
+
+  // Warning dialog state
+  let showWarning = $state(false);
+  let warningTitle = $state("");
+  let warningMessage = $state("");
 
   // File input
   // svelte-ignore non_reactive_update
@@ -99,6 +108,38 @@
   onMount(() => {
     // Initialize global debug shortcut (Ctrl+Shift+D)
     initDebugShortcut();
+
+    // Add keyboard listener for Ctrl+S export
+    window.addEventListener("keydown", handleKeyDown);
+
+    // Add paste listener for image replacement
+    window.addEventListener("paste", async (e: ClipboardEvent) => {
+      // Prevent concurrent replacements
+      if (isProcessing) {
+        showWarningDialog("Busy", "A replacement is already in progress. Please wait.");
+        return;
+      }
+
+      const items = e.clipboardData?.items;
+      if (!items) return;
+
+      // Collect all image files
+      const files: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        if (item && item.type.startsWith("image/")) {
+          const file = item.getAsFile();
+          if (file) {
+            files.push(file);
+          }
+        }
+      }
+
+      if (files.length === 0) return;
+
+      // Process files sequentially
+      await handlePasteFiles(files);
+    });
 
     worker = new FirmwareWorker();
 
@@ -144,6 +185,8 @@
 
     return () => {
       worker?.terminate();
+      window.removeEventListener("keydown", handleKeyDown);
+      // Note: paste listener is removed with page unmount
     };
   });
 
@@ -342,6 +385,8 @@
     try {
       const arrayBuffer = await file.arrayBuffer();
       firmwareData = new Uint8Array(arrayBuffer);
+      // Store original for rollback
+      originalFirmwareData = new Uint8Array(arrayBuffer);
 
       progress = 30;
       statusMessage = "Analyzing firmware...";
@@ -357,6 +402,207 @@
     } catch (err) {
       statusMessage = `Error loading file: ${err}`;
       isProcessing = false;
+    }
+  }
+
+  // Handle paste event - searches for matching image by filename
+  // Processes multiple files in batch via worker
+  async function handlePasteFiles(files: File[]) {
+    if (!firmwareData || imageList.length === 0) {
+      showWarningDialog("Error", "No firmware loaded or no images available.");
+      return;
+    }
+
+    if (!worker) {
+      showWarningDialog("Error", "Worker not available.");
+      return;
+    }
+
+    isProcessing = true;
+    statusMessage = `Preparing to replace ${files.length} image(s)...`;
+
+    // Collect all valid replacements
+    const replacements: Array<{
+      image: BitmapFileInfo;
+      rgb565Data: Uint8Array;
+    }> = [];
+    const notFound: string[] = [];
+    const decodeError: string[] = [];
+
+    // Convert all files to RGB565 in parallel
+    const conversionPromises = files.map(async (file) => {
+      const pastedFileName = file.name.replace(/\.[^.]*$/, "").toUpperCase();
+      const matchingImage = imageList.find(
+        (img) => img.name.replace(/\.[^.]*$/, "").toUpperCase() === pastedFileName
+      );
+
+      if (!matchingImage) {
+        notFound.push(file.name);
+        return null;
+      }
+
+      if (!matchingImage.offset) {
+        decodeError.push(`${file.name}: No offset information`);
+        return null;
+      }
+
+      try {
+        const rgb565Result = await imageToRgb565(file, matchingImage.width, matchingImage.height);
+
+        if (!rgb565Result) {
+          decodeError.push(`${file.name}: Dimension mismatch (expected ${matchingImage.width}x${matchingImage.height})`);
+          return null;
+        }
+
+        return { image: matchingImage, rgb565Data: rgb565Result.rgb565Data };
+      } catch (err) {
+        decodeError.push(`${file.name}: Failed to decode`);
+        return null;
+      }
+    });
+
+    const results = await Promise.all(conversionPromises);
+
+    // Filter out null results and collect valid replacements
+    for (const result of results) {
+      if (result) {
+        replacements.push(result);
+      }
+    }
+
+    if (replacements.length === 0) {
+      isProcessing = false;
+      let message = "No valid images to replace.\n\n";
+
+      if (notFound.length > 0) {
+        message += `Not found in firmware (${notFound.length}):\n${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '...' : ''}\n\n`;
+      }
+
+      if (decodeError.length > 0) {
+        message += `Errors (${decodeError.length}):\n${decodeError.slice(0, 3).join('\n')}${decodeError.length > 3 ? '\n...' : ''}`;
+      }
+
+      showWarningDialog("Replacement Failed", message.trim());
+      return;
+    }
+
+    statusMessage = `Sending ${replacements.length} image(s) to worker...`;
+
+    // Send batch replacement request to worker
+    await new Promise<void>((resolve) => {
+      const handler = (e: MessageEvent) => {
+        const { type, id, result } = e.data;
+
+        if (id === "replaceImages") {
+          worker!.removeEventListener('message', handler);
+
+          if (type === 'success') {
+            const data = result as {
+              successCount: number;
+              notFound: string[];
+              dimensionMismatch: string[];
+              replaceError: string[];
+              results: Array<{ imageName: string; rgb565Data: Uint8Array }>;
+            };
+
+            // Update image display for currently selected image
+            for (const r of data.results) {
+              if (imageData && imageData.name === r.imageName) {
+                imageData = {
+                  name: r.imageName,
+                  width: imageData.width,
+                  height: imageData.height,
+                  rgb565Data: r.rgb565Data
+                };
+              }
+            }
+
+            // Combine errors from main thread and worker
+            const allNotFound = [...notFound, ...(data.notFound || [])];
+            const allDimensionMismatch = [...decodeError.filter(e => e.includes('Dimension mismatch')), ...(data.dimensionMismatch || [])];
+            const allReplaceError = [...decodeError.filter(e => !e.includes('Dimension mismatch')), ...(data.replaceError || [])];
+
+            const totalErrors = allNotFound.length + allDimensionMismatch.length + allReplaceError.length;
+
+            if (totalErrors > 0) {
+              let message = `Successfully replaced: ${data.successCount}\n\n`;
+
+              if (allNotFound.length > 0) {
+                message += `Not found in firmware (${allNotFound.length}):\n${allNotFound.slice(0, 5).join(', ')}${allNotFound.length > 5 ? '...' : ''}\n\n`;
+              }
+
+              if (allDimensionMismatch.length > 0) {
+                message += `Dimension mismatch (${allDimensionMismatch.length}):\n${allDimensionMismatch.slice(0, 3).join('\n')}${allDimensionMismatch.length > 3 ? '\n...' : ''}\n\n`;
+              }
+
+              if (allReplaceError.length > 0) {
+                message += `Replacement errors (${allReplaceError.length}):\n${allReplaceError.slice(0, 3).join('\n')}${allReplaceError.length > 3 ? '\n...' : ''}\n\n`;
+              }
+
+              showWarningDialog("Replacement Completed with Errors", message.trim());
+            } else {
+              statusMessage = `Successfully replaced ${data.successCount} image(s)`;
+            }
+          } else if (type === 'error') {
+            showWarningDialog("Replacement Error", `Failed to replace images: ${result}`);
+          }
+
+          isProcessing = false;
+          resolve();
+        }
+      };
+
+      worker!.addEventListener('message', handler);
+
+      worker!.postMessage({
+        type: "replaceImages",
+        id: "replaceImages",
+        firmware: new Uint8Array(),
+        images: replacements.map(r => ({
+          imageName: r.image.name,
+          width: r.image.width,
+          height: r.image.height,
+          offset: r.image.offset!,
+          rgb565Data: r.rgb565Data
+        }))
+      });
+    });
+  }
+
+  // Export firmware with timestamp
+  async function exportFirmware() {
+    if (!firmwareData) {
+      showWarningDialog("Export Error", "No firmware data to export.");
+      return;
+    }
+
+    const now = new Date();
+    const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, -5);
+    const filename = `firmware_modified_${timestamp}.bin`;
+
+    try {
+      await fileIO.writeFile(filename, firmwareData);
+      statusMessage = `Firmware exported as ${filename}`;
+    } catch (err) {
+      showWarningDialog(
+        "Export Error",
+        `Failed to export firmware: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  // Show warning dialog
+  function showWarningDialog(title: string, message: string) {
+    warningTitle = title;
+    warningMessage = message;
+    showWarning = true;
+  }
+
+  // Handle keyboard shortcuts (Ctrl+S for export)
+  function handleKeyDown(e: KeyboardEvent) {
+    if (e.ctrlKey && e.key === "s") {
+      e.preventDefault();
+      exportFirmware();
     }
   }
 
@@ -527,6 +773,16 @@
       <StatusBar statusFields={[{ text: statusMessage }]} />
     </div>
   </footer>
+
+  <!-- Warning Dialog -->
+  {#if showWarning}
+    <WarningWindow
+      title={warningTitle}
+      message={warningMessage}
+      onconfirm={() => (showWarning = false)}
+      showCancel={false}
+    />
+  {/if}
 </div>
 
 <style>
@@ -544,6 +800,8 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
+    background: url("/background.png") no-repeat center center;
+    background-size: cover;
   }
 
   .page-container {

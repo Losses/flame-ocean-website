@@ -20,12 +20,6 @@
 		render();
 	});
 
-	$effect(() => {
-		if (ctx) {
-			render();
-		}
-	});
-
 	// Convert RGB565 to RGB888
 	function rgb565ToRgb888(pixel: number): { r: number; g: number; b: number } {
 		const r = ((pixel >> 11) & 0x1f) * 255 / 31;

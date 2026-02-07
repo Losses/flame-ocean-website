@@ -10,6 +10,7 @@ import {
 	detectOffsetMisalignment,
 	ROCK26_SIGNATURE
 } from '../rse/utils/metadata.js';
+import { validateBitmapData } from '../rse/utils/font-encoder.js';
 
 // Constants
 const SMALL_STRIDE = 32;
@@ -33,7 +34,7 @@ function swapBytes16Bit(data: Uint8Array): Uint8Array {
 
 // Worker message types
 interface WorkerRequest {
-	type: 'analyze' | 'listPlanes' | 'listImages' | 'extractPlane' | 'extractImage';
+	type: 'analyze' | 'listPlanes' | 'listImages' | 'extractPlane' | 'extractImage' | 'replaceImage' | 'replaceImages';
 	id: string;
 	firmware: Uint8Array;
 	fontType?: 'SMALL' | 'LARGE';
@@ -44,6 +45,14 @@ interface WorkerRequest {
 	width?: number;
 	height?: number;
 	offset?: number;
+	rgb565Data?: Uint8Array; // Pre-converted RGB565 data
+	images?: Array<{ // For batch replacement
+		imageName: string;
+		width: number;
+		height: number;
+		offset: number;
+		rgb565Data: Uint8Array;
+	}>;
 }
 
 interface FontPlaneInfo {
@@ -81,8 +90,26 @@ interface ImageData {
 	rgb565Data: Uint8Array; // Raw RGB565 data
 }
 
+interface ReplaceImageResult {
+	success: boolean;
+	imageName: string;
+	rgb565Data?: Uint8Array;
+	error?: string;
+}
+
+interface ReplaceImagesResult {
+	successCount: number;
+	notFound: string[];
+	dimensionMismatch: string[];
+	replaceError: string[];
+	results: Array<{
+		imageName: string;
+		rgb565Data: Uint8Array;
+	}>;
+}
+
 type WorkerResponse =
-	| { type: 'success'; id: string; result: FontPlaneInfo[] | BitmapFileInfo[] | PlaneData | ImageData }
+	| { type: 'success'; id: string; result: FontPlaneInfo[] | BitmapFileInfo[] | PlaneData | ImageData | ReplaceImageResult | ReplaceImagesResult }
 	| { type: 'progress'; id: string; message: string }
 	| { type: 'error'; id: string; error: string };
 
@@ -765,6 +792,195 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 						height,
 						rgb565Data
 					} as ImageData
+				});
+				break;
+			}
+
+			case 'replaceImage': {
+				if (!firmwareData) {
+					self.postMessage({ type: 'error', id, error: 'Firmware not analyzed. Call analyze first.' });
+					return;
+				}
+
+				const { imageName, width, height, offset, rgb565Data } = e.data as WorkerRequest & {
+					imageName: string;
+					width: number;
+					height: number;
+					offset: number;
+					rgb565Data: Uint8Array;
+				};
+
+				// Report progress
+				self.postMessage({ type: 'progress', id, message: `Replacing ${imageName}...` });
+
+				// Validate dimensions
+				if (!validateBitmapData(rgb565Data, width, height)) {
+					self.postMessage({
+						type: 'error',
+						id,
+						error: 'Invalid bitmap data dimensions'
+					});
+					return;
+				}
+
+				// Get Part 5 info
+				const part5Offset = readU32LE(firmwareData, 0x14c);
+				const part5Size = readU32LE(firmwareData, 0x150);
+
+				// Calculate actual offset in firmware (Part 5 offset + offset within Part 5)
+				const actualOffset = part5Offset + offset;
+				const rawSize = width * height * 2;
+
+				// Validate bounds (both within firmware and within Part 5)
+				if (offset + rawSize > part5Size) {
+					self.postMessage({
+						type: 'error',
+						id,
+						error: 'Replacement data exceeds Part 5 bounds'
+					});
+					return;
+				}
+
+				if (actualOffset + rawSize > firmwareData.length) {
+					self.postMessage({
+						type: 'error',
+						id,
+						error: 'Replacement data exceeds firmware bounds'
+					});
+					return;
+				}
+
+				// Write data to firmware (modifies cached firmware)
+				firmwareData.set(rgb565Data, actualOffset);
+
+				// Verify by reading back
+				self.postMessage({ type: 'progress', id, message: `Verifying ${imageName}...` });
+				const writtenData = firmwareData.slice(actualOffset, actualOffset + rawSize);
+
+				// Compare byte-by-byte
+				let verified = true;
+				for (let i = 0; i < rawSize; i++) {
+					if (writtenData[i] !== rgb565Data[i]) {
+						verified = false;
+						break;
+					}
+				}
+
+				if (!verified) {
+					self.postMessage({
+						type: 'error',
+						id,
+						error: 'Verification failed: written data does not match original'
+					});
+					return;
+				}
+
+				// Convert to little-endian for display
+				const rgb565DataLE = swapBytes16Bit(rgb565Data);
+
+				self.postMessage({
+					type: 'success',
+					id,
+					result: {
+						success: true,
+						imageName: imageName,
+						rgb565Data: rgb565DataLE
+					} as ReplaceImageResult
+				});
+				break;
+			}
+
+			case 'replaceImages': {
+				if (!firmwareData) {
+					self.postMessage({ type: 'error', id, error: 'Firmware not analyzed. Call analyze first.' });
+					return;
+				}
+
+				const { images } = e.data as WorkerRequest & { images: Array<{
+					imageName: string;
+					width: number;
+					height: number;
+					offset: number;
+					rgb565Data: Uint8Array;
+				}>};
+
+				if (!images || images.length === 0) {
+					self.postMessage({ type: 'error', id, error: 'No images to replace' });
+					return;
+				}
+
+				const results: Array<{ imageName: string; rgb565Data: Uint8Array }> = [];
+				const notFound: string[] = [];
+				const dimensionMismatch: string[] = [];
+				const replaceError: string[] = [];
+				let successCount = 0;
+
+				// Get Part 5 info once
+				const part5Offset = readU32LE(firmwareData, 0x14c);
+				const part5Size = readU32LE(firmwareData, 0x150);
+
+				// Process each image sequentially
+				for (let i = 0; i < images.length; i++) {
+					const img = images[i];
+					const { imageName, width, height, offset, rgb565Data } = img;
+
+					self.postMessage({ type: 'progress', id, message: `Replacing ${i + 1}/${images.length}: ${imageName}...` });
+
+					// Validate dimensions
+					if (!validateBitmapData(rgb565Data, width, height)) {
+						dimensionMismatch.push(`${imageName}: Invalid dimensions`);
+						continue;
+					}
+
+					// Calculate actual offset in firmware
+					const actualOffset = part5Offset + offset;
+					const rawSize = width * height * 2;
+
+					// Validate bounds
+					if (offset + rawSize > part5Size) {
+						replaceError.push(`${imageName}: Exceeds Part 5 bounds`);
+						continue;
+					}
+
+					if (actualOffset + rawSize > firmwareData.length) {
+						replaceError.push(`${imageName}: Exceeds firmware bounds`);
+						continue;
+					}
+
+					// Write data to firmware
+					firmwareData.set(rgb565Data, actualOffset);
+
+					// Verify by reading back
+					const writtenData = firmwareData.slice(actualOffset, actualOffset + rawSize);
+					let verified = true;
+					for (let j = 0; j < rawSize; j++) {
+						if (writtenData[j] !== rgb565Data[j]) {
+							verified = false;
+							break;
+						}
+					}
+
+					if (!verified) {
+						replaceError.push(`${imageName}: Verification failed`);
+						continue;
+					}
+
+					// Convert to little-endian for display
+					const rgb565DataLE = swapBytes16Bit(rgb565Data);
+					results.push({ imageName, rgb565Data: rgb565DataLE });
+					successCount++;
+				}
+
+				self.postMessage({
+					type: 'success',
+					id,
+					result: {
+						successCount,
+						notFound,
+						dimensionMismatch,
+						replaceError,
+						results
+					} as ReplaceImagesResult
 				});
 				break;
 			}

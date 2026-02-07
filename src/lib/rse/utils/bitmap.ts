@@ -273,3 +273,71 @@ function getStrideInfoFromBmp(width: number): { srcStride: number; padding: numb
 	const padding = dstStride - srcStride;
 	return { srcStride, padding };
 }
+
+/**
+ * Convert any image format (PNG, JPG, etc.) to RGB565 data
+ * Works in browser environment using Canvas/Image APIs
+ * @param file - Image file
+ * @param targetWidth - Expected width for validation
+ * @param targetHeight - Expected height for validation
+ * @returns Object with RGB565 data and actual dimensions, or null if failed
+ */
+export async function imageToRgb565(
+	file: File,
+	targetWidth: number,
+	targetHeight: number
+): Promise<{ rgb565Data: Uint8Array; width: number; height: number } | null> {
+	// Create a bitmap from the file
+	const bitmap = await createImageBitmap(file);
+
+	// Validate dimensions match
+	if (bitmap.width !== targetWidth || bitmap.height !== targetHeight) {
+		return null;
+	}
+
+	// Create canvas to read pixel data
+	const canvas = document.createElement('canvas');
+	canvas.width = bitmap.width;
+	canvas.height = bitmap.height;
+	const ctx = canvas.getContext('2d');
+
+	if (!ctx) {
+		return null;
+	}
+
+	// Draw the image to canvas
+	ctx.drawImage(bitmap, 0, 0);
+
+	// Get pixel data
+	const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+	const pixels = imageData.data;
+
+	// Convert RGBA to RGB565
+	const rgb565Data = new Uint8Array(targetWidth * targetHeight * 2);
+	let dataOffset = 0;
+
+	for (let i = 0; i < pixels.length; i += 4) {
+		const r = pixels[i];
+		const g = pixels[i + 1];
+		const b = pixels[i + 2];
+		// Ignore alpha (pixels[i + 3])
+
+		// Convert to RGB565 (5 bits red, 6 bits green, 5 bits blue)
+		const rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+
+		// Store as big-endian (firmware format)
+		rgb565Data[dataOffset++] = (rgb565 >> 8) & 0xff;
+		rgb565Data[dataOffset++] = rgb565 & 0xff;
+	}
+
+	// Cleanup
+	ctx.clearRect(0, 0, canvas.width, canvas.height);
+	canvas.width = 0;
+	canvas.height = 0;
+
+	return {
+		rgb565Data,
+		width: bitmap.width,
+		height: bitmap.height
+	};
+}
