@@ -1,7 +1,10 @@
 <script lang="ts">
 	import favicon from '$lib/assets/favicon.svg';
+	import '98.css';
 
 	let { children } = $props();
+
+	export const prerender = true;
 </script>
 
 <svelte:head>
