@@ -3,17 +3,19 @@
  * Handles all heavy computation off the main thread
  */
 
-// Re-implement essential utilities inline for the worker
-// to avoid complex import issues with bundling
+// Import shared metadata utilities
+import {
+	findMetadataTableByRock26Anchor,
+	parseMetadataTable,
+	detectOffsetMisalignment,
+	ROCK26_SIGNATURE
+} from '../rse/utils/metadata.js';
 
 // Constants
 const SMALL_STRIDE = 32;
 const LARGE_STRIDE = 33;
 const FOOTER_SIGNATURES = new Set([0x90, 0x8f, 0x89, 0x8b, 0x8d, 0x8e, 0x8c]);
 const INVALID_VALUES = new Set([0x00, 0xff]);
-const ROCK26_SIGNATURE = new TextEncoder().encode('ROCK26IMAGERES');
-const METADATA_ENTRY_SIZE = 108;
-const ROCK26_ENTRY_SIZE = 16;
 
 /**
  * Swap odd and even bytes to convert between big-endian and little-endian.
@@ -599,137 +601,21 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 				}
 
 				// Find metadata table using ROCK26 anchor (within Part 5)
-				const rock26EntriesStart = rock26Offset + 32;
-				const anchorOffset = readU32LE(part5Data, rock26EntriesStart + 12);
-
-				// Search for all matching positions in Part 5
-				const matchingPositionsInPart5: number[] = [];
-				for (let pos = 0; pos < part5Data.length - METADATA_ENTRY_SIZE; pos += 4) {
-					const entryOffset = readU32LE(part5Data, pos + 20);
-					if (entryOffset === anchorOffset) {
-						// Verify it's a valid metadata entry (use ASCII decoding matching Python's errors='ignore')
-						const nameBytes = part5Data.slice(pos + 32, pos + 96);
-						const nullIdx = nameBytes.indexOf(0);
-						const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : nameBytes;
-						const name = String.fromCharCode(...validBytes.filter(b => b < 128));
-
-						if (name.endsWith('.BMP') && name.length >= 3) {
-							matchingPositionsInPart5.push(pos);
-						}
-					}
-				}
-
-				if (matchingPositionsInPart5.length === 0) {
+				const tableStart = findMetadataTableByRock26Anchor(part5Data, rock26Offset);
+				if (tableStart === null) {
 					self.postMessage({ type: 'success', id, result: images });
 					return;
-				}
-
-				// Find the earliest valid entry by scanning backwards
-				const firstMatch = Math.min(...matchingPositionsInPart5);
-				let tableStart = firstMatch;
-
-				// Helper to check if string contains only printable characters
-				const isPrintable = (str: string): boolean => {
-					const extraChars = new Set(['.', '_', '-', '(', ')', ',', ' ']);
-					for (const c of str) {
-						const code = c.charCodeAt(0);
-						// Must be either printable OR in extra characters set
-						const isPrintableChar = code >= 32 && code <= 126;
-						const isExtraChar = extraChars.has(c);
-						if (!isPrintableChar && !isExtraChar) {
-							return false;
-						}
-					}
-					return true;
-				};
-
-				while (tableStart >= METADATA_ENTRY_SIZE) {
-					const testPos = tableStart - METADATA_ENTRY_SIZE;
-					const testEntry = part5Data.slice(testPos, testPos + METADATA_ENTRY_SIZE);
-					const nameBytes = testEntry.slice(32, 96);
-					const nullIdx = nameBytes.indexOf(0);
-					const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : nameBytes;
-					const testName = String.fromCharCode(...validBytes.filter(b => b < 128));
-
-					if (testName && testName.endsWith('.BMP') && testName.length >= 3 && isPrintable(testName)) {
-						tableStart = testPos;
-					} else {
-						break;
-					}
-				}
-
-				if (tableStart === -1) {
-					self.postMessage({ type: 'success', id, result: images });
-					return;
-				}
-
-				// Detect misalignment using ROCK26 offsets
-				const rock26Count = readU32LE(part5Data, rock26Offset + 16);
-				const offsetShiftVotes = new Map<number, number>();
-
-				const sampleCount = Math.min(20, rock26Count);
-				for (let i = 0; i < sampleCount; i++) {
-					const entryOffset = rock26EntriesStart + i * ROCK26_ENTRY_SIZE;
-					const rock26OffsetVal = readU32LE(part5Data, entryOffset + 12);
-
-					// Test different shifts
-					for (let shift = -3; shift <= 3; shift++) {
-						const metadataIdx = i + shift;
-						if (metadataIdx >= 0) {
-							const metadataPos = tableStart + metadataIdx * METADATA_ENTRY_SIZE;
-							if (metadataPos + METADATA_ENTRY_SIZE <= part5Data.length) {
-								const metadataOffsetVal = readU32LE(part5Data, metadataPos + 20);
-								if (metadataOffsetVal === rock26OffsetVal) {
-									offsetShiftVotes.set(shift, (offsetShiftVotes.get(shift) ?? 0) + 1);
-								}
-							}
-						}
-					}
-				}
-
-				// Find best shift and calculate firstValidEntry
-				let misalignment = 0;
-				let maxVotes = 0;
-				for (const [shift, votes] of offsetShiftVotes.entries()) {
-					if (votes > maxVotes) {
-						maxVotes = votes;
-						misalignment = shift;
-					}
-				}
-
-				// Determine firstValidEntry based on misalignment
-				let firstValidEntry = 0;
-				if (misalignment === 1) {
-					firstValidEntry = 1;
-				} else if (misalignment > 0) {
-					firstValidEntry = Math.max(1, 1 - misalignment);
 				}
 
 				// Parse all metadata entries
-				const allEntries: Array<{
-					name: string;
-					offset: number;
-					width: number;
-					height: number;
-				}> = [];
+				const allEntries = parseMetadataTable(part5Data, tableStart);
 
-				let pos = tableStart;
-				while (pos + METADATA_ENTRY_SIZE <= part5Data.length) {
-					const nameBytes = part5Data.slice(pos + 32, pos + 96);
-					const nullIdx = nameBytes.indexOf(0);
-					// Decode ASCII, ignoring invalid bytes (matches Python's errors='ignore')
-					const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : new Uint8Array(0);
-					const name = String.fromCharCode(...validBytes.filter(b => b < 128));
-
-					if (!name || name.length < 3) break;
-
-					const offset = readU32LE(part5Data, pos + 20);
-					const width = readU32LE(part5Data, pos + 24);
-					const height = readU32LE(part5Data, pos + 28);
-
-					allEntries.push({ name, offset, width, height });
-					pos += METADATA_ENTRY_SIZE;
-				}
+				// Detect misalignment using ROCK26 offsets
+				const { misalignment, firstValidEntry } = detectOffsetMisalignment(
+					allEntries,
+					part5Data,
+					rock26Offset
+				);
 
 				// Build image list with misalignment correction
 				// For each entry, use width/height from the NEXT entry (Python behavior)

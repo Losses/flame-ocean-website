@@ -15,11 +15,16 @@ import { convertToBmp, bmpToRgb565 } from '../utils/bitmap.js';
 import { sanitizeFilename } from '../utils/bytes.js';
 import { validateBitmapData } from '../utils/font-encoder.js';
 import { fileIO, type FileInput } from '../utils/file-io.js';
-
-// Constants
-const METADATA_ENTRY_SIZE = 108;
-const ROCK26_ENTRY_SIZE = 16;
-const ROCK26_SIGNATURE = new TextEncoder().encode('ROCK26IMAGERES');
+import {
+	findMetadataTableByRock26Anchor,
+	parseMetadataTable,
+	detectOffsetMisalignment,
+	isPrintable,
+	type MetadataEntry,
+	METADATA_ENTRY_SIZE,
+	ROCK26_ENTRY_SIZE,
+	ROCK26_SIGNATURE
+} from '../utils/metadata.js';
 
 /**
  * Offset misalignment detection result
@@ -50,11 +55,10 @@ export class ResourceExtractor {
 	}
 
 	/**
-	 * Find metadata table using ROCK26 anchor method
-	 * CRITICAL: Must search within Part 5 only, not entire firmware!
+	 * Find metadata table in Part 5
 	 * @returns Table offset (relative to firmware) or null if not found
 	 */
-	private findMetadataTableByRock26Anchor(): number | null {
+	findMetadataTableInPart5(): number | null {
 		// Extract Part 5 data first
 		const part5Offset = this.reader.readU32LE(0x14c);
 		const part5Size = this.reader.readU32LE(0x150);
@@ -66,93 +70,14 @@ export class ResourceExtractor {
 			return null;
 		}
 
-		const rock26EntriesStart = rock26OffsetInPart5 + 32;
-
-		// Read ROCK26 Entry 0 offset as anchor (offset is relative to Part 5)
-		const anchorOffset = readU32LE(part5Data, rock26EntriesStart + 12);
-
-		// Search for this offset value in Part 5 only
-		const matchingPositionsInPart5: number[] = [];
-
-		for (let pos = 0; pos < part5Data.length - METADATA_ENTRY_SIZE; pos += 4) {
-			try {
-				const entryOffset = readU32LE(part5Data, pos + 20);
-
-				if (entryOffset === anchorOffset) {
-					// Verify it's a valid metadata entry
-					const nameBytes = part5Data.slice(pos + 32, pos + 96);
-					const nullIdx = nameBytes.indexOf(0);
-					// Decode ASCII, ignoring invalid bytes (matches Python's errors='ignore')
-					const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : nameBytes;
-					const name = String.fromCharCode(...validBytes.filter(b => b < 128));
-
-					if (name.endsWith('.BMP') && name.length >= 3) {
-						matchingPositionsInPart5.push(pos);
-					}
-				}
-			} catch {
-				continue;
-			}
-		}
-
-		if (matchingPositionsInPart5.length === 0) {
+		// Use shared function to find table (returns offset within Part 5)
+		const tableStartInPart5 = findMetadataTableByRock26Anchor(part5Data, rock26OffsetInPart5);
+		if (tableStartInPart5 === null) {
 			return null;
-		}
-
-		// Find the earliest valid entry by scanning backwards
-		const firstMatch = Math.min(...matchingPositionsInPart5);
-		let tableStartInPart5 = firstMatch;
-
-		while (tableStartInPart5 >= METADATA_ENTRY_SIZE) {
-			const testPos = tableStartInPart5 - METADATA_ENTRY_SIZE;
-			const testEntry = part5Data.slice(testPos, testPos + METADATA_ENTRY_SIZE);
-			const nameBytes = testEntry.slice(32, 96);
-			const nullIdx = nameBytes.indexOf(0);
-			// Decode ASCII, ignoring invalid bytes (matches Python's errors='ignore')
-			const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : nameBytes;
-			const testName = String.fromCharCode(...validBytes.filter(b => b < 128));
-
-			if (
-				testName &&
-				testName.endsWith('.BMP') &&
-				testName.length >= 3 &&
-				this.isPrintable(testName)
-			) {
-				tableStartInPart5 = testPos;
-			} else {
-				break;
-			}
 		}
 
 		// Return offset relative to firmware (Part 5 offset + offset within Part 5)
 		return part5Offset + tableStartInPart5;
-	}
-
-	/**
-	 * Check if string contains only printable characters
-	 * Matches Python logic: all(c.isprintable() or c in '._-(), ' for c in test_name)
-	 */
-	private isPrintable(str: string): boolean {
-		const extraChars = new Set(['.', '_', '-', '(', ')', ',', ' ']);
-		for (const c of str) {
-			const code = c.charCodeAt(0);
-			// Must be either printable OR in extra characters set
-			const isPrintable = code >= 32 && code <= 126;
-			const isExtraChar = extraChars.has(c);
-
-			if (!isPrintable && !isExtraChar) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	/**
-	 * Find metadata table in Part 5
-	 * @returns Table offset or null if not found
-	 */
-	findMetadataTableInPart5(): number | null {
-		return this.findMetadataTableByRock26Anchor();
 	}
 
 	/**
@@ -161,46 +86,25 @@ export class ResourceExtractor {
 	 * @returns Array of metadata entries
 	 */
 	parseMetadataTable(tableStart: number): BitmapMetadata[] {
-		// Get Part 5 bounds to limit parsing
+		// Get Part 5 data
 		const part5Offset = this.reader.readU32LE(0x14c);
 		const part5Size = this.reader.readU32LE(0x150);
+		const part5Data = this.firmware.slice(part5Offset, part5Offset + part5Size);
 
-		// Use Part 5 end if available, otherwise fall back to firmware length
-		// This allows tests to work without full Part 5 setup
-		const part5End = part5Size > 0 ? part5Offset + part5Size : this.firmware.length;
+		// Convert firmware-relative offset to Part 5-relative
+		const tableStartInPart5 = tableStart - part5Offset;
 
-		const entries: BitmapMetadata[] = [];
-		let pos = tableStart;
+		// Use shared function to parse
+		const entries = parseMetadataTable(part5Data, tableStartInPart5);
 
-		while (pos + METADATA_ENTRY_SIZE <= part5End) {
-			const entry = this.firmware.slice(pos, pos + METADATA_ENTRY_SIZE);
-
-			const nameBytes = entry.slice(32, 96);
-			const nullIdx = nameBytes.indexOf(0);
-			// Decode ASCII, ignoring invalid bytes (matches Python's errors='ignore')
-			const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : new Uint8Array(0);
-			const name = String.fromCharCode(...validBytes.filter(b => b < 128));
-
-			if (!name || name.length < 3) {
-				break;
-			}
-
-			const offset = this.reader.readU32LE(pos + 20);
-			const width = this.reader.readU32LE(pos + 24);
-			const height = this.reader.readU32LE(pos + 28);
-
-			entries.push({
-				index: entries.length,
-				offset,
-				width,
-				height,
-				name
-			});
-
-			pos += METADATA_ENTRY_SIZE;
-		}
-
-		return entries;
+		// Convert to BitmapMetadata format by adding index
+		return entries.map((entry, index) => ({
+			index,
+			offset: entry.offset,
+			width: entry.width,
+			height: entry.height,
+			name: entry.name
+		}));
 	}
 
 	/**
