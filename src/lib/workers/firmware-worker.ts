@@ -602,20 +602,59 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 				const rock26EntriesStart = rock26Offset + 32;
 				const anchorOffset = readU32LE(part5Data, rock26EntriesStart + 12);
 
-				// Search for the metadata table within Part 5
-				let tableStart = -1;
+				// Search for all matching positions in Part 5
+				const matchingPositionsInPart5: number[] = [];
 				for (let pos = 0; pos < part5Data.length - METADATA_ENTRY_SIZE; pos += 4) {
 					const entryOffset = readU32LE(part5Data, pos + 20);
 					if (entryOffset === anchorOffset) {
-						// Verify it's a valid metadata entry
+						// Verify it's a valid metadata entry (use ASCII decoding matching Python's errors='ignore')
 						const nameBytes = part5Data.slice(pos + 32, pos + 96);
 						const nullIdx = nameBytes.indexOf(0);
-						const name = new TextDecoder('ascii').decode(nameBytes.slice(0, nullIdx > 0 ? nullIdx : 0));
+						const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : nameBytes;
+						const name = String.fromCharCode(...validBytes.filter(b => b < 128));
 
 						if (name.endsWith('.BMP') && name.length >= 3) {
-							tableStart = pos;
-							break;
+							matchingPositionsInPart5.push(pos);
 						}
+					}
+				}
+
+				if (matchingPositionsInPart5.length === 0) {
+					self.postMessage({ type: 'success', id, result: images });
+					return;
+				}
+
+				// Find the earliest valid entry by scanning backwards
+				const firstMatch = Math.min(...matchingPositionsInPart5);
+				let tableStart = firstMatch;
+
+				// Helper to check if string contains only printable characters
+				const isPrintable = (str: string): boolean => {
+					const extraChars = new Set(['.', '_', '-', '(', ')', ',', ' ']);
+					for (const c of str) {
+						const code = c.charCodeAt(0);
+						// Must be either printable OR in extra characters set
+						const isPrintableChar = code >= 32 && code <= 126;
+						const isExtraChar = extraChars.has(c);
+						if (!isPrintableChar && !isExtraChar) {
+							return false;
+						}
+					}
+					return true;
+				};
+
+				while (tableStart >= METADATA_ENTRY_SIZE) {
+					const testPos = tableStart - METADATA_ENTRY_SIZE;
+					const testEntry = part5Data.slice(testPos, testPos + METADATA_ENTRY_SIZE);
+					const nameBytes = testEntry.slice(32, 96);
+					const nullIdx = nameBytes.indexOf(0);
+					const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : nameBytes;
+					const testName = String.fromCharCode(...validBytes.filter(b => b < 128));
+
+					if (testName && testName.endsWith('.BMP') && testName.length >= 3 && isPrintable(testName)) {
+						tableStart = testPos;
+					} else {
+						break;
 					}
 				}
 
@@ -637,7 +676,6 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 					for (let shift = -3; shift <= 3; shift++) {
 						const metadataIdx = i + shift;
 						if (metadataIdx >= 0) {
-							// We'll parse entries below to check
 							const metadataPos = tableStart + metadataIdx * METADATA_ENTRY_SIZE;
 							if (metadataPos + METADATA_ENTRY_SIZE <= part5Data.length) {
 								const metadataOffsetVal = readU32LE(part5Data, metadataPos + 20);
@@ -649,7 +687,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 					}
 				}
 
-				// Find best shift
+				// Find best shift and calculate firstValidEntry
 				let misalignment = 0;
 				let maxVotes = 0;
 				for (const [shift, votes] of offsetShiftVotes.entries()) {
@@ -657,6 +695,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 						maxVotes = votes;
 						misalignment = shift;
 					}
+				}
+
+				// Determine firstValidEntry based on misalignment
+				let firstValidEntry = 0;
+				if (misalignment === 1) {
+					firstValidEntry = 1;
+				} else if (misalignment > 0) {
+					firstValidEntry = Math.max(1, 1 - misalignment);
 				}
 
 				// Parse all metadata entries
@@ -671,8 +717,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 				while (pos + METADATA_ENTRY_SIZE <= part5Data.length) {
 					const nameBytes = part5Data.slice(pos + 32, pos + 96);
 					const nullIdx = nameBytes.indexOf(0);
-					const decoder = new TextDecoder('ascii');
-					const name = decoder.decode(nameBytes.slice(0, nullIdx >= 0 ? nullIdx : 0));
+					// Decode ASCII, ignoring invalid bytes (matches Python's errors='ignore')
+					const validBytes = nullIdx >= 0 ? nameBytes.slice(0, nullIdx) : new Uint8Array(0);
+					const name = String.fromCharCode(...validBytes.filter(b => b < 128));
 
 					if (!name || name.length < 3) break;
 
@@ -686,7 +733,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 
 				// Build image list with misalignment correction
 				// For each entry, use width/height from the NEXT entry (Python behavior)
-				const startIndex = misalignment > 0 ? 1 : 0;
+				const startIndex = firstValidEntry;
 				const endIndex = allEntries.length - (misalignment > 0 ? 1 : 0);
 
 				for (let i = startIndex; i < endIndex; i++) {
