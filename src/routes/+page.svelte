@@ -87,6 +87,7 @@
   // svelte-ignore non_reactive_update
   let dropZone: HTMLDivElement;
   let isDragOver = $state(false);
+  let isImageDragOver = $state(false);
 
   // Debug mode tracking - use state with subscribe for proper reactivity
   let debug = $state(false);
@@ -114,7 +115,6 @@
 
     // Add paste listener for image replacement
     window.addEventListener("paste", async (e: ClipboardEvent) => {
-      // Prevent concurrent replacements
       if (isProcessing) {
         showWarningDialog("Busy", "A replacement is already in progress. Please wait.");
         return;
@@ -123,7 +123,6 @@
       const items = e.clipboardData?.items;
       if (!items) return;
 
-      // Collect all image files
       const files: File[] = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
@@ -137,7 +136,6 @@
 
       if (files.length === 0) return;
 
-      // Process files sequentially
       await handlePasteFiles(files);
     });
 
@@ -432,6 +430,7 @@
     // Convert all files to RGB565 in parallel
     const conversionPromises = files.map(async (file) => {
       const pastedFileName = file.name.replace(/\.[^.]*$/, "").toUpperCase();
+
       const matchingImage = imageList.find(
         (img) => img.name.replace(/\.[^.]*$/, "").toUpperCase() === pastedFileName
       );
@@ -630,6 +629,35 @@
     }
   }
 
+  // Drag & drop handlers for image replacement
+  function handleImageDragOver(e: DragEvent) {
+    e.preventDefault();
+    // Check if any file is being dragged
+    if (e.dataTransfer?.types.includes("Files")) {
+      isImageDragOver = true;
+    }
+  }
+
+  function handleImageDragLeave(e: DragEvent) {
+    e.preventDefault();
+    isImageDragOver = false;
+  }
+
+  async function handleImageDrop(e: DragEvent) {
+    e.preventDefault();
+    isImageDragOver = false;
+
+    if (!firmwareData || imageList.length === 0) {
+      return;
+    }
+
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (files.length === 0) return;
+
+    // Process dropped files
+    await handlePasteFiles(files);
+  }
+
   // Trigger file input
   function triggerFileInput() {
     fileInput.click();
@@ -723,7 +751,15 @@
             </div>
 
             <!-- Resource Content -->
-            <div class="content-panel">
+            <div
+              class="content-panel"
+              class:drag-over-images={isImageDragOver}
+              ondragover={handleImageDragOver}
+              ondragleave={handleImageDragLeave}
+              ondrop={handleImageDrop}
+              role="region"
+              aria-label="Image viewer - drop images here to replace"
+            >
               {#if selectedNode}
                 {#if isProcessing}
                   <div class="empty-state">
@@ -917,6 +953,11 @@
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
+  }
+
+  .content-panel.drag-over-images {
+    background-color: #e0ffe0;
+    border: 2px inset #008000;
   }
 
   .plane-header {
