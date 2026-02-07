@@ -12,6 +12,7 @@
 	import FontGridRenderer from '$lib/components/firmware/FontGridRenderer.svelte';
 	import ImageRenderer from '$lib/components/firmware/ImageRenderer.svelte';
 	import FirmwareWorker from '$lib/workers/firmware-worker.ts?worker';
+	import { initDebugShortcut } from '$lib/stores';
 
 	// Types
 	interface FontPlaneInfo {
@@ -61,6 +62,9 @@
 
 	// Initialize worker
 	onMount(() => {
+		// Initialize global debug shortcut (Ctrl+Shift+D)
+		initDebugShortcut();
+
 		worker = new FirmwareWorker();
 
 		worker.onmessage = (e: MessageEvent) => {
@@ -353,46 +357,48 @@
 
 <div class="page-wrapper">
 	<div class="page-container">
-		<!-- Drop Zone Window -->
-		<Window title="Firmware Browser" width="500px">
-			<WindowBody>
-				<div
-					bind:this={dropZone}
-					class="drop-zone"
-					ondragover={handleDragOver}
-					ondragleave={handleDragLeave}
-					ondrop={handleDrop}
-					onclick={triggerFileInput}
-					onkeydown={(e) => {
-						if (e.key === 'Enter' || e.key === ' ') {
-							e.preventDefault();
-							triggerFileInput();
-						}
-					}}
-					role="button"
-					tabindex="0"
-				>
-					<input type="file" bind:this={fileInput} hidden onchange={handleFileSelect} />
-					<div class="drop-zone-content">
-						{#if !firmwareData}
-							<img
-								src={isDragOver ? '/folder-drag-accept.png' : '/folder.png'}
-								alt="Folder"
-								class="folder-icon"
-							/>
-							<div class="drop-text">Drop firmware file here or click to browse</div>
-						{:else}
-							<img src="/folder.png" alt="Folder" class="folder-icon" />
-							<div class="drop-text">Firmware loaded! Click to load a different file</div>
-						{/if}
+		<!-- Drop Zone Window - hidden when loading or loaded -->
+		{#if !firmwareData && !isProcessing}
+			<Window title="Firmware Browser" width="500px">
+				<WindowBody>
+					<div
+						bind:this={dropZone}
+						class="drop-zone"
+						ondragover={handleDragOver}
+						ondragleave={handleDragLeave}
+						ondrop={handleDrop}
+						onclick={triggerFileInput}
+						onkeydown={(e) => {
+							if (e.key === 'Enter' || e.key === ' ') {
+								e.preventDefault();
+								triggerFileInput();
+							}
+						}}
+						role="button"
+						tabindex="0"
+					>
+						<input type="file" bind:this={fileInput} hidden onchange={handleFileSelect} />
+						<div class="drop-zone-content">
+							{#if !firmwareData}
+								<img
+									src={isDragOver ? '/folder-drag-accept.png' : '/folder.png'}
+									alt="Folder"
+									class="folder-icon"
+								/>
+								<div class="drop-text">Drop firmware file here or click to browse</div>
+							{:else}
+								<img src="/folder.png" alt="Folder" class="folder-icon" />
+								<div class="drop-text">Firmware loaded! Click to load a different file</div>
+							{/if}
+						</div>
 					</div>
-				</div>
-			</WindowBody>
-		</Window>
+				</WindowBody>
+			</Window>
+		{/if}
 
 		<!-- Loading Window -->
 		{#if isProcessing}
-			<LoadingWindow title="Processing" message={statusMessage} progress={progress} />
+			<LoadingWindow message={statusMessage} progress={progress} />
 		{/if}
 
 		<!-- Main Browser Interface -->
