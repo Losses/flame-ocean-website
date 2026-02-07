@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { get } from "svelte/store";
   import {
     Window,
     WindowBody,
@@ -12,7 +13,11 @@
   import FontGridRenderer from "$lib/components/firmware/FontGridRenderer.svelte";
   import ImageRenderer from "$lib/components/firmware/ImageRenderer.svelte";
   import FirmwareWorker from "$lib/workers/firmware-worker.ts?worker";
-  import { initDebugShortcut } from "$lib/stores";
+  import {
+    initDebugShortcut,
+    debugMode,
+    debugAnimationComplete,
+  } from "$lib/stores";
 
   // Types
   interface FontPlaneInfo {
@@ -75,6 +80,13 @@
   // svelte-ignore non_reactive_update
   let dropZone: HTMLDivElement;
   let isDragOver = $state(false);
+
+  // Debug mode tracking
+  let debug = $derived.by(() => get(debugMode));
+  let debugAnimComplete = $derived.by(() => get(debugAnimationComplete));
+  let showLoadingWindow = $derived(
+    isProcessing || (debug && !debugAnimComplete),
+  );
 
   // Initialize worker
   onMount(() => {
@@ -422,66 +434,66 @@
     {/if}
 
     <!-- Loading Window -->
-    {#if isProcessing}
+    {#if showLoadingWindow}
       <LoadingWindow message={statusMessage} {progress} />
     {/if}
 
     <!-- Main Browser Interface -->
     {#if firmwareData && treeNodes.length > 0}
-      <div class="browser-layout">
-        <!-- Tree View -->
-        <Window title="Resources" class="tree-window">
-          <WindowBody>
-            <TreeView
-              nodes={treeNodes}
-              expanded={expandedNodes}
-              selected={selectedNodeIds}
-              onSelect={(nodeId) => handleSelectNode(nodeId)}
-            />
-          </WindowBody>
-        </Window>
+      <Window title="Resource Browser" class="browser-window">
+        <WindowBody>
+          <div class="browser-layout">
+            <!-- Tree View -->
+            <div class="tree-panel">
+              <TreeView
+                nodes={treeNodes}
+                expanded={expandedNodes}
+                selected={selectedNodeIds}
+                onSelect={(nodeId) => handleSelectNode(nodeId)}
+              />
+            </div>
 
-        <!-- Resource Browser -->
-        <Window title="Resource Browser" class="browser-window">
-          <WindowBody>
-            {#if selectedNode}
-              {#if isProcessing}
-                <div class="empty-state">
-                  <p>Loading {selectedNode.type}...</p>
-                </div>
-              {:else if selectedNode.type === "plane" && planeData}
-                <div class="plane-header">
-                  <h2>{planeData.name}</h2>
-                  <p>{(selectedNode.data as FontPlaneInfo).fontType} Fonts</p>
-                  <p>
-                    U+{planeData.start.toString(16).toUpperCase()} - U+{planeData.end
-                      .toString(16)
-                      .toUpperCase()}
-                  </p>
-                  <p>{planeData.fonts.length} fonts found</p>
-                </div>
-                <FontGridRenderer fonts={planeData.fonts} zoom={10} />
-              {:else if selectedNode.type === "image" && imageData}
-                <ImageRenderer
-                  name={imageData.name}
-                  width={imageData.width}
-                  height={imageData.height}
-                  rgb565Data={imageData.rgb565Data}
-                  zoom={2}
-                />
+            <!-- Resource Content -->
+            <div class="content-panel">
+              {#if selectedNode}
+                {#if isProcessing}
+                  <div class="empty-state">
+                    <p>Loading {selectedNode.type}...</p>
+                  </div>
+                {:else if selectedNode.type === "plane" && planeData}
+                  <div class="plane-header">
+                    <h2>{planeData.name}</h2>
+                    <p>{(selectedNode.data as FontPlaneInfo).fontType} Fonts</p>
+                    <p>
+                      U+{planeData.start.toString(16).toUpperCase()} - U+{planeData.end
+                        .toString(16)
+                        .toUpperCase()}
+                    </p>
+                    <p>{planeData.fonts.length} fonts found</p>
+                  </div>
+                  <FontGridRenderer fonts={planeData.fonts} zoom={10} />
+                {:else if selectedNode.type === "image" && imageData}
+                  <ImageRenderer
+                    name={imageData.name}
+                    width={imageData.width}
+                    height={imageData.height}
+                    rgb565Data={imageData.rgb565Data}
+                    zoom={2}
+                  />
+                {:else}
+                  <div class="empty-state">
+                    <p>No data available for this resource</p>
+                  </div>
+                {/if}
               {:else}
                 <div class="empty-state">
-                  <p>No data available for this resource</p>
+                  <p>Select a resource from the tree to view its contents</p>
                 </div>
               {/if}
-            {:else}
-              <div class="empty-state">
-                <p>Select a resource from the tree to view its contents</p>
-              </div>
-            {/if}
-          </WindowBody>
-        </Window>
-      </div>
+            </div>
+          </div>
+        </WindowBody>
+      </Window>
     {/if}
   </div>
 
@@ -573,19 +585,43 @@
     color: #000000;
   }
 
+  :global(.browser-window) {
+    max-width: 1024px;
+    max-height: 768px;
+    width: 100%;
+    height: 100%;
+    margin: 64px;
+    box-sizing: border-box;
+  }
+
+  :global(.browser-window .window-body) {
+    height: 100%;
+    width: 100%;
+  }
+
   .browser-layout {
     display: grid;
-    grid-template-columns: 350px 1fr;
-    gap: 10px;
-    margin-top: 20px;
+    grid-template-columns: 220px 1fr;
+    gap: 0;
+    height: 100%;
+    width: 100%;
+    min-height: 600px;
   }
 
-  :global(.tree-window) {
-    min-height: 400px;
+  .tree-panel {
+    padding: 8px;
+    overflow-y: auto;
+    box-sizing: border-box;
   }
 
-  :global(.browser-window) {
-    min-height: 400px;
+  .tree-panel :global(.tree-view) {
+    min-height: 100%;
+  }
+
+  .content-panel {
+    padding: 8px;
+    overflow-y: auto;
+    max-height: 700px;
   }
 
   .plane-header {

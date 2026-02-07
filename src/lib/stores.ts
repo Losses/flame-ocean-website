@@ -2,6 +2,9 @@ import { writable } from 'svelte/store';
 
 export const debugMode = writable(false);
 
+// Track when debug animation is complete
+export const debugAnimationComplete = writable(true);
+
 // Global function to toggle debug mode
 export function initDebugShortcut() {
 	if (typeof window === 'undefined') return;
@@ -9,6 +12,9 @@ export function initDebugShortcut() {
 	// Add global function to window/globalThis
 	(globalThis as any).enableDebugMode = (enabled: boolean = true) => {
 		debugMode.set(enabled);
+		if (!enabled) {
+			debugAnimationComplete.set(true);
+		}
 		console.log(`[Debug] Debug mode ${enabled ? 'enabled' : 'disabled'}`);
 	};
 
@@ -18,6 +24,9 @@ export function initDebugShortcut() {
 			e.preventDefault();
 			debugMode.update((value) => {
 				const newValue = !value;
+				if (!newValue) {
+					debugAnimationComplete.set(true);
+				}
 				console.log(`[Debug] Debug mode ${newValue ? 'enabled' : 'disabled'} (Ctrl+Shift+D)`);
 				return newValue;
 			});

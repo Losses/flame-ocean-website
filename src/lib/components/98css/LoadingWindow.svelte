@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { debugMode } from '$lib/stores';
+	import { get } from 'svelte/store';
+	import { debugMode, debugAnimationComplete } from '$lib/stores';
 	import WindowBody from './WindowBody.svelte';
 	import StatusBar from './StatusBar.svelte';
 	import ProgressBar from './ProgressBar.svelte';
@@ -28,9 +29,8 @@
 		statusFields
 	}: Props = $props();
 
-	// Subscribe to global debug mode store
-	let debug = $state(false);
-	debugMode.subscribe((value) => (debug = value));
+	// Subscribe to global debug mode store using derived for proper reactivity
+	let debug = $derived.by(() => get(debugMode));
 
 	// Debug mode: animate progress over 10 seconds
 	let displayedProgress = $state(0);
@@ -38,6 +38,9 @@
 
 	$effect(() => {
 		if (debug) {
+			// Mark animation as in progress
+			debugAnimationComplete.set(false);
+
 			// Animate from 0 to 100 over 10 seconds
 			displayedProgress = 0;
 			const startTime = Date.now();
@@ -49,6 +52,9 @@
 
 				if (displayedProgress < 100) {
 					debugFrameId = requestAnimationFrame(animate);
+				} else {
+					// Animation complete
+					debugAnimationComplete.set(true);
 				}
 			};
 
