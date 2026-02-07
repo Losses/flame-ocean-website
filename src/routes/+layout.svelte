@@ -11,4 +11,11 @@
 	<link rel="icon" href={favicon} />
 </svelte:head>
 
+<style>
+	:global(html, body) {
+		max-width: 100vw;
+		overflow-x: hidden;
+	}
+</style>
+
 {@render children()}

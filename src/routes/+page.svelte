@@ -532,6 +532,8 @@
   }
 
   .page-container {
+    max-width: 100vw;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     align-items: center;
