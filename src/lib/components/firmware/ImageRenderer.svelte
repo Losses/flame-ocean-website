@@ -70,24 +70,28 @@
 </script>
 
 <div class="image-container">
-	<div class="image-info">{name} - {width}x{height}</div>
 	<canvas bind:this={canvasElement} class="image-canvas"></canvas>
+	<div class="image-info">{name} - {width}x{height}</div>
 </div>
 
 <style>
 	.image-container {
-		display: inline-block;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
 		padding: 8px;
 		background-color: #c0c0c0;
 		border: 2px solid;
 		border-color: #dfdfdf #808080 #808080 #dfdfdf;
+		max-width: 100%;
 	}
 
 	.image-info {
-		margin-bottom: 8px;
-		font-family: 'Tahoma', sans-serif;
+		margin-top: 8px;
 		font-size: 12px;
 		color: #000000;
+		text-align: center;
 	}
 
 	.image-canvas {
@@ -96,5 +100,7 @@
 		background-color: #000000;
 		border: 2px solid;
 		border-color: #808080 #dfdfdf #dfdfdf #808080;
+		max-width: 100%;
+		height: auto;
 	}
 </style>
