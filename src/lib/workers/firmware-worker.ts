@@ -10,6 +10,7 @@
 const SMALL_STRIDE = 32;
 const LARGE_STRIDE = 33;
 const FOOTER_SIGNATURES = new Set([0x90, 0x8f, 0x89, 0x8b, 0x8d, 0x8e, 0x8c]);
+const INVALID_VALUES = new Set([0x00, 0xff]);
 const ROCK26_SIGNATURE = new TextEncoder().encode('ROCK26IMAGERES');
 const METADATA_ENTRY_SIZE = 108;
 const ROCK26_ENTRY_SIZE = 16;
@@ -192,6 +193,144 @@ function isValidFontData(pixels: boolean[][], fontType: 'LARGE' | 'SMALL'): bool
 	}
 }
 
+/**
+ * Score a window for font data detection
+ * Matches FirmwareAnalyzer.scoreWindow() algorithm
+ */
+function scoreWindow(
+	firmware: Uint8Array,
+	windowStart: number,
+	windowEnd: number,
+	baseAlignment: number | null
+): { score: number; firstAddr: number } {
+	let maxSequenceLength = 0;
+	let maxSequenceStart = windowStart;
+	let currentLength = 0;
+	let currentStart = windowStart;
+	let consecutiveAnomalies = 0;
+	const maxAnomalies = 5;
+
+	for (let offset = 0; offset < windowEnd - windowStart; offset += LARGE_STRIDE) {
+		const addr = windowStart + offset;
+
+		if (addr + 32 >= firmware.length) break;
+
+		if (baseAlignment !== null && addr % LARGE_STRIDE !== baseAlignment) {
+			continue;
+		}
+
+		const byte_32 = firmware[addr + 32];
+
+		if (INVALID_VALUES.has(byte_32)) {
+			if (currentLength > maxSequenceLength) {
+				maxSequenceLength = currentLength;
+				maxSequenceStart = currentStart;
+			}
+			currentLength = 0;
+			consecutiveAnomalies = 0;
+		} else if (FOOTER_SIGNATURES.has(byte_32)) {
+			if (currentLength === 0) currentStart = addr;
+			currentLength++;
+			consecutiveAnomalies = 0;
+		} else {
+			consecutiveAnomalies++;
+			if (consecutiveAnomalies <= maxAnomalies) {
+				if (currentLength === 0) currentStart = addr;
+				currentLength++;
+			} else {
+				if (currentLength > maxSequenceLength) {
+					maxSequenceLength = currentLength;
+					maxSequenceStart = currentStart;
+				}
+				currentLength = 0;
+				consecutiveAnomalies = 0;
+			}
+		}
+	}
+
+	if (currentLength > maxSequenceLength) {
+		maxSequenceLength = currentLength;
+		maxSequenceStart = currentStart;
+	}
+
+	return { score: maxSequenceLength, firstAddr: maxSequenceStart };
+}
+
+/**
+ * Search for large font offset table using window scanning
+ * Matches FirmwareAnalyzer.searchOffsetTable() algorithm
+ */
+function searchOffsetTable(firmware: Uint8Array): number | null {
+	// Get partition info (part_2_firmware_b at 0x80)
+	const partitionOffset = readU32LE(firmware, 0x80);
+	const partitionSize = readU32LE(firmware, 0x84);
+	const searchStart = partitionOffset;
+	const searchEnd = partitionOffset + partitionSize;
+
+	const windowSize = 20902 * LARGE_STRIDE;
+	let currentStride = Math.floor(windowSize / 2);
+	const minStride = 100;
+
+	let currentRegions: Array<{ start: number; end: number }> = [
+		{ start: searchStart, end: searchEnd }
+	];
+	let bestAddr: number | null = null;
+	let bestScore = -1;
+	let baseAlignment: number | null = null;
+
+	while (currentStride > minStride && currentRegions.length > 0) {
+		const regionResults: Array<{ windowStart: number; score: number; firstAddr: number }> =
+			[];
+
+		for (const region of currentRegions) {
+			for (let windowStart = region.start; windowStart < region.end; windowStart += currentStride) {
+				const windowEnd = Math.min(windowStart + windowSize, firmware.length);
+				const { score, firstAddr } = scoreWindow(
+					firmware,
+					windowStart,
+					windowEnd,
+					baseAlignment
+				);
+
+				if (score > bestScore) {
+					bestScore = score;
+					bestAddr = firstAddr;
+				}
+
+				regionResults.push({ windowStart, score, firstAddr });
+			}
+		}
+
+		regionResults.sort((a, b) => b.score - a.score);
+		const topWindows = regionResults.slice(0, 5);
+
+		if (baseAlignment === null && topWindows.length > 0) {
+			const bestFirstAddr = topWindows[0].firstAddr;
+			baseAlignment = bestFirstAddr % LARGE_STRIDE;
+		}
+
+		const nextStride = Math.max(minStride, Math.floor(currentStride / 2));
+		currentRegions = [];
+
+		for (const win of topWindows) {
+			const firstAddr = win.firstAddr;
+			const charsExtend = Math.floor(currentStride / LARGE_STRIDE) + 1;
+
+			let regionStart = firstAddr - charsExtend * LARGE_STRIDE;
+			let regionEnd = firstAddr + charsExtend * LARGE_STRIDE;
+
+			regionStart = Math.max(searchStart, regionStart);
+			regionEnd = Math.min(searchEnd, regionEnd);
+
+			currentRegions.push({ start: regionStart, end: regionEnd });
+		}
+
+		currentStride = nextStride;
+	}
+
+	return bestAddr;
+}
+
 // Unicode ranges (complete list matching RSE reference)
 const UNICODE_RANGES = [
 	{ name: 'Basic_Latin', start: 0x0000, end: 0x007f },
@@ -368,30 +507,15 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 				const config_7a = readU16LE(firmware, 0x7a);
 				SMALL_BASE = (config_7a << 16) | config_78;
 
-				// Detect LARGE_BASE using simplified search
+				// Detect LARGE_BASE using full window-scoring algorithm
 				self.postMessage({ type: 'progress', id, message: 'Searching for font data...' });
 
-				// Use a simpler heuristic - search for sequences of valid footer signatures
-				let bestScore = 0;
-				let bestAddr = 0;
-
-				for (let addr = 0x10000; addr < Math.min(firmware.length - 10000, 0x200000); addr += LARGE_STRIDE) {
-					let score = 0;
-					for (let i = 0; i < 100 && addr + i * LARGE_STRIDE + 32 < firmware.length; i++) {
-						const byte_32 = firmware[addr + i * LARGE_STRIDE + 32];
-						if (FOOTER_SIGNATURES.has(byte_32)) {
-							score++;
-						} else if (byte_32 === 0x00 || byte_32 === 0xff) {
-							break;
-						}
-					}
-					if (score > bestScore) {
-						bestScore = score;
-						bestAddr = addr;
-					}
+				const largeBase = searchOffsetTable(firmware);
+				if (largeBase === null) {
+					self.postMessage({ type: 'error', id, error: 'Could not find valid LARGE_BASE' });
+					return;
 				}
-
-				LARGE_BASE = bestAddr;
+				LARGE_BASE = largeBase;
 
 				self.postMessage({ type: 'success', id, result: [] });
 				break;
