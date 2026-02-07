@@ -57,7 +57,8 @@ export function encodeV8(pixels: PixelData, lookupVal: number): Uint8Array {
 	const chunk = new Uint8Array(32);
 
 	for (let row = 0; row < 16; row++) {
-		// Convert 15 pixels to a 16-bit value (left-aligned)
+		// Convert 15 pixels to a 16-bit value (left-aligned, bits 15-1)
+		// decodeV8 extracts bits 15-1 (not bit 0), so we put our data there
 		let pixelValue = 0;
 		for (let bit = 0; bit < 15; bit++) {
 			if (pixels[row][bit]) {
@@ -65,31 +66,43 @@ export function encodeV8(pixels: PixelData, lookupVal: number): Uint8Array {
 			}
 		}
 
-		// Apply inverse of decodeV8 transformations
-		// The final step in decodeV8 (if not swMcuBits=1 && swMcuByteSwap=1)
-		// was: finalPixel = ((finalPixel & 0xff) << 8) | ((finalPixel >> 8) & 0xff)
-		// So we need to reverse this first
+		// Now reverse the decodeV8 transformations
+		// Last step in decodeV8 is the conditional byte swap (if not swMcuBits=1 && swMcuByteSwap=1)
 		if (!(swMcuBits === 1 && swMcuByteSwap === 1)) {
+			// Reverse the byte swap
 			pixelValue = ((pixelValue & 0xff) << 8) | ((pixelValue >> 8) & 0xff);
 		}
 
-		let finalPixel: number;
+		let b0: number;
+		let b1: number;
 
 		if (swMcuBits === 1) {
-			// In decode: if swMcuBits === 1, val = (b1 << 8) | b0, then possible byte swap
-			// So finalPixel after byte swap is what we have
-			// To reverse: if swMcuByteSwap === 1, swap back
-			finalPixel = pixelValue;
+			// In decodeV8 with swMcuBits=1:
+			//   val = (b1 << 8) | b0
+			//   if swMcuByteSwap=1: val = swap(val)
+			//   finalPixel = val
+			// So pixelValue at this point is val (possibly already swapped)
+			// To reverse: if swMcuByteSwap=1, swap back, then extract b0, b1
+			let val = pixelValue;
 			if (swMcuByteSwap === 1) {
-				finalPixel = ((finalPixel & 0xff) << 8) | ((finalPixel >> 8) & 0xff);
+				val = ((val & 0xff) << 8) | ((val >> 8) & 0xff);
 			}
+			b0 = val & 0xff;
+			b1 = (val >> 8) & 0xff;
 		} else {
-			// More complex case with swMcuHwSwap and swMcuByteSwap
-			// In decode:
-			// - cycle1/cycle2 are determined by swMcuHwSwap vs swMcuByteSwap
-			// - then possibly swapped by swMcuByteSwap
-			// - then possibly swapped by swMcuHwSwap
-			// - finalPixel = cycle2 | (cycle1 << 8)
+			// In decodeV8 with swMcuBits=0:
+			//   if swMcuHwSwap === swMcuByteSwap: cycle1=b1, cycle2=b0
+			//   else: cycle1=b0, cycle2=b1
+			//   if swMcuByteSwap=1: swap(cycle1, cycle2)
+			//   if swMcuHwSwap=1: swap(cycle1, cycle2)
+			//   finalPixel = cycle2 | (cycle1 << 8)
+			//
+			// So pixelValue = cycle2 | (cycle1 << 8)
+			// To reverse:
+			//   cycle1 = (pixelValue >> 8) & 0xff
+			//   cycle2 = pixelValue & 0xff
+			//   Reverse the swaps in reverse order
+			//   Then assign to b0, b1 based on swMcuHwSwap vs swMcuByteSwap
 
 			let cycle1 = (pixelValue >> 8) & 0xff;
 			let cycle2 = pixelValue & 0xff;
@@ -104,21 +117,23 @@ export function encodeV8(pixels: PixelData, lookupVal: number): Uint8Array {
 				[cycle1, cycle2] = [cycle2, cycle1];
 			}
 
-			// Reverse the initial assignment based on swMcuHwSwap vs swMcuByteSwap
+			// Now assign to b0, b1
 			if (swMcuHwSwap === swMcuByteSwap) {
 				// Was: cycle1 = b1, cycle2 = b0
-				// We already have cycle1, cycle2
+				// So: b1 = cycle1, b0 = cycle2
+				b0 = cycle2;
+				b1 = cycle1;
 			} else {
 				// Was: cycle1 = b0, cycle2 = b1
-				// Already swapped above
+				// So: b0 = cycle1, b1 = cycle2
+				b0 = cycle1;
+				b1 = cycle2;
 			}
-
-			finalPixel = cycle2 | (cycle1 << 8);
 		}
 
 		// Write to chunk (little-endian)
-		chunk[row * 2] = finalPixel & 0xff;
-		chunk[row * 2 + 1] = (finalPixel >> 8) & 0xff;
+		chunk[row * 2] = b0;
+		chunk[row * 2 + 1] = b1;
 	}
 
 	return chunk;

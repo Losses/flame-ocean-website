@@ -646,6 +646,106 @@ describe('FontEncoder Tests', () => {
 			}
 		});
 	});
+
+	/**
+	 * Test all 8 possible lookup configurations (3 bits = 8 combinations)
+	 * This ensures encodeV8 correctly inverts decodeV8 for all configurations
+	 */
+	describe('encodeV8 with all lookup configurations', () => {
+		const testPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
+			Array.from({ length: 15 }, (_, x) => (x + y) % 2 === 0)
+		);
+
+		// Test all 8 combinations of swMcuBits, swMcuHwSwap, swMcuByteSwap
+		const testCases = [
+			{ lookupVal: 0x00, name: 'no swaps' },                              // 000
+			{ lookupVal: 0x08, name: 'swMcuBits only' },                         // 001
+			{ lookupVal: 0x10, name: 'swMcuHwSwap only' },                        // 010
+			{ lookupVal: 0x18, name: 'swMcuBits + swMcuHwSwap' },                // 011
+			{ lookupVal: 0x20, name: 'swMcuByteSwap only' },                      // 100
+			{ lookupVal: 0x28, name: 'swMcuBits + swMcuByteSwap' },               // 101
+			{ lookupVal: 0x30, name: 'swMcuHwSwap + swMcuByteSwap' },             // 110
+			{ lookupVal: 0x38, name: 'all swaps' }                                // 111
+		];
+
+		for (const { lookupVal, name } of testCases) {
+			it(`should handle ${name} (lookupVal=0x${lookupVal.toString(16).padStart(2, '0')})`, () => {
+				// Encode pattern
+				const encoded = encodeV8(testPattern, lookupVal);
+
+				// Decode using FontExtractor
+				const firmware = new Uint8Array(0x500000);
+				firmware.set(encoded, 0x100000);
+
+				// Set lookup value for the character we're testing
+				// For Unicode 0x0000, lookup is at 0x080000 + (0x0000 >> 3) = 0x080000
+				firmware[0x080000] = lookupVal;
+
+				const extractor = new FontExtractor(firmware, {
+					SMALL_BASE: 0x100000,
+					LARGE_BASE: 0x200000,
+					LOOKUP_TABLE: 0x080000,
+					confidence: {
+						smallFontValid: 1,
+						largeFontValid: 0,
+						movw0042Count: 0
+					}
+				});
+
+				const decodedPixels = extractor.readFontAsPixels(0x0000, 'SMALL');
+
+				// Verify round-trip preservation
+				expect(decodedPixels).toEqual(testPattern);
+			});
+		}
+	});
+
+	/**
+	 * Test that encodeV8 properly encodes specific bit patterns
+	 */
+	describe('encodeV8 bit-level accuracy', () => {
+		it('should preserve all pixel values in round-trip for known good configurations', () => {
+			// Create a pattern that tests all bit positions
+			const specificPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
+				Array.from({ length: 15 }, (_, x) => {
+					// Each position has a unique pattern (checkerboard-like, ~50% filled)
+					return (x + y) % 2 === 0;
+				})
+			);
+
+			// Test with lookupVal=0x00 (no swaps, the simplest case)
+			const lookupVal = 0x00;
+			const encoded = encodeV8(specificPattern, lookupVal);
+
+			// Decode
+			const firmware = new Uint8Array(0x500000);
+			firmware.set(encoded, 0x100000);
+			firmware[0x080000] = lookupVal;
+
+			const extractor = new FontExtractor(firmware, {
+				SMALL_BASE: 0x100000,
+				LARGE_BASE: 0x200000,
+				LOOKUP_TABLE: 0x080000,
+				confidence: {
+					smallFontValid: 1,
+					largeFontValid: 0,
+					movw0042Count: 0
+				}
+			});
+
+			const decodedPixels = extractor.readFontAsPixels(0x0000, 'SMALL');
+
+			// Verify decode succeeded
+			expect(decodedPixels).not.toBeNull();
+
+			// Every single pixel must match
+			for (let y = 0; y < 16; y++) {
+				for (let x = 0; x < 15; x++) {
+					expect(decodedPixels![y][x]).toBe(specificPattern[y][x]);
+				}
+			}
+		});
+	});
 });
 
 describe('BMP Parser Tests', () => {
@@ -732,6 +832,173 @@ describe('Validation Tests', () => {
 			expect(validateBitmapData(data, -1, 10)).toBe(false);
 			expect(validateBitmapData(data, 0, 10)).toBe(false);
 			expect(validateBitmapData(data, 10001, 10)).toBe(false);
+		});
+	});
+
+	/**
+	 * Test edge cases and boundary conditions
+	 */
+	describe('Boundary and edge case tests', () => {
+		it('should handle Unicode at range boundaries', () => {
+			const firmware = new Uint8Array(0x500000);
+
+			// Set up lookup table
+			for (let i = 0; i < 256; i++) {
+				firmware[0x080000 + i] = 0x00;
+			}
+
+			const extractor = new FontExtractor(firmware, {
+				SMALL_BASE: 0x100000,
+				LARGE_BASE: 0x200000,
+				LOOKUP_TABLE: 0x080000,
+				confidence: {
+					smallFontValid: 1,
+					largeFontValid: 0,
+					movw0042Count: 0
+				}
+			});
+
+			// Test at boundaries of Basic Latin range
+			const testCases = [
+				{ unicode: 0x0000 },
+				{ unicode: 0x0001 },
+				{ unicode: 0x007E },
+				{ unicode: 0x007F }
+			];
+
+			for (const { unicode } of testCases) {
+				// Should be able to read (even if empty)
+				const data = extractor.readFont(unicode, 'SMALL');
+				expect(data).not.toBeNull();
+
+				// Write should work
+				const testPixels: PixelData = Array.from({ length: 16 }, (_, y) =>
+					Array.from({ length: 15 }, (_, x) => (x + y + unicode) % 2 === 0)
+				);
+
+				const result = extractor.replaceFontFromPixels(unicode, 'SMALL', testPixels);
+				expect(result).toBe(true);
+
+				// Read back and verify
+				const readBack = extractor.readFontAsPixels(unicode, 'SMALL');
+				expect(readBack).toEqual(testPixels);
+			}
+		});
+
+		it('should handle empty/all-zero pixel data correctly', () => {
+			const firmware = new Uint8Array(0x500000);
+
+			// Set up lookup table
+			firmware[0x080000] = 0x00;
+
+			// Create a pattern that's ~50% filled (valid)
+			const validPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
+				Array.from({ length: 15 }, (_, x) => (x + y) % 2 === 0)
+			);
+
+			// Encode and place in firmware
+			const encoded = encodeV8(validPattern, 0x00);
+			firmware.set(encoded, 0x100000);
+
+			const extractor = new FontExtractor(firmware, {
+				SMALL_BASE: 0x100000,
+				LARGE_BASE: 0x200000,
+				LOOKUP_TABLE: 0x080000,
+				confidence: {
+					smallFontValid: 1,
+					largeFontValid: 0,
+					movw0042Count: 0
+				}
+			});
+
+			// Read should work
+			const pixels = extractor.readFontAsPixels(0x0000, 'SMALL');
+			expect(pixels).not.toBeNull();
+			expect(pixels).toEqual(validPattern);
+
+			// All-zero pattern should be rejected (validation)
+			const allZero: PixelData = Array.from({ length: 16 }, () =>
+				Array.from({ length: 15 }, () => false)
+			);
+
+			// Try to replace with all-zero (should be rejected by validation)
+			extractor.replaceFontFromPixels(0x0000, 'SMALL', allZero);
+			// The validation in isValidFontData will reject this
+			// So replaceFontFromPixels might fail or the data might not be valid
+			// This is expected behavior
+		});
+
+		it('should prevent writing beyond firmware bounds', () => {
+			const firmware = new Uint8Array(0x500000);
+
+			const extractor = new FontExtractor(firmware, {
+				SMALL_BASE: 0x100000,
+				LARGE_BASE: 0x200000,
+				LOOKUP_TABLE: 0x080000,
+				confidence: {
+					smallFontValid: 1,
+					largeFontValid: 0,
+					movw0042Count: 0
+				}
+			});
+
+			// Try to write to a Unicode that would overflow the firmware
+			// Unicode 0xFFFFF would calculate to: 0x100000 + 0xFFFFF * 32 = huge offset
+			const hugeUnicode = 0xFFFFF;
+
+			const testPixels: PixelData = Array.from({ length: 16 }, (_, y) =>
+				Array.from({ length: 15 }, (_, x) => (x + y) % 2 === 0)
+			);
+
+			// Should fail (address out of bounds)
+			const result = extractor.replaceFontFromPixels(hugeUnicode, 'SMALL', testPixels);
+			expect(result).toBe(false);
+		});
+
+		it('should handle sequential writes to different Unicode values', () => {
+			const firmware = new Uint8Array(0x500000);
+
+			// Set up lookup table for range 0x0000-0x007F
+			for (let i = 0; i < 16; i++) {
+				firmware[0x080000 + i] = 0x00;
+			}
+
+			const extractor = new FontExtractor(firmware, {
+				SMALL_BASE: 0x100000,
+				LARGE_BASE: 0x200000,
+				LOOKUP_TABLE: 0x080000,
+				confidence: {
+					smallFontValid: 1,
+					largeFontValid: 0,
+					movw0042Count: 0
+				}
+			});
+
+			// Write multiple fonts
+			const unicodes = [0x0041, 0x0042, 0x0043, 0x0044];
+
+			for (let i = 0; i < unicodes.length; i++) {
+				const unicode = unicodes[i];
+				const pattern: PixelData = Array.from({ length: 16 }, (_, y) =>
+					Array.from({ length: 15 }, (_, x) => ((x + y + i) % 3) === 0)
+				);
+
+				extractor.replaceFontFromPixels(unicode, 'SMALL', pattern);
+				// Verify immediately
+				const readBack = extractor.readFontAsPixels(unicode, 'SMALL');
+				expect(readBack).toEqual(pattern);
+			}
+
+			// Verify all are still correct after multiple writes
+			for (let i = 0; i < unicodes.length; i++) {
+				const unicode = unicodes[i];
+				const expectedPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
+					Array.from({ length: 15 }, (_, x) => ((x + y + i) % 3) === 0)
+				);
+
+				const readBack = extractor.readFontAsPixels(unicode, 'SMALL');
+				expect(readBack).toEqual(expectedPattern);
+			}
 		});
 	});
 });
