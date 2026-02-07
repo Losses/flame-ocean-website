@@ -10,6 +10,7 @@
 	} from '$lib/components/98css';
 	import FontGridRenderer from '$lib/components/firmware/FontGridRenderer.svelte';
 	import ImageRenderer from '$lib/components/firmware/ImageRenderer.svelte';
+	import FirmwareWorker from '$lib/workers/firmware-worker.ts?worker';
 
 	// Types
 	interface FontPlaneInfo {
@@ -54,7 +55,7 @@
 
 	// Initialize worker
 	onMount(() => {
-		worker = new Worker('./workers/firmware-worker.ts', { type: 'module' });
+		worker = new FirmwareWorker();
 
 		worker.onmessage = (e: MessageEvent) => {
 			const { type, id, result, error, message } = e.data;
