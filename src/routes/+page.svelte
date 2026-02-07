@@ -351,116 +351,152 @@
 	}
 </script>
 
-<div class="page-container">
-	<!-- Drop Zone Window -->
-	<Window title="Firmware Browser" width="500px">
-		<WindowBody>
-			<div
-				bind:this={dropZone}
-				class="drop-zone"
-				ondragover={handleDragOver}
-				ondragleave={handleDragLeave}
-				ondrop={handleDrop}
-				onclick={triggerFileInput}
-				onkeydown={(e) => {
-					if (e.key === 'Enter' || e.key === ' ') {
-						e.preventDefault();
-						triggerFileInput();
-					}
-				}}
-				role="button"
-				tabindex="0"
-			>
-				<input type="file" bind:this={fileInput} hidden onchange={handleFileSelect} />
-				<div class="drop-zone-content">
-					{#if !firmwareData}
-						<img
-							src={isDragOver ? '/folder-drag-accept.png' : '/folder.png'}
-							alt="Folder"
-							class="folder-icon"
-						/>
-						<div class="drop-text">Drop firmware file here or click to browse</div>
-					{:else}
-						<img src="/folder.png" alt="Folder" class="folder-icon" />
-						<div class="drop-text">Firmware loaded! Click to load a different file</div>
-					{/if}
-				</div>
-			</div>
-		</WindowBody>
-	</Window>
-
-	<!-- Loading Window -->
-	{#if isProcessing}
-		<LoadingWindow title="Processing" message={statusMessage} progress={progress} />
-	{/if}
-
-	<!-- Main Browser Interface -->
-	{#if firmwareData && treeNodes.length > 0}
-		<div class="browser-layout">
-			<!-- Tree View -->
-			<Window title="Resources" class="tree-window">
-				<WindowBody>
-					<TreeView
-						nodes={treeNodes}
-						expanded={expandedNodes}
-						selected={selectedNodeIds}
-						onSelect={(nodeId) => handleSelectNode(nodeId)}
-					/>
-				</WindowBody>
-			</Window>
-
-			<!-- Resource Browser -->
-			<Window title="Resource Browser" class="browser-window">
-				<WindowBody>
-					{#if selectedNode}
-						{#if isProcessing}
-							<div class="empty-state">
-								<p>Loading {selectedNode.type}...</p>
-							</div>
-						{:else if selectedNode.type === 'plane' && planeData}
-							<div class="plane-header">
-								<h2>{planeData.name}</h2>
-								<p>{(selectedNode.data as FontPlaneInfo).fontType} Fonts</p>
-								<p>U+{planeData.start.toString(16).toUpperCase()} - U+{planeData.end.toString(16).toUpperCase()}</p>
-								<p>{planeData.fonts.length} fonts found</p>
-							</div>
-							<FontGridRenderer fonts={planeData.fonts} zoom={10} />
-						{:else if selectedNode.type === 'image' && imageData}
-							<ImageRenderer
-								name={imageData.name}
-								width={imageData.width}
-								height={imageData.height}
-								rgb565Data={imageData.rgb565Data}
-								zoom={2}
+<div class="page-wrapper">
+	<div class="page-container">
+		<!-- Drop Zone Window -->
+		<Window title="Firmware Browser" width="500px">
+			<WindowBody>
+				<div
+					bind:this={dropZone}
+					class="drop-zone"
+					ondragover={handleDragOver}
+					ondragleave={handleDragLeave}
+					ondrop={handleDrop}
+					onclick={triggerFileInput}
+					onkeydown={(e) => {
+						if (e.key === 'Enter' || e.key === ' ') {
+							e.preventDefault();
+							triggerFileInput();
+						}
+					}}
+					role="button"
+					tabindex="0"
+				>
+					<input type="file" bind:this={fileInput} hidden onchange={handleFileSelect} />
+					<div class="drop-zone-content">
+						{#if !firmwareData}
+							<img
+								src={isDragOver ? '/folder-drag-accept.png' : '/folder.png'}
+								alt="Folder"
+								class="folder-icon"
 							/>
+							<div class="drop-text">Drop firmware file here or click to browse</div>
+						{:else}
+							<img src="/folder.png" alt="Folder" class="folder-icon" />
+							<div class="drop-text">Firmware loaded! Click to load a different file</div>
+						{/if}
+					</div>
+				</div>
+			</WindowBody>
+		</Window>
+
+		<!-- Loading Window -->
+		{#if isProcessing}
+			<LoadingWindow title="Processing" message={statusMessage} progress={progress} />
+		{/if}
+
+		<!-- Main Browser Interface -->
+		{#if firmwareData && treeNodes.length > 0}
+			<div class="browser-layout">
+				<!-- Tree View -->
+				<Window title="Resources" class="tree-window">
+					<WindowBody>
+						<TreeView
+							nodes={treeNodes}
+							expanded={expandedNodes}
+							selected={selectedNodeIds}
+							onSelect={(nodeId) => handleSelectNode(nodeId)}
+						/>
+					</WindowBody>
+				</Window>
+
+				<!-- Resource Browser -->
+				<Window title="Resource Browser" class="browser-window">
+					<WindowBody>
+						{#if selectedNode}
+							{#if isProcessing}
+								<div class="empty-state">
+									<p>Loading {selectedNode.type}...</p>
+								</div>
+							{:else if selectedNode.type === 'plane' && planeData}
+								<div class="plane-header">
+									<h2>{planeData.name}</h2>
+									<p>{(selectedNode.data as FontPlaneInfo).fontType} Fonts</p>
+									<p>U+{planeData.start.toString(16).toUpperCase()} - U+{planeData.end.toString(16).toUpperCase()}</p>
+									<p>{planeData.fonts.length} fonts found</p>
+								</div>
+								<FontGridRenderer fonts={planeData.fonts} zoom={10} />
+							{:else if selectedNode.type === 'image' && imageData}
+								<ImageRenderer
+									name={imageData.name}
+									width={imageData.width}
+									height={imageData.height}
+									rgb565Data={imageData.rgb565Data}
+									zoom={2}
+								/>
+							{:else}
+								<div class="empty-state">
+									<p>No data available for this resource</p>
+								</div>
+							{/if}
 						{:else}
 							<div class="empty-state">
-								<p>No data available for this resource</p>
+								<p>Select a resource from the tree to view its contents</p>
 							</div>
 						{/if}
-					{:else}
-						<div class="empty-state">
-							<p>Select a resource from the tree to view its contents</p>
-						</div>
-					{/if}
-				</WindowBody>
-			</Window>
-		</div>
-	{/if}
+					</WindowBody>
+				</Window>
+			</div>
+		{/if}
+	</div>
 
-	<!-- Status Bar -->
-	<StatusBar statusFields={[{ text: statusMessage }]} />
+	<!-- Status Bar Footer -->
+	<footer class="status-footer">
+		<div class="status-bar-window">
+			<StatusBar statusFields={[{ text: statusMessage }]} />
+		</div>
+	</footer>
 </div>
 
 <style>
+	:global(body) {
+		margin: 0;
+		padding: 0;
+		overflow: hidden;
+	}
+
+	.page-wrapper {
+		display: flex;
+		flex-direction: column;
+		height: 100vh;
+		font-family: 'Tahoma', 'MS Sans Serif', sans-serif;
+	}
+
 	.page-container {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
-		min-height: 100vh;
+		flex: 1;
 		padding: 20px;
-		font-family: 'Tahoma', sans-serif;
+		overflow-y: auto;
+	}
+
+	.status-footer {
+		flex-shrink: 0;
+		background-color: #c0c0c0;
+		border-top: 2px solid #ffffff;
+	}
+
+	.status-footer :global(.window) {
+		border: none;
+		box-shadow: none;
+		margin: 0;
+	}
+
+	.status-footer :global(.status-bar) {
+		border: none;
+		margin: 0;
 	}
 
 	:global(.window) {
