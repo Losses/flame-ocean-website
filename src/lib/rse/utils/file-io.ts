@@ -103,16 +103,16 @@ class NodeFileIO implements FileIO {
 		}
 		const fs = await import('node:fs/promises');
 		const data = await fs.readFile(input);
-		return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+		return new Uint8Array(data);
 	}
 
 	readFileSync(input: FileInput): Uint8Array {
 		if (typeof input !== 'string') {
 			throw new TypeError('Node.js environment requires file path string');
 		}
-		const fs = require('node:fs') as { readFileSync: (path: string) => { buffer: Buffer; byteLength: number; byteOffset: number; } };
+		const fs = require('node:fs');
 		const data = fs.readFileSync(input);
-		return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+		return new Uint8Array(data);
 	}
 
 	async writeFile(path: string, data: Uint8Array): Promise<void> {
@@ -121,7 +121,7 @@ class NodeFileIO implements FileIO {
 	}
 
 	writeFileSync(path: string, data: Uint8Array): void {
-		const fs = require('node:fs') as { writeFileSync: (path: string, data: Uint8Array) => void };
+		const fs = require('node:fs');
 		fs.writeFileSync(path, data);
 	}
 
@@ -131,7 +131,7 @@ class NodeFileIO implements FileIO {
 	}
 
 	mkdirSync(path: string): void {
-		const fs = require('node:fs') as { mkdirSync: (path: string, options: { recursive: boolean }) => void };
+		const fs = require('node:fs');
 		fs.mkdirSync(path, { recursive: true });
 	}
 
@@ -146,7 +146,7 @@ class NodeFileIO implements FileIO {
 	}
 
 	existsSync(path: string): boolean {
-		const fs = require('node:fs') as { existsSync: (path: string) => boolean };
+		const fs = require('node:fs');
 		return fs.existsSync(path);
 	}
 }
@@ -177,7 +177,7 @@ class BrowserFileIO implements FileIO {
 
 	async writeFile(_path: string, data: Uint8Array): Promise<void> {
 		// Trigger browser download
-		const blob = new Blob([data]);
+		const blob = new Blob([data as BlobPart]);
 		const url = URL.createObjectURL(blob);
 		try {
 			const a = document.createElement('a');
