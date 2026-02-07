@@ -462,24 +462,29 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 
 				const images: BitmapFileInfo[] = [];
 
-				// Find ROCK26 table
-				const rock26Offset = findBytes(firmwareData, ROCK26_SIGNATURE);
+				// Extract Part 5 data first (matches Python: part5_offset = img_data[0x14c:0x150])
+				const part5Offset = readU32LE(firmwareData, 0x14c);
+				const part5Size = readU32LE(firmwareData, 0x150);
+				const part5Data = firmwareData.slice(part5Offset, part5Offset + part5Size);
+
+				// Find ROCK26 table within Part 5
+				const rock26Offset = findBytes(part5Data, ROCK26_SIGNATURE);
 				if (rock26Offset === -1) {
 					self.postMessage({ type: 'success', id, result: images });
 					return;
 				}
 
-				// Find metadata table using ROCK26 anchor
+				// Find metadata table using ROCK26 anchor (within Part 5)
 				const rock26EntriesStart = rock26Offset + 32;
-				const anchorOffset = readU32LE(firmwareData, rock26EntriesStart + 12);
+				const anchorOffset = readU32LE(part5Data, rock26EntriesStart + 12);
 
-				// Search for the metadata table
+				// Search for the metadata table within Part 5
 				let tableStart = -1;
-				for (let pos = 0; pos < firmwareData.length - METADATA_ENTRY_SIZE; pos += 4) {
-					const entryOffset = readU32LE(firmwareData, pos + 20);
+				for (let pos = 0; pos < part5Data.length - METADATA_ENTRY_SIZE; pos += 4) {
+					const entryOffset = readU32LE(part5Data, pos + 20);
 					if (entryOffset === anchorOffset) {
 						// Verify it's a valid metadata entry
-						const nameBytes = firmwareData.slice(pos + 32, pos + 96);
+						const nameBytes = part5Data.slice(pos + 32, pos + 96);
 						const nullIdx = nameBytes.indexOf(0);
 						const name = new TextDecoder('ascii').decode(nameBytes.slice(0, nullIdx > 0 ? nullIdx : 0));
 
@@ -495,7 +500,42 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 					return;
 				}
 
-				// Parse metadata entries
+				// Detect misalignment using ROCK26 offsets
+				const rock26Count = readU32LE(part5Data, rock26Offset + 16);
+				const offsetShiftVotes = new Map<number, number>();
+
+				const sampleCount = Math.min(20, rock26Count);
+				for (let i = 0; i < sampleCount; i++) {
+					const entryOffset = rock26EntriesStart + i * ROCK26_ENTRY_SIZE;
+					const rock26OffsetVal = readU32LE(part5Data, entryOffset + 12);
+
+					// Test different shifts
+					for (let shift = -3; shift <= 3; shift++) {
+						const metadataIdx = i + shift;
+						if (metadataIdx >= 0) {
+							// We'll parse entries below to check
+							const metadataPos = tableStart + metadataIdx * METADATA_ENTRY_SIZE;
+							if (metadataPos + METADATA_ENTRY_SIZE <= part5Data.length) {
+								const metadataOffsetVal = readU32LE(part5Data, metadataPos + 20);
+								if (metadataOffsetVal === rock26OffsetVal) {
+									offsetShiftVotes.set(shift, (offsetShiftVotes.get(shift) ?? 0) + 1);
+								}
+							}
+						}
+					}
+				}
+
+				// Find best shift
+				let misalignment = 0;
+				let maxVotes = 0;
+				for (const [shift, votes] of offsetShiftVotes.entries()) {
+					if (votes > maxVotes) {
+						maxVotes = votes;
+						misalignment = shift;
+					}
+				}
+
+				// Parse all metadata entries
 				const allEntries: Array<{
 					name: string;
 					offset: number;
@@ -504,25 +544,28 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 				}> = [];
 
 				let pos = tableStart;
-				while (pos + METADATA_ENTRY_SIZE <= firmwareData.length) {
-					const nameBytes = firmwareData.slice(pos + 32, pos + 96);
+				while (pos + METADATA_ENTRY_SIZE <= part5Data.length) {
+					const nameBytes = part5Data.slice(pos + 32, pos + 96);
 					const nullIdx = nameBytes.indexOf(0);
 					const decoder = new TextDecoder('ascii');
 					const name = decoder.decode(nameBytes.slice(0, nullIdx >= 0 ? nullIdx : 0));
 
 					if (!name || name.length < 3) break;
 
-					const offset = readU32LE(firmwareData, pos + 20);
-					const width = readU32LE(firmwareData, pos + 24);
-					const height = readU32LE(firmwareData, pos + 28);
+					const offset = readU32LE(part5Data, pos + 20);
+					const width = readU32LE(part5Data, pos + 24);
+					const height = readU32LE(part5Data, pos + 28);
 
 					allEntries.push({ name, offset, width, height });
 					pos += METADATA_ENTRY_SIZE;
 				}
 
-				// Build image list - for each entry, use width/height from the NEXT entry
-				// (matching Python's behavior at lines 540-544 of extract_resource_smart.py)
-				for (let i = 0; i < allEntries.length; i++) {
+				// Build image list with misalignment correction
+				// For each entry, use width/height from the NEXT entry (Python behavior)
+				const startIndex = misalignment > 0 ? 1 : 0;
+				const endIndex = allEntries.length - (misalignment > 0 ? 1 : 0);
+
+				for (let i = startIndex; i < endIndex; i++) {
 					const entry = allEntries[i];
 
 					// Get width/height from next entry (or current if last entry)
@@ -536,7 +579,19 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 						height = entry.height;
 					}
 
-					const offset = entry.offset;
+					// Apply misalignment correction to offset
+					let offset: number;
+					if (misalignment > 0) {
+						const targetIndex = i + misalignment;
+						if (targetIndex >= allEntries.length) continue;
+						offset = allEntries[targetIndex].offset;
+					} else if (misalignment < 0) {
+						const targetIndex = i + misalignment;
+						if (targetIndex < 0) continue;
+						offset = allEntries[targetIndex].offset;
+					} else {
+						offset = entry.offset;
+					}
 
 					// Skip invalid entries
 					if (offset === 0 || width <= 0 || height <= 0 || width > 10000 || height > 10000) {
@@ -634,9 +689,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 					offset: number;
 				};
 
+				// Get Part 5 data (offset is relative to Part 5)
+				const part5Offset = readU32LE(firmwareData, 0x14c);
+				const part5Size = readU32LE(firmwareData, 0x150);
+				const part5Data = firmwareData.slice(part5Offset, part5Offset + part5Size);
+
 				const rawSize = width * height * 2;
 				// Firmware stores RGB565 in big-endian, convert to little-endian
-				const rawRgb565 = firmwareData.slice(offset, offset + rawSize);
+				const rawRgb565 = part5Data.slice(offset, offset + rawSize);
 				const rgb565Data = swapBytes16Bit(rawRgb565);
 
 				self.postMessage({

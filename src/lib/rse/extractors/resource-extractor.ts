@@ -10,7 +10,7 @@ import type {
 	BitmapExtractionResult,
 	BitmapFileInfo
 } from '../types/index.js';
-import { BinaryReader, findBytes } from '../utils/struct.js';
+import { BinaryReader, findBytes, readU32LE } from '../utils/struct.js';
 import { convertToBmp, bmpToRgb565 } from '../utils/bitmap.js';
 import { sanitizeFilename } from '../utils/bytes.js';
 import { validateBitmapData } from '../utils/font-encoder.js';
@@ -201,24 +201,26 @@ export class ResourceExtractor {
 	/**
 	 * Detect offset misalignment using statistical analysis
 	 * @param metadataEntries - Parsed metadata entries
-	 * @param rock26Offset - Offset of ROCK26 table
+	 * @param part5Data - Part 5 firmware data
+	 * @param rock26Offset - Offset of ROCK26 table within part5Data
 	 * @returns Misalignment detection result
 	 */
 	detectOffsetMisalignment(
 		metadataEntries: readonly BitmapMetadata[],
+		part5Data: Uint8Array,
 		rock26Offset: number
 	): MisalignmentDetection {
-		// Read ROCK26 table info
-		const rock26Count = this.reader.readU32LE(rock26Offset + 16);
+		// Read ROCK26 table info from part5Data
+		const rock26Count = readU32LE(part5Data, rock26Offset + 16);
 
-		// Read first N ROCK26 entry offsets
+		// Read first N ROCK26 entry offsets from part5Data
 		const rock26Offsets: number[] = [];
 		const rock26EntriesStart = rock26Offset + 32;
 
 		const sampleCount = Math.min(20, rock26Count);
 		for (let i = 0; i < sampleCount; i++) {
 			const entryOffset = rock26EntriesStart + i * ROCK26_ENTRY_SIZE;
-			const offset = this.reader.readU32LE(entryOffset + 12);
+			const offset = readU32LE(part5Data, entryOffset + 12);
 			rock26Offsets.push(offset);
 		}
 
@@ -388,6 +390,7 @@ export class ResourceExtractor {
 		console.log(`\n  Detecting offset misalignment...`);
 		const { misalignment, firstValidEntry, detectionInfo } = this.detectOffsetMisalignment(
 			metadataEntries,
+			part5Data,
 			rock26Offset
 		);
 
@@ -522,6 +525,11 @@ export class ResourceExtractor {
 	 * @returns Array of bitmap file information
 	 */
 	listDirectory(): BitmapFileInfo[] {
+		// Get Part 5 data
+		const part5Offset = this.reader.readU32LE(0x14c);
+		const part5Size = this.reader.readU32LE(0x150);
+		const part5Data = this.firmware.slice(part5Offset, part5Offset + part5Size);
+
 		// Find metadata table
 		const tableStart = this.findMetadataTableInPart5();
 		if (tableStart === null) {
@@ -532,7 +540,7 @@ export class ResourceExtractor {
 		const metadataEntries = this.parseMetadataTable(tableStart);
 
 		// Find ROCK26 table for misalignment detection
-		const rock26Offset = this.reader.find(ROCK26_SIGNATURE);
+		const rock26Offset = findBytes(part5Data, ROCK26_SIGNATURE);
 		if (rock26Offset === -1) {
 			return [];
 		}
@@ -540,6 +548,7 @@ export class ResourceExtractor {
 		// Detect misalignment
 		const { misalignment, firstValidEntry } = this.detectOffsetMisalignment(
 			metadataEntries,
+			part5Data,
 			rock26Offset
 		);
 
@@ -608,6 +617,11 @@ export class ResourceExtractor {
 	 * @returns Raw RGB565 bitmap data or null if not found
 	 */
 	readBitmap(filename: string): Uint8Array | null {
+		// Get Part 5 data
+		const part5Offset = this.reader.readU32LE(0x14c);
+		const part5Size = this.reader.readU32LE(0x150);
+		const part5Data = this.firmware.slice(part5Offset, part5Offset + part5Size);
+
 		// Find metadata table
 		const tableStart = this.findMetadataTableInPart5();
 		if (tableStart === null) {
@@ -618,7 +632,7 @@ export class ResourceExtractor {
 		const metadataEntries = this.parseMetadataTable(tableStart);
 
 		// Find ROCK26 table for misalignment detection
-		const rock26Offset = this.reader.find(ROCK26_SIGNATURE);
+		const rock26Offset = findBytes(part5Data, ROCK26_SIGNATURE);
 		if (rock26Offset === -1) {
 			return null;
 		}
@@ -626,6 +640,7 @@ export class ResourceExtractor {
 		// Detect misalignment
 		const { misalignment, firstValidEntry } = this.detectOffsetMisalignment(
 			metadataEntries,
+			part5Data,
 			rock26Offset
 		);
 
@@ -680,11 +695,6 @@ export class ResourceExtractor {
 			return null;
 		}
 
-		// Get Part 5 data
-		const part5Offset = this.reader.readU32LE(0x14c);
-		const part5Size = this.reader.readU32LE(0x150);
-		const part5Data = this.firmware.slice(part5Offset, part5Offset + part5Size);
-
 		// Calculate size and read data
 		const rawSize = width * height * 2;
 		if (offset + rawSize > part5Data.length) {
@@ -701,6 +711,11 @@ export class ResourceExtractor {
 	 * @returns True if successful, false otherwise
 	 */
 	replaceBitmap(filename: string, data: Uint8Array): boolean {
+		// Get Part 5 data
+		const part5Offset = this.reader.readU32LE(0x14c);
+		const part5Size = this.reader.readU32LE(0x150);
+		const part5Data = this.firmware.slice(part5Offset, part5Offset + part5Size);
+
 		// Find metadata table
 		const tableStart = this.findMetadataTableInPart5();
 		if (tableStart === null) {
@@ -711,7 +726,7 @@ export class ResourceExtractor {
 		const metadataEntries = this.parseMetadataTable(tableStart);
 
 		// Find ROCK26 table for misalignment detection
-		const rock26Offset = this.reader.find(ROCK26_SIGNATURE);
+		const rock26Offset = findBytes(part5Data, ROCK26_SIGNATURE);
 		if (rock26Offset === -1) {
 			return false;
 		}
@@ -719,6 +734,7 @@ export class ResourceExtractor {
 		// Detect misalignment
 		const { misalignment, firstValidEntry } = this.detectOffsetMisalignment(
 			metadataEntries,
+			part5Data,
 			rock26Offset
 		);
 
@@ -765,10 +781,6 @@ export class ResourceExtractor {
 		if (!validateBitmapData(data, width, height)) {
 			return false;
 		}
-
-		// Get Part 5 data
-		const part5Offset = this.reader.readU32LE(0x14c);
-		const part5Size = this.reader.readU32LE(0x150);
 
 		// Validate offset is within Part 5
 		if (metadataOffset >= part5Size) {
