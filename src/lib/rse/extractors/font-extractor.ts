@@ -11,7 +11,8 @@ import type {
 	FontPlaneInfo
 } from '../types/index.js';
 import { UNICODE_RANGES } from '../utils/unicode-ranges.js';
-import { createMonoBmp, isValidFontData } from '../utils/bitmap.js';
+import { createMonoBmp, isValidFontData, parseMonoBmp } from '../utils/bitmap.js';
+import { encodeV8, validateFontData } from '../utils/font-encoder.js';
 import { fileIO } from '../utils/file-io.js';
 
 // Constants
@@ -381,5 +382,137 @@ export class FontExtractor {
 		}
 
 		return planes;
+	}
+
+	/**
+	 * Read raw font data for a Unicode character
+	 * @param unicode - Unicode code point
+	 * @param fontType - "SMALL" or "LARGE"
+	 * @returns Raw font data or null if not found
+	 */
+	readFont(unicode: number, fontType: 'SMALL' | 'LARGE'): Uint8Array | null {
+		const stride = fontType === 'SMALL' ? this.SMALL_STRIDE : this.LARGE_STRIDE;
+		const addrFunc =
+			fontType === 'SMALL' ? this.unicodeToSmallAddr.bind(this) : this.unicodeToLargeAddr.bind(this);
+
+		const addr = addrFunc(unicode);
+		if (addr < 0 || addr + stride > this.firmware.length) {
+			return null;
+		}
+
+		return this.firmware.slice(addr, addr + stride);
+	}
+
+	/**
+	 * Read font data as pixel array for a Unicode character
+	 * @param unicode - Unicode code point
+	 * @param fontType - "SMALL" or "LARGE"
+	 * @returns Pixel data or null if not found/invalid
+	 */
+	readFontAsPixels(unicode: number, fontType: 'SMALL' | 'LARGE'): PixelData | null {
+		const chunk = this.readFont(unicode, fontType);
+		if (!chunk) return null;
+
+		if (this.isDataEmpty(chunk)) return null;
+
+		try {
+			const lookupVal = this.getLookup(unicode);
+			const pixels = this.decodeV8(chunk, lookupVal);
+
+			if (pixels.length !== 16 || !isValidFontData(pixels, fontType)) {
+				return null;
+			}
+
+			return pixels;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Replace font data for a Unicode character
+	 * @param unicode - Unicode code point
+	 * @param fontType - "SMALL" or "LARGE"
+	 * @param data - Raw font data (must match stride size)
+	 * @returns True if successful, false otherwise
+	 */
+	replaceFont(unicode: number, fontType: 'SMALL' | 'LARGE', data: Uint8Array): boolean {
+		const stride = fontType === 'SMALL' ? this.SMALL_STRIDE : this.LARGE_STRIDE;
+		const addrFunc =
+			fontType === 'SMALL' ? this.unicodeToSmallAddr.bind(this) : this.unicodeToLargeAddr.bind(this);
+
+		// Validate data
+		if (!validateFontData(data, stride)) {
+			return false;
+		}
+
+		const addr = addrFunc(unicode);
+		if (addr < 0 || addr + stride > this.firmware.length) {
+			return false;
+		}
+
+		// Write data to firmware (mutates the original array)
+		this.firmware.set(data, addr);
+		return true;
+	}
+
+	/**
+	 * Replace font data from pixel array
+	 * @param unicode - Unicode code point
+	 * @param fontType - "SMALL" or "LARGE"
+	 * @param pixels - Pixel data (16 rows x 15 columns)
+	 * @returns True if successful, false otherwise
+	 */
+	replaceFontFromPixels(unicode: number, fontType: 'SMALL' | 'LARGE', pixels: PixelData): boolean {
+		// Validate pixel data
+		if (pixels.length !== 16) {
+			return false;
+		}
+		for (const row of pixels) {
+			if (row.length !== 15) {
+				return false;
+			}
+		}
+
+		// Validate with font type
+		if (!isValidFontData(pixels, fontType)) {
+			return false;
+		}
+
+		// Get lookup value for encoding
+		const lookupVal = this.getLookup(unicode);
+
+		// Encode pixels to font data
+		try {
+			const data = encodeV8(pixels, lookupVal);
+			return this.replaceFont(unicode, fontType, data);
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Replace font data from BMP file data
+	 * @param unicode - Unicode code point
+	 * @param fontType - "SMALL" or "LARGE"
+	 * @param bmpData - BMP file data (monochrome, 15x16)
+	 * @returns True if successful, false otherwise
+	 */
+	replaceFontFromBmp(unicode: number, fontType: 'SMALL' | 'LARGE', bmpData: Uint8Array): boolean {
+		// Parse BMP to pixels
+		const pixels = parseMonoBmp(bmpData);
+		if (!pixels) {
+			return false;
+		}
+
+		return this.replaceFontFromPixels(unicode, fontType, pixels);
+	}
+
+	/**
+	 * Get firmware data with modifications
+	 * @returns Modified firmware data
+	 */
+	getFirmwareData(): Uint8Array {
+		return this.firmware;
 	}
 }

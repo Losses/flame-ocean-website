@@ -11,8 +11,9 @@ import type {
 	BitmapFileInfo
 } from '../types/index.js';
 import { BinaryReader, findBytes } from '../utils/struct.js';
-import { convertToBmp } from '../utils/bitmap.js';
+import { convertToBmp, bmpToRgb565 } from '../utils/bitmap.js';
 import { sanitizeFilename } from '../utils/bytes.js';
+import { validateBitmapData } from '../utils/font-encoder.js';
 import { fileIO, type FileInput } from '../utils/file-io.js';
 
 // Constants
@@ -599,5 +600,216 @@ export class ResourceExtractor {
 		}
 
 		return files;
+	}
+
+	/**
+	 * Read raw bitmap data (RGB565 format) for a bitmap file
+	 * @param filename - Bitmap filename (e.g., "POWERON1.BMP")
+	 * @returns Raw RGB565 bitmap data or null if not found
+	 */
+	readBitmap(filename: string): Uint8Array | null {
+		// Find metadata table
+		const tableStart = this.findMetadataTableInPart5();
+		if (tableStart === null) {
+			return null;
+		}
+
+		// Parse metadata table
+		const metadataEntries = this.parseMetadataTable(tableStart);
+
+		// Find ROCK26 table for misalignment detection
+		const rock26Offset = this.reader.find(ROCK26_SIGNATURE);
+		if (rock26Offset === -1) {
+			return null;
+		}
+
+		// Detect misalignment
+		const { misalignment, firstValidEntry } = this.detectOffsetMisalignment(
+			metadataEntries,
+			rock26Offset
+		);
+
+		// Find the entry by filename
+		const targetIndex = metadataEntries.findIndex((e) => e.name === filename);
+		if (targetIndex === -1) {
+			return null;
+		}
+
+		// Check if index is in valid range
+		const startIndex = firstValidEntry;
+		const endIndex = metadataEntries.length - (misalignment > 0 ? 1 : 0);
+
+		if (targetIndex < startIndex || targetIndex >= endIndex) {
+			return null;
+		}
+
+		// Get the actual offset (considering misalignment)
+		let offset: number;
+		if (misalignment > 0) {
+			const targetIndexAdjusted = targetIndex + misalignment;
+			if (targetIndexAdjusted >= metadataEntries.length) return null;
+			offset = metadataEntries[targetIndexAdjusted].offset;
+		} else if (misalignment < 0) {
+			const targetIndexAdjusted = targetIndex + misalignment;
+			if (targetIndexAdjusted < 0) return null;
+			offset = metadataEntries[targetIndexAdjusted].offset;
+		} else {
+			offset = metadataEntries[targetIndex].offset;
+		}
+
+		// Get width/height from next entry
+		let width: number;
+		let height: number;
+		if (targetIndex + 1 < metadataEntries.length) {
+			width = metadataEntries[targetIndex + 1].width;
+			height = metadataEntries[targetIndex + 1].height;
+		} else {
+			width = metadataEntries[targetIndex].width;
+			height = metadataEntries[targetIndex].height;
+		}
+
+		// Validate dimensions
+		if (
+			offset === 0 ||
+			offset >= this.firmware.length ||
+			width <= 0 ||
+			height <= 0 ||
+			width > 10000 ||
+			height > 10000
+		) {
+			return null;
+		}
+
+		// Get Part 5 data
+		const part5Offset = this.reader.readU32LE(0x14c);
+		const part5Size = this.reader.readU32LE(0x150);
+		const part5Data = this.firmware.slice(part5Offset, part5Offset + part5Size);
+
+		// Calculate size and read data
+		const rawSize = width * height * 2;
+		if (offset + rawSize > part5Data.length) {
+			return null;
+		}
+
+		return part5Data.slice(offset, offset + rawSize);
+	}
+
+	/**
+	 * Replace bitmap data for a bitmap file
+	 * @param filename - Bitmap filename (e.g., "POWERON1.BMP")
+	 * @param data - Raw RGB565 bitmap data
+	 * @returns True if successful, false otherwise
+	 */
+	replaceBitmap(filename: string, data: Uint8Array): boolean {
+		// Find metadata table
+		const tableStart = this.findMetadataTableInPart5();
+		if (tableStart === null) {
+			return false;
+		}
+
+		// Parse metadata table
+		const metadataEntries = this.parseMetadataTable(tableStart);
+
+		// Find ROCK26 table for misalignment detection
+		const rock26Offset = this.reader.find(ROCK26_SIGNATURE);
+		if (rock26Offset === -1) {
+			return false;
+		}
+
+		// Detect misalignment
+		const { misalignment, firstValidEntry } = this.detectOffsetMisalignment(
+			metadataEntries,
+			rock26Offset
+		);
+
+		// Find the entry by filename
+		const targetIndex = metadataEntries.findIndex((e) => e.name === filename);
+		if (targetIndex === -1) {
+			return false;
+		}
+
+		// Check if index is in valid range
+		const startIndex = firstValidEntry;
+		const endIndex = metadataEntries.length - (misalignment > 0 ? 1 : 0);
+
+		if (targetIndex < startIndex || targetIndex >= endIndex) {
+			return false;
+		}
+
+		// Get the actual offset (considering misalignment)
+		let metadataOffset: number;
+		if (misalignment > 0) {
+			const targetIndexAdjusted = targetIndex + misalignment;
+			if (targetIndexAdjusted >= metadataEntries.length) return false;
+			metadataOffset = metadataEntries[targetIndexAdjusted].offset;
+		} else if (misalignment < 0) {
+			const targetIndexAdjusted = targetIndex + misalignment;
+			if (targetIndexAdjusted < 0) return false;
+			metadataOffset = metadataEntries[targetIndexAdjusted].offset;
+		} else {
+			metadataOffset = metadataEntries[targetIndex].offset;
+		}
+
+		// Get width/height from next entry
+		let width: number;
+		let height: number;
+		if (targetIndex + 1 < metadataEntries.length) {
+			width = metadataEntries[targetIndex + 1].width;
+			height = metadataEntries[targetIndex + 1].height;
+		} else {
+			width = metadataEntries[targetIndex].width;
+			height = metadataEntries[targetIndex].height;
+		}
+
+		// Validate data
+		if (!validateBitmapData(data, width, height)) {
+			return false;
+		}
+
+		// Get Part 5 data
+		const part5Offset = this.reader.readU32LE(0x14c);
+		const part5Size = this.reader.readU32LE(0x150);
+
+		// Validate offset is within Part 5
+		if (metadataOffset >= part5Size) {
+			return false;
+		}
+
+		// Calculate actual offset in firmware
+		const actualOffset = part5Offset + metadataOffset;
+		const rawSize = width * height * 2;
+
+		// Validate bounds
+		if (actualOffset + rawSize > this.firmware.length) {
+			return false;
+		}
+
+		// Write data to firmware (mutates the original array)
+		this.firmware.set(data, actualOffset);
+		return true;
+	}
+
+	/**
+	 * Replace bitmap data from BMP file
+	 * @param filename - Bitmap filename (e.g., "POWERON1.BMP")
+	 * @param bmpData - BMP file data (RGB565 format)
+	 * @returns True if successful, false otherwise
+	 */
+	replaceBitmapFromBmp(filename: string, bmpData: Uint8Array): boolean {
+		// Convert BMP to RGB565
+		const rawData = bmpToRgb565(bmpData);
+		if (!rawData) {
+			return false;
+		}
+
+		return this.replaceBitmap(filename, rawData);
+	}
+
+	/**
+	 * Get firmware data with modifications
+	 * @returns Modified firmware data
+	 */
+	getFirmwareData(): Uint8Array {
+		return this.firmware;
 	}
 }

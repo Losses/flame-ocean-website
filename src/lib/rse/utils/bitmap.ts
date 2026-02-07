@@ -2,7 +2,7 @@
  * Bitmap conversion utilities (RGB565 to BMP)
  */
 
-import { restrideToBmp, createBmpHeader, sanitizeFilename } from './bytes.js';
+import { restrideToBmp, createBmpHeader } from './bytes.js';
 import { swapBytes16Bit } from './bytes.js';
 import type { PixelData } from '../types/index.js';
 
@@ -164,4 +164,112 @@ export function isValidFontData(pixels: PixelData, fontType: 'LARGE' | 'SMALL'):
 	} else {
 		return ratio > 0.01 && ratio < 0.95;
 	}
+}
+
+/**
+ * Parse monochrome BMP to pixel data
+ * @param bmpData - BMP file data
+ * @returns Pixel data or null if invalid
+ */
+export function parseMonoBmp(bmpData: Uint8Array): PixelData | null {
+	if (bmpData.length < 62) return null;
+
+	// Check 'BM' signature
+	if (bmpData[0] !== 0x42 || bmpData[1] !== 0x4d) return null;
+
+	// Read header using DataView
+	const view = new DataView(bmpData.buffer, bmpData.byteOffset, bmpData.byteLength);
+
+	// Get pixel data offset
+	const pixelDataOffset = view.getUint32(10, true);
+
+	// Get dimensions
+	const width = view.getInt32(18, true);
+	const height = Math.abs(view.getInt32(22, true));
+	const bitsPerPixel = view.getUint16(28, true);
+
+	// Validate format (1-bit monochrome)
+	if (bitsPerPixel !== 1) return null;
+	if (width <= 0 || height <= 0 || width > 100 || height !== 16) return null;
+
+	const pixels: PixelData = [];
+	const rowBytes = ((width + 31) >> 5) << 2; // ((width + 31) / 32) * 4
+
+	// Read pixel data (bottom-up)
+	for (let y = height - 1; y >= 0; y--) {
+		const rowOffset = pixelDataOffset + y * rowBytes;
+		const row: boolean[] = [];
+
+		for (let x = 0; x < width; x++) {
+			const byteIndex = Math.floor(x / 8);
+			const bitIndex = 7 - (x % 8);
+			const byteValue = bmpData[rowOffset + byteIndex];
+			const pixel = ((byteValue >> bitIndex) & 1) === 1;
+			row.push(pixel);
+		}
+
+		pixels.push(row);
+	}
+
+	return pixels;
+}
+
+/**
+ * Convert BMP to raw RGB565 data
+ * @param bmpData - BMP file data
+ * @returns Raw RGB565 data or null if invalid
+ */
+export function bmpToRgb565(bmpData: Uint8Array): Uint8Array | null {
+	if (bmpData.length < 62) return null;
+
+	// Check 'BM' signature
+	if (bmpData[0] !== 0x42 || bmpData[1] !== 0x4d) return null;
+
+	const view = new DataView(bmpData.buffer, bmpData.byteOffset, bmpData.byteLength);
+
+	// Get pixel data offset
+	const pixelDataOffset = view.getUint32(10, true);
+
+	// Get dimensions
+	const width = view.getUint32(18, true);
+	const height = Math.abs(view.getInt32(22, true));
+	const bitsPerPixel = view.getUint16(28, true);
+
+	// Validate format (16-bit RGB565 with BI_BITFIELDS)
+	if (bitsPerPixel !== 16) return null;
+	if (width <= 0 || height <= 0 || width > 10000 || height > 10000) return null;
+
+	// Check compression (should be BI_BITFIELDS = 3)
+	const compression = view.getUint32(30, true);
+	if (compression !== 3) return null;
+
+	const srcStride = width * 2;
+	const { srcStride: actualStride } = getStrideInfoFromBmp(width);
+
+	// Read pixel data
+	const pixelData = bmpData.slice(pixelDataOffset);
+	const rawData = new Uint8Array(width * height * 2);
+
+	for (let y = 0; y < height; y++) {
+		const srcStart = y * actualStride;
+		const dstStart = y * srcStride;
+
+		// Copy row data and apply byte swap (BMP is LE, firmware is BE)
+		for (let x = 0; x < srcStride; x += 2) {
+			rawData[dstStart + x] = pixelData[srcStart + x + 1];
+			rawData[dstStart + x + 1] = pixelData[srcStart + x];
+		}
+	}
+
+	return rawData;
+}
+
+/**
+ * Get stride info from BMP width
+ */
+function getStrideInfoFromBmp(width: number): { srcStride: number; padding: number } {
+	const srcStride = width * 2;
+	const dstStride = (srcStride + 3) & ~3;
+	const padding = dstStride - srcStride;
+	return { srcStride, padding };
 }
