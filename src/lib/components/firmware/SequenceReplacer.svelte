@@ -331,30 +331,6 @@
     isFromVideo = false;
   }
 
-  function nextImage() {
-    if (!selectedGroup) return;
-    const idx = selectedGroup.images.findIndex(
-      (img) => img.name === selectedImage?.name,
-    );
-    if (idx < selectedGroup.images.length - 1) {
-      selectedImageId = `file-${selectedGroup.prefix}-${idx + 1}`;
-      currentSourceIndex = idx + 1;
-      updatePreview();
-    }
-  }
-
-  function prevImage() {
-    if (!selectedGroup) return;
-    const idx = selectedGroup.images.findIndex(
-      (img) => img.name === selectedImage?.name,
-    );
-    if (idx > 0) {
-      selectedImageId = `file-${selectedGroup.prefix}-${idx - 1}`;
-      currentSourceIndex = idx - 1;
-      updatePreview();
-    }
-  }
-
   function apply() {
     if (!selectedGroup) return;
 
@@ -511,31 +487,6 @@
               </div>
             </div>
 
-            {#if isFromVideo && sourceFiles.length > 0}
-              <div class="navigation">
-                <button onclick={prevImage} disabled={currentSourceIndex === 0}>
-                  &lt; Prev
-                </button>
-                <span class="position">
-                  {currentSourceIndex + 1} / {selectedGroup?.images.length || 0}
-                </span>
-                <button
-                  onclick={nextImage}
-                  disabled={currentSourceIndex >=
-                    (selectedGroup?.images.length || 0) - 1}
-                >
-                  Next &gt;
-                </button>
-              </div>
-            {/if}
-
-            {#if (isFromVideo && sourceFiles.length > 0) || (!isFromVideo && sourceFileMap.size > 0)}
-              <div class="mapping-status">
-                {isFromVideo
-                  ? `Frames: ${sourceFiles.length} / ${selectedGroup?.images.length || 0}`
-                  : `Matched by filename: ${sourceFileMap.size} / ${selectedGroup?.images.length || 0}`}
-              </div>
-            {/if}
           {/if}
         </div>
       </div>
@@ -889,24 +840,6 @@
     max-height: 200px;
     image-rendering: pixelated;
     object-fit: contain;
-  }
-
-  .navigation {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .navigation button {
-    min-width: 60px;
-    height: 24px;
-    font-size: 11px;
-  }
-
-  .position {
-    min-width: 60px;
-    text-align: center;
   }
 
   .mapping-status {
