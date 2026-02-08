@@ -30,6 +30,8 @@
 
   // Source file state
   let sourceFiles = $state<File[]>([]);
+  let sourceFileMap = $state<Map<string, File>>(new Map()); // target name → source file (for images)
+  let isFromVideo = $state(false); // Track if sourceFiles came from video extraction
   let isDragOver = $state(false);
   let isExtracting = $state(false);
   let previewUrl = $state<string | null>(null);
@@ -170,6 +172,9 @@
 
       // Load target image from firmware
       await loadTargetImage(group.images[0]);
+
+      // Clear sources when switching groups (mappings would be invalid)
+      clearSources();
     }
     cleanupPreview();
     updatePreview();
@@ -215,7 +220,10 @@
     const videoFile = files.find((f) => f.type.startsWith("video/"));
 
     if (videoFile) {
+      // VIDEO: Extract frames and use index-based matching
       isExtracting = true;
+      isFromVideo = true;
+      sourceFileMap.clear();
       try {
         const frames = await extractFrames(
           videoFile,
@@ -232,7 +240,28 @@
         isExtracting = false;
       }
     } else {
-      sourceFiles = files;
+      // IMAGES: Match by exact filename (with flexible extension)
+      isFromVideo = false;
+      sourceFiles = []; // Clear array-based source
+      sourceFileMap.clear();
+
+      if (selectedGroup) {
+        // Create a map of dropped files by base filename (without extension)
+        const droppedFileMap = new Map<string, File>();
+        for (const file of files) {
+          const baseName = file.name.replace(/\.[^.]+$/, ''); // Remove extension
+          droppedFileMap.set(baseName, file);
+        }
+
+        // Match target images with dropped files by exact filename
+        for (const targetImg of selectedGroup.images) {
+          const targetBaseName = targetImg.name.replace(/\.[^.]+$/, '');
+          const matchedFile = droppedFileMap.get(targetBaseName);
+          if (matchedFile) {
+            sourceFileMap.set(targetImg.name, matchedFile);
+          }
+        }
+      }
     }
     updatePreview();
   }
@@ -272,9 +301,20 @@
 
   function updatePreview() {
     cleanupPreview();
-    if (sourceFiles[currentSourceIndex]) {
-      const file = sourceFiles[currentSourceIndex];
-      previewUrl = URL.createObjectURL(file);
+    let sourceFile: File | undefined;
+
+    if (isFromVideo) {
+      // Video mode: Use index-based array
+      sourceFile = sourceFiles[currentSourceIndex];
+    } else {
+      // Image mode: Look up by target image name
+      if (selectedImage) {
+        sourceFile = sourceFileMap.get(selectedImage.name);
+      }
+    }
+
+    if (sourceFile) {
+      previewUrl = URL.createObjectURL(sourceFile);
     }
   }
 
@@ -283,6 +323,12 @@
       URL.revokeObjectURL(previewUrl);
       previewUrl = null;
     }
+  }
+
+  function clearSources() {
+    sourceFiles = [];
+    sourceFileMap.clear();
+    isFromVideo = false;
   }
 
   function nextImage() {
@@ -310,18 +356,37 @@
   }
 
   function apply() {
-    if (!selectedGroup || sourceFiles.length === 0) return;
+    if (!selectedGroup) return;
 
     const mappings: { target: BitmapFileInfo; source: File }[] = [];
-    for (
-      let i = 0;
-      i < selectedGroup.images.length && i < sourceFiles.length;
-      i++
-    ) {
-      mappings.push({
-        target: selectedGroup.images[i],
-        source: sourceFiles[i],
-      });
+
+    if (isFromVideo) {
+      // Video mode: Index-based matching for extracted frames
+      if (sourceFiles.length === 0) return;
+
+      for (
+        let i = 0;
+        i < selectedGroup.images.length && i < sourceFiles.length;
+        i++
+      ) {
+        mappings.push({
+          target: selectedGroup.images[i],
+          source: sourceFiles[i],
+        });
+      }
+    } else {
+      // Image mode: Filename-based matching only
+      if (sourceFileMap.size === 0) return;
+
+      for (const targetImg of selectedGroup.images) {
+        const sourceFile = sourceFileMap.get(targetImg.name);
+        if (sourceFile) {
+          mappings.push({
+            target: targetImg,
+            source: sourceFile,
+          });
+        }
+      }
     }
 
     if (mappings.length > 0) {
@@ -339,7 +404,7 @@
 <div class="sequence-replacer">
   <div class="header">
     <h3>Replace Image Sequence</h3>
-    <p>Select a group, then load replacement files (or drop a video)</p>
+    <p>Select a group, then load replacement files with matching filenames (or drop a video)</p>
   </div>
 
   <div class="content">
@@ -396,17 +461,24 @@
           {:else if !selectedImage}
             <div class="empty-msg">Select an image to replace</div>
           {:else}
-            {#if sourceFiles.length > 0}
+            {#if (isFromVideo && sourceFiles.length > 0) || (!isFromVideo && sourceFileMap.size > 0)}
               <div class="source-info">
                 <span class="label">Source:</span>
                 <span class="value"
-                  >{sourceFiles[currentSourceIndex]?.name || "--"}</span
+                  >{isFromVideo
+                    ? sourceFiles[currentSourceIndex]?.name || "--"
+                    : (sourceFileMap.get(selectedImage?.name || "")?.name || "--")}</span
                 >
                 <span class="size"
-                  >{sourceFiles[currentSourceIndex]
-                    ? (sourceFiles[currentSourceIndex].size / 1024).toFixed(1) +
-                      " KB"
-                    : "--"}</span
+                  >{isFromVideo
+                    ? (sourceFiles[currentSourceIndex]
+                      ? (sourceFiles[currentSourceIndex].size / 1024).toFixed(1) +
+                        " KB"
+                      : "--")
+                    : (sourceFileMap.get(selectedImage?.name || "")
+                      ? (sourceFileMap.get(selectedImage?.name || "")!.size / 1024).toFixed(1) +
+                        " KB"
+                      : "--")}</span
                 >
               </div>
             {/if}
@@ -439,7 +511,7 @@
               </div>
               <div class="preview-column after-column">
                 <div class="preview-label">After</div>
-                {#if sourceFiles.length > 0 && previewUrl}
+                {#if ((isFromVideo && sourceFiles.length > 0) || (!isFromVideo && sourceFileMap.get(selectedImage?.name || ""))) && previewUrl}
                   <img src={previewUrl} alt="Preview" />
                 {:else}
                   <div class="preview-placeholder">Drop replacement images</div>
@@ -447,7 +519,7 @@
               </div>
             </div>
 
-            {#if sourceFiles.length > 0}
+            {#if isFromVideo && sourceFiles.length > 0}
               <div class="navigation">
                 <button onclick={prevImage} disabled={currentSourceIndex === 0}>
                   &lt; Prev
@@ -463,12 +535,13 @@
                   Next &gt;
                 </button>
               </div>
+            {/if}
 
+            {#if (isFromVideo && sourceFiles.length > 0) || (!isFromVideo && sourceFileMap.size > 0)}
               <div class="mapping-status">
-                Mapped: {Math.min(
-                  sourceFiles.length,
-                  selectedGroup?.images.length || 0,
-                )} / {selectedGroup?.images.length || 0}
+                {isFromVideo
+                  ? `Frames: ${sourceFiles.length} / ${selectedGroup?.images.length || 0}`
+                  : `Matched by filename: ${sourceFileMap.size} / ${selectedGroup?.images.length || 0}`}
               </div>
             {/if}
           {/if}
@@ -511,7 +584,7 @@
               alt="Folder"
               class="folder-icon"
             />
-            <div class="drop-text">Drop images or video here</div>
+            <div class="drop-text">Drop images (same name) or video here</div>
           </div>
         </div>
       </div>
@@ -523,10 +596,10 @@
       <button onclick={onCancel}>Cancel</button>
       <button
         onclick={apply}
-        disabled={!selectedGroup || sourceFiles.length === 0}
+        disabled={!selectedGroup || ((isFromVideo && sourceFiles.length === 0) || (!isFromVideo && sourceFileMap.size === 0))}
         class="primary"
       >
-        Apply ({selectedGroup?.images.length || 0} images)
+        Apply ({isFromVideo ? Math.min(sourceFiles.length, selectedGroup?.images.length || 0) : sourceFileMap.size} images)
       </button>
     </div>
   </div>
