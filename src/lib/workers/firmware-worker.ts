@@ -12,7 +12,8 @@ import {
 	ROCK26_SIGNATURE
 } from '../rse/utils/metadata.js';
 import { validateBitmapData } from '../rse/utils/font-encoder.js';
-import { convertToBmp } from '../rse/utils/bitmap.js';
+import { convertToBmp, isValidFontData } from '../rse/utils/bitmap.js';
+import { decodeV8, isDataEmpty, sliceSmallFontPixels } from '../rse/utils/font-decoder.js';
 import JSZip from 'jszip';
 
 // Constants
@@ -151,78 +152,6 @@ function findBytes(data: Uint8Array, pattern: Uint8Array, startOffset = 0): numb
 		if (found) return i;
 	}
 	return -1;
-}
-
-// Font decoding
-function decodeV8(chunk: Uint8Array, lookupVal: number): boolean[][] {
-	const configByte = lookupVal & 0xff;
-	const swMcuBits = (configByte >> 3) & 1;
-	const swMcuHwSwap = (configByte >> 4) & 1;
-	const swMcuByteSwap = (configByte >> 5) & 1;
-
-	const pixels: boolean[][] = [];
-
-	for (let i = 0; i < chunk.length - 1; i += 2) {
-		const b0 = chunk[i];
-		const b1 = chunk[i + 1];
-
-		let finalPixel: number;
-
-		if (swMcuBits === 1) {
-			let val = (b1 << 8) | b0;
-			if (swMcuByteSwap === 1) {
-				val = ((val & 0xff) << 8) | ((val >> 8) & 0xff);
-			}
-			finalPixel = val;
-		} else {
-			let cycle1: number;
-			let cycle2: number;
-
-			if (swMcuHwSwap === swMcuByteSwap) {
-				cycle1 = b1;
-				cycle2 = b0;
-			} else {
-				cycle1 = b0;
-				cycle2 = b1;
-			}
-
-			if (swMcuByteSwap === 1) {
-				[cycle1, cycle2] = [cycle2, cycle1];
-			}
-
-			if (swMcuHwSwap === 1) {
-				[cycle1, cycle2] = [cycle2, cycle1];
-			}
-
-			finalPixel = cycle2 | (cycle1 << 8);
-		}
-
-		if (!(swMcuBits === 1 && swMcuByteSwap === 1)) {
-			finalPixel = ((finalPixel & 0xff) << 8) | ((finalPixel >> 8) & 0xff);
-		}
-
-		const rowBits: boolean[] = [];
-		for (let bit = 15; bit > 0; bit--) {
-			rowBits.push(((finalPixel >> bit) & 1) === 1);
-		}
-		pixels.push(rowBits);
-	}
-
-	return pixels;
-}
-
-function isValidFontData(pixels: boolean[][], fontType: 'LARGE' | 'SMALL'): boolean {
-	const total = pixels.reduce((sum, row) => sum + row.length, 0);
-	if (total === 0) return false;
-
-	const filled = pixels.reduce((sum, row) => sum + row.filter((p) => p).length, 0);
-	const ratio = filled / total;
-
-	if (fontType === 'LARGE') {
-		return ratio > 0.01 && ratio < 0.97;
-	} else {
-		return ratio > 0.01 && ratio < 0.95;
-	}
 }
 
 /**
@@ -571,7 +500,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 						if (addr + SMALL_STRIDE > firmwareData.length) continue;
 
 						const chunk = firmwareData.slice(addr, addr + SMALL_STRIDE);
-						if (chunk.every((b) => b === chunk[0])) continue;
+						if (isDataEmpty(chunk)) continue;
 
 						try {
 							const lookupVal = firmwareData[LOOKUP_TABLE + (uni >> 3)];
@@ -590,7 +519,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 						if (addr + LARGE_STRIDE > firmwareData.length) continue;
 
 						const chunk = firmwareData.slice(addr, addr + LARGE_STRIDE);
-						if (chunk.every((b) => b === chunk[0])) continue;
+						if (isDataEmpty(chunk)) continue;
 
 						try {
 							const lookupVal = firmwareData[LOOKUP_TABLE + (uni >> 3)];
@@ -645,13 +574,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 						if (addr + SMALL_STRIDE > firmwareData.length) continue;
 
 						const chunk = firmwareData.slice(addr, addr + SMALL_STRIDE);
-						if (chunk.every((b) => b === chunk[0])) continue;
+						if (isDataEmpty(chunk)) continue;
 
 						try {
 							const lookupVal = firmwareData[LOOKUP_TABLE + (uni >> 3)];
 							const pixels = decodeV8(chunk, lookupVal);
 							if (pixels.length === 16 && isValidFontData(pixels, 'SMALL')) {
-								fonts.push({ unicode: uni, fontType: 'SMALL', pixels });
+								// Slice to SMALL_FONT_SIZE x SMALL_FONT_SIZE for SMALL fonts
+								fonts.push({ unicode: uni, fontType: 'SMALL', pixels: sliceSmallFontPixels(pixels) });
 							}
 						} catch {
 							continue;
@@ -664,7 +594,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 						if (addr + LARGE_STRIDE > firmwareData.length) continue;
 
 						const chunk = firmwareData.slice(addr, addr + LARGE_STRIDE);
-						if (chunk.every((b) => b === chunk[0])) continue;
+						if (isDataEmpty(chunk)) continue;
 
 						try {
 							const lookupVal = firmwareData[LOOKUP_TABLE + (uni >> 3)];

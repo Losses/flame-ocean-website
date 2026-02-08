@@ -13,6 +13,7 @@ import type {
 import { UNICODE_RANGES } from '../utils/unicode-ranges.js';
 import { createMonoBmp, isValidFontData, parseMonoBmp } from '../utils/bitmap.js';
 import { encodeV8, validateFontData } from '../utils/font-encoder.js';
+import { decodeV8, isDataEmpty, sliceSmallFontPixels, SMALL_FONT_SIZE } from '../utils/font-decoder.js';
 import { fileIO } from '../utils/file-io.js';
 
 // Constants
@@ -66,68 +67,6 @@ export class FontExtractor {
 		return this.firmware[this.LOOKUP_TABLE + (unicodeVal >> 3)];
 	}
 
-	/**
-	 * Decode font data chunk using v8 algorithm
-	 * @param chunk - Raw font data
-	 * @param lookupVal - Lookup table value
-	 * @returns Decoded pixel data
-	 */
-	decodeV8(chunk: Uint8Array, lookupVal: number): PixelData {
-		const configByte = lookupVal & 0xff;
-		const swMcuBits = (configByte >> 3) & 1;
-		const swMcuHwSwap = (configByte >> 4) & 1;
-		const swMcuByteSwap = (configByte >> 5) & 1;
-
-		const pixels: boolean[][] = [];
-
-		for (let i = 0; i < chunk.length - 1; i += 2) {
-			const b0 = chunk[i];
-			const b1 = chunk[i + 1];
-
-			let finalPixel: number;
-
-			if (swMcuBits === 1) {
-				let val = (b1 << 8) | b0;
-				if (swMcuByteSwap === 1) {
-					val = ((val & 0xff) << 8) | ((val >> 8) & 0xff);
-				}
-				finalPixel = val;
-			} else {
-				let cycle1: number;
-				let cycle2: number;
-
-				if (swMcuHwSwap === swMcuByteSwap) {
-					cycle1 = b1;
-					cycle2 = b0;
-				} else {
-					cycle1 = b0;
-					cycle2 = b1;
-				}
-
-				if (swMcuByteSwap === 1) {
-					[cycle1, cycle2] = [cycle2, cycle1];
-				}
-
-				if (swMcuHwSwap === 1) {
-					[cycle1, cycle2] = [cycle2, cycle1];
-				}
-
-				finalPixel = cycle2 | (cycle1 << 8);
-			}
-
-			if (!(swMcuBits === 1 && swMcuByteSwap === 1)) {
-				finalPixel = ((finalPixel & 0xff) << 8) | ((finalPixel >> 8) & 0xff);
-			}
-
-			const rowBits: boolean[] = [];
-			for (let bit = 15; bit >= 0; bit--) {
-				rowBits.push(((finalPixel >> bit) & 1) === 1);
-			}
-			pixels.push(rowBits);
-		}
-
-		return pixels;
-	}
 
 	/**
 	 * Extract font range
@@ -165,13 +104,13 @@ export class FontExtractor {
 			const chunk = this.firmware.slice(addr, addr + stride);
 
 			// Skip empty data
-			if (this.isDataEmpty(chunk)) {
+			if (isDataEmpty(chunk)) {
 				continue;
 			}
 
 			try {
 				const lookupVal = this.getLookup(uni);
-				let pixels = this.decodeV8(chunk, lookupVal);
+				let pixels = decodeV8(chunk, lookupVal);
 
 				if (pixels.length !== 16) {
 					continue;
@@ -184,10 +123,10 @@ export class FontExtractor {
 				const header = lookupVal & 0xff;
 				const name = `0x${addr.toString(16).padStart(6, '0')}_H${header.toString(16).padStart(2, '0')}_U+${uni.toString(16).padStart(4, '0').toUpperCase()}.bmp`;
 
-				// For SMALL fonts, only extract the top-left 10x10 pixels
+				// For SMALL fonts, only extract the top-left SMALL_FONT_SIZE x SMALL_FONT_SIZE pixels
 				if (fontType === 'SMALL') {
-					pixels = pixels.slice(0, 10).map((row) => row.slice(0, 10));
-					this.writeBmp(`${outputDir}/${fontType}/${rangePrefix}/${name}`, pixels, 10, 10);
+					pixels = pixels.slice(0, SMALL_FONT_SIZE).map((row) => row.slice(0, SMALL_FONT_SIZE));
+					this.writeBmp(`${outputDir}/${fontType}/${rangePrefix}/${name}`, pixels, SMALL_FONT_SIZE, SMALL_FONT_SIZE);
 				} else {
 					this.writeBmp(`${outputDir}/${fontType}/${rangePrefix}/${name}`, pixels, 16, 16);
 				}
@@ -203,15 +142,6 @@ export class FontExtractor {
 
 		console.log(`  ${fontType} ${rangePrefix}: ${count} extracted`);
 		return count;
-	}
-
-	/**
-	 * Check if data is all zeros or all 0xFF
-	 */
-	private isDataEmpty(data: Uint8Array): boolean {
-		if (data.length === 0) return true;
-		const first = data[0];
-		return data.every((b) => b === first);
 	}
 
 	/**
@@ -292,13 +222,13 @@ export class FontExtractor {
 
 					const chunk = this.firmware.slice(addr, addr + stride);
 
-					if (this.isDataEmpty(chunk)) {
+					if (isDataEmpty(chunk)) {
 						continue;
 					}
 
 					try {
 						const lookupVal = this.getLookup(uni);
-						let pixels = this.decodeV8(chunk, lookupVal);
+						let pixels = decodeV8(chunk, lookupVal);
 
 						if (pixels.length !== 16 || !isValidFontData(pixels, fontType)) {
 							continue;
@@ -307,10 +237,10 @@ export class FontExtractor {
 						const header = lookupVal & 0xff;
 						const filename = `${fontType}/${name}_U+${uni.toString(16).padStart(4, '0').toUpperCase()}_H${header.toString(16).padStart(2, '0')}.bmp`;
 
-						// For SMALL fonts, only extract the top-left 10x10 pixels
+						// For SMALL fonts, only extract the top-left SMALL_FONT_SIZE x SMALL_FONT_SIZE pixels
 						if (fontType === 'SMALL') {
-							pixels = pixels.slice(0, 10).map((row) => row.slice(0, 10));
-							results.set(filename, createMonoBmp(pixels, 10, 10));
+							pixels = pixels.slice(0, SMALL_FONT_SIZE).map((row) => row.slice(0, SMALL_FONT_SIZE));
+							results.set(filename, createMonoBmp(pixels, SMALL_FONT_SIZE, SMALL_FONT_SIZE));
 						} else {
 							results.set(filename, createMonoBmp(pixels, 16, 16));
 						}
@@ -343,13 +273,13 @@ export class FontExtractor {
 				}
 
 				const chunk = this.firmware.slice(addr, addr + stride);
-				if (this.isDataEmpty(chunk)) {
+				if (isDataEmpty(chunk)) {
 					continue;
 				}
 
 				try {
 					const lookupVal = this.getLookup(uni);
-					const pixels = this.decodeV8(chunk, lookupVal);
+					const pixels = decodeV8(chunk, lookupVal);
 					if (pixels.length === 16 && isValidFontData(pixels, 'SMALL')) {
 						smallCount++;
 					}
@@ -369,13 +299,13 @@ export class FontExtractor {
 				}
 
 				const chunk = this.firmware.slice(addr, addr + stride);
-				if (this.isDataEmpty(chunk)) {
+				if (isDataEmpty(chunk)) {
 					continue;
 				}
 
 				try {
 					const lookupVal = this.getLookup(uni);
-					const pixels = this.decodeV8(chunk, lookupVal);
+					const pixels = decodeV8(chunk, lookupVal);
 					if (pixels.length === 16 && isValidFontData(pixels, 'LARGE')) {
 						largeCount++;
 					}
@@ -424,14 +354,19 @@ export class FontExtractor {
 		const chunk = this.readFont(unicode, fontType);
 		if (!chunk) return null;
 
-		if (this.isDataEmpty(chunk)) return null;
+		if (isDataEmpty(chunk)) return null;
 
 		try {
 			const lookupVal = this.getLookup(unicode);
-			const pixels = this.decodeV8(chunk, lookupVal);
+			let pixels = decodeV8(chunk, lookupVal);
 
 			if (pixels.length !== 16 || !isValidFontData(pixels, fontType)) {
 				return null;
+			}
+
+			// For SMALL fonts, return only the top-left 10x10 pixels
+			if (fontType === 'SMALL') {
+				pixels = sliceSmallFontPixels(pixels);
 			}
 
 			return pixels;
@@ -471,7 +406,7 @@ export class FontExtractor {
 	 * Replace font data from pixel array
 	 * @param unicode - Unicode code point
 	 * @param fontType - "SMALL" or "LARGE"
-	 * @param pixels - Pixel data (10x10 for SMALL, 16x16 for LARGE)
+	 * @param pixels - Pixel data (SMALL_FONT_SIZE x SMALL_FONT_SIZE for SMALL, 16x16 for LARGE)
 	 * @returns True if successful, false otherwise
 	 */
 	replaceFontFromPixels(unicode: number, fontType: 'SMALL' | 'LARGE', pixels: PixelData): boolean {
@@ -479,27 +414,27 @@ export class FontExtractor {
 
 		// Validate and pad pixel data based on font type
 		if (fontType === 'SMALL') {
-			// SMALL fonts: expect 10x10, pad to 16x16 for encoding
-			if (pixels.length !== 10) {
+			// SMALL fonts: expect SMALL_FONT_SIZE x SMALL_FONT_SIZE, pad to 16x16 for encoding
+			if (pixels.length !== SMALL_FONT_SIZE) {
 				return false;
 			}
 			for (const row of pixels) {
-				if (row.length !== 10) {
+				if (row.length !== SMALL_FONT_SIZE) {
 					return false;
 				}
 			}
 
-			// Validate with font type (using 10x10 data)
+			// Validate with font type (using SMALL_FONT_SIZE x SMALL_FONT_SIZE data)
 			if (!isValidFontData(pixels, fontType)) {
 				return false;
 			}
 
-			// Pad 10x10 to 16x16 for encoding (fill with zeros)
+			// Pad SMALL_FONT_SIZE x SMALL_FONT_SIZE to 16x16 for encoding (fill with zeros)
 			pixelsToEncode = [];
 			for (let i = 0; i < 16; i++) {
-				if (i < 10) {
+				if (i < SMALL_FONT_SIZE) {
 					// Pad each row to 16 columns
-					pixelsToEncode.push([...pixels[i], ...new Array(6).fill(false)]);
+					pixelsToEncode.push([...pixels[i], ...new Array(16 - SMALL_FONT_SIZE).fill(false)]);
 				} else {
 					// Add empty rows
 					pixelsToEncode.push(new Array(16).fill(false));
@@ -540,7 +475,7 @@ export class FontExtractor {
 	 * Replace font data from BMP file data
 	 * @param unicode - Unicode code point
 	 * @param fontType - "SMALL" or "LARGE"
-	 * @param bmpData - BMP file data (monochrome, 10x10 for SMALL, 16x16 for LARGE)
+	 * @param bmpData - BMP file data (monochrome, SMALL_FONT_SIZE x SMALL_FONT_SIZE for SMALL, 16x16 for LARGE)
 	 * @returns True if successful, false otherwise
 	 */
 	replaceFontFromBmp(unicode: number, fontType: 'SMALL' | 'LARGE', bmpData: Uint8Array): boolean {

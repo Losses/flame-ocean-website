@@ -15,12 +15,15 @@
 
 	let { fonts, zoom = 10 }: Props = $props();
 
-	const FONT_WIDTH = 15;
-	const FONT_HEIGHT = 16;
+	const LARGE_FONT_SIZE = 16;
 
-	// Calculate item dimensions (reactive)
-	const itemWidth = $derived(FONT_WIDTH * zoom + 20);
-	const itemHeight = $derived(FONT_HEIGHT * zoom + 30);
+	// Get font dimensions with fallback
+	const fontWidth = $derived(fonts[0]?.pixels[0]?.length ?? LARGE_FONT_SIZE);
+	const fontHeight = $derived(fonts[0]?.pixels.length ?? LARGE_FONT_SIZE);
+
+	// Calculate item dimensions (reactive) - uses the actual font dimensions
+	const itemWidth = $derived(fontWidth * zoom + 20);
+	const itemHeight = $derived(fontHeight * zoom + 30);
 	const itemCount = $derived(fonts.length);
 
 	// Container height state
@@ -60,9 +63,11 @@
 			const ctx = canvas.getContext('2d');
 			if (!ctx) return;
 
-			// Set canvas size
-			canvas.width = FONT_WIDTH * zoom;
-			canvas.height = FONT_HEIGHT * zoom;
+			// Set canvas size based on actual font dimensions
+			const fontWidth = font.pixels[0]?.length ?? LARGE_FONT_SIZE;
+			const fontHeight = font.pixels.length;
+			canvas.width = fontWidth * zoom;
+			canvas.height = fontHeight * zoom;
 
 			// Clear canvas
 			ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -102,8 +107,8 @@
 				<canvas
 					use:renderFont={fonts[index]}
 					class="font-canvas"
-					width={FONT_WIDTH * zoom}
-					height={FONT_HEIGHT * zoom}
+					width={(fonts[index]?.pixels[0]?.length ?? LARGE_FONT_SIZE) * zoom}
+					height={(fonts[index]?.pixels.length ?? LARGE_FONT_SIZE) * zoom}
 				></canvas>
 			</div>
 			<div class="unicode-label">{getHexString(fonts[index].unicode)}</div>
