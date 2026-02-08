@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { BitmapFileInfo } from '../../rse/types';
   import { extractFrames } from '../../rse/utils/video-extractor';
+  import { TreeView } from '../98css';
 
   interface Props {
     targetImages: BitmapFileInfo[];
@@ -17,24 +18,57 @@
     images: BitmapFileInfo[];
   }
 
-  let selectedGroup = $state<ImageGroup | null>(null);
-  let selectedImage = $state<BitmapFileInfo | null>(null);
+  let selectedGroupId = $state<string>('');
+  let selectedImageId = $state<string>('');
 
   // Source file state
   let sourceFiles = $state<File[]>([]);
-  let fileInput: HTMLInputElement;
+  let isDragOver = $state(false);
   let isExtracting = $state(false);
   let previewUrl = $state<string | null>(null);
   let currentSourceIndex = $state(0);
 
+  // Action to store file input reference
+  function fileInputAction(node: HTMLInputElement) {
+    fileInputRef = node;
+    return {};
+  }
+
+  let fileInputRef: HTMLInputElement;
+
   // Compute groups from target images (derived, no reactivity issues)
   let groups = $derived(parseImageGroups(targetImages));
 
+  // Convert groups to tree nodes for TreeView
+  let groupNodes = $derived(
+    groups.map((group) => ({
+      id: `group-${group.prefix}`,
+      label: `${group.prefix} (${group.images.length})`,
+      children: []
+    }))
+  );
+
+  // Convert files in selected group to tree nodes
+  let fileNodes = $derived.by(() => {
+    const selectedGroup = groups.find((g) => `group-${g.prefix}` === selectedGroupId);
+    if (!selectedGroup) return [];
+    return selectedGroup.images.map((img, idx) => ({
+      id: `file-${selectedGroup.prefix}-${idx}`,
+      label: `${img.name} (${img.width}x${img.height})`
+    }));
+  });
+
+  // Get selected group and image
+  let selectedGroup = $derived(groups.find((g) => `group-${g.prefix}` === selectedGroupId));
+  let selectedImage = $derived(
+    selectedGroup?.images.find((_, idx) => `file-${selectedGroup.prefix}-${idx}` === selectedImageId) ?? null
+  );
+
   // Initialize selected group when groups change
   $effect(() => {
-    if (groups.length > 0 && !selectedGroup) {
-      selectedGroup = groups[0];
-      selectedImage = groups[0].images[0] || null;
+    if (groups.length > 0 && !selectedGroupId) {
+      selectedGroupId = `group-${groups[0].prefix}`;
+      selectedImageId = `file-${groups[0].prefix}-0`;
     }
   });
 
@@ -98,22 +132,32 @@
     return { prefix: '', number: '' };
   }
 
-  // Select group and first image
-  function selectGroup(group: ImageGroup) {
-    selectedGroup = group;
-    selectedImage = group.images[0] || null;
-    currentSourceIndex = 0;
+  // Handle group selection from TreeView
+  function handleGroupSelect(nodeId: string) {
+    selectedGroupId = nodeId;
+    const group = groups.find((g) => `group-${g.prefix}` === nodeId);
+    if (group && group.images.length > 0) {
+      selectedImageId = `file-${group.prefix}-0`;
+      currentSourceIndex = 0;
+    }
     cleanupPreview();
   }
 
-  // Select image within group
-  function selectImage(img: BitmapFileInfo, index: number) {
-    selectedImage = img;
-    currentSourceIndex = index;
+  // Handle image selection from TreeView
+  function handleImageSelect(nodeId: string) {
+    selectedImageId = nodeId;
+    const match = nodeId.match(/file-(.+)-(\d+)/);
+    if (match) {
+      const group = groups.find((g) => g.prefix === match[1]);
+      if (group) {
+        const idx = parseInt(match[2], 10);
+        currentSourceIndex = idx;
+      }
+    }
     updatePreview();
   }
 
-  async function processFiles(files: File[]) {
+  async function handleFilesDrop(files: File[]) {
     if (files.length === 0) return;
 
     const videoFile = files.find(f => f.type.startsWith('video/'));
@@ -138,21 +182,34 @@
   function handleFileSelect(e: Event) {
     const input = e.target as HTMLInputElement;
     if (input.files) {
-      processFiles(Array.from(input.files));
+      const files = Array.from(input.files);
+      handleFilesDrop(files);
     }
-  }
-
-  function handleDrop(e: DragEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.dataTransfer?.files) {
-      processFiles(Array.from(e.dataTransfer.files));
-    }
+    // Reset input so the same files can be selected again
+    input.value = '';
   }
 
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
-    e.stopPropagation();
+    isDragOver = true;
+  }
+
+  function handleDragLeave(e: DragEvent) {
+    e.preventDefault();
+    isDragOver = false;
+  }
+
+  function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    isDragOver = false;
+    if (e.dataTransfer?.files) {
+      const files = Array.from(e.dataTransfer.files);
+      handleFilesDrop(files);
+    }
+  }
+
+  function triggerFileInput() {
+    fileInputRef?.click();
   }
 
   function updatePreview() {
@@ -172,17 +229,21 @@
 
   function nextImage() {
     if (!selectedGroup) return;
-    const idx = selectedGroup.images.indexOf(selectedImage!);
+    const idx = selectedGroup.images.findIndex(img => img.name === selectedImage?.name);
     if (idx < selectedGroup.images.length - 1) {
-      selectImage(selectedGroup.images[idx + 1], idx + 1);
+      selectedImageId = `file-${selectedGroup.prefix}-${idx + 1}`;
+      currentSourceIndex = idx + 1;
+      updatePreview();
     }
   }
 
   function prevImage() {
     if (!selectedGroup) return;
-    const idx = selectedGroup.images.indexOf(selectedImage!);
+    const idx = selectedGroup.images.findIndex(img => img.name === selectedImage?.name);
     if (idx > 0) {
-      selectImage(selectedGroup.images[idx - 1], idx - 1);
+      selectedImageId = `file-${selectedGroup.prefix}-${idx - 1}`;
+      currentSourceIndex = idx - 1;
+      updatePreview();
     }
   }
 
@@ -219,26 +280,11 @@
     <!-- Column 1: Groups -->
     <div class="column groups">
       <h4>Groups ({groups.length})</h4>
-      <div class="list">
-        {#each groups as group}
-          <div
-            class="item"
-            class:selected={selectedGroup?.prefix === group.prefix}
-            onclick={() => selectGroup(group)}
-            role="button"
-            tabindex="0"
-            onkeydown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                selectGroup(group);
-              }
-            }}
-          >
-            <span class="name">{group.displayName}</span>
-            <span class="count">{group.images.length}</span>
-          </div>
-        {/each}
-      </div>
+      <TreeView
+        nodes={groupNodes}
+        selected={selectedGroupId}
+        onSelect={handleGroupSelect}
+      />
     </div>
 
     <!-- Column 2: Files in selected group -->
@@ -247,50 +293,22 @@
         {selectedGroup?.displayName || 'Files'}
         ({selectedGroup?.images.length || 0})
       </h4>
-      <div class="list">
-        {#if selectedGroup}
-          {#each selectedGroup.images as img, idx}
-            <div
-              class="item"
-              class:selected={selectedImage?.name === img.name}
-              onclick={() => selectImage(img, idx)}
-              role="button"
-              tabindex="0"
-              onkeydown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  selectImage(img, idx);
-                }
-              }}
-            >
-              <span class="name">{img.name}</span>
-              <span class="dim">{img.width}x{img.height}</span>
-            </div>
-          {/each}
-        {:else}
-          <div class="empty-msg">Select a group to view files</div>
-        {/if}
-      </div>
+      {#if selectedGroup}
+        <TreeView
+          nodes={fileNodes}
+          selected={selectedImageId}
+          onSelect={handleImageSelect}
+        />
+      {:else}
+        <div class="empty-msg">Select a group to view files</div>
+      {/if}
     </div>
 
     <!-- Column 3: Replacement preview and actions -->
-    <div class="column replace"
-         ondrop={handleDrop}
-         ondragover={handleDragOver}
-         role="region"
-         aria-label="Replacement preview and file drop zone">
+    <div class="column replace" role="region" aria-label="Replacement preview and file drop zone">
 
       <div class="replace-header">
         <h4>Replace</h4>
-        <button onclick={() => fileInput.click()}>Load Files...</button>
-        <input
-            type="file"
-            multiple
-            accept="image/*,video/*"
-            hidden
-            bind:this={fileInput}
-            onchange={handleFileSelect}
-        />
       </div>
 
       <div class="replace-content">
@@ -302,9 +320,40 @@
         {:else if !selectedImage}
           <div class="empty-msg">Select an image to replace</div>
         {:else if sourceFiles.length === 0}
-          <div class="empty-msg drop-zone">
-            <p>Drop images or video here</p>
-            <p class="hint">or click "Load Files..." above</p>
+          <div
+            class="drop-zone"
+            class:drag-over={isDragOver}
+            ondragover={handleDragOver}
+            ondragleave={handleDragLeave}
+            ondrop={handleDrop}
+            onclick={triggerFileInput}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                triggerFileInput();
+              }
+            }}
+            role="button"
+            tabindex="0"
+          >
+            <input
+              type="file"
+              use:fileInputAction
+              accept="image/*,video/*"
+              multiple
+              hidden
+              onchange={handleFileSelect}
+            />
+            <div class="drop-zone-content">
+              <img
+                src={isDragOver ? "/folder-drag-accept.png" : "/folder.png"}
+                alt="Folder"
+                class="folder-icon"
+              />
+              <div class="drop-text">
+                Drop images or video here
+              </div>
+            </div>
           </div>
         {:else}
           <div class="preview-panel">
@@ -406,49 +455,8 @@
     font-size: 12px;
   }
 
-  .list {
+  .column :global(.tree-view) {
     flex: 1;
-    overflow-y: auto;
-    padding: 2px;
-    font-family: monospace;
-    font-size: 12px;
-  }
-
-  .item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 4px 6px;
-    border-bottom: 1px dotted #ccc;
-    cursor: pointer;
-    user-select: none;
-  }
-
-  .item:hover {
-    background-color: #e0e0ff;
-  }
-
-  .item.selected {
-    background-color: #000080;
-    color: white;
-  }
-
-  .name {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-  }
-
-  .dim, .count, .size {
-    color: #666;
-    font-size: 10px;
-    margin-left: 8px;
-    flex-shrink: 0;
-  }
-
-  .item.selected .dim, .item.selected .count {
-    color: #ccc;
   }
 
   .replace-header {
@@ -459,16 +467,12 @@
     padding-right: 2px;
   }
 
-  .replace-header button {
-    font-size: 10px;
-    padding: 2px 6px;
-    height: 20px;
-  }
-
   .replace-content {
     flex: 1;
     overflow-y: auto;
     padding: 4px;
+    display: flex;
+    flex-direction: column;
   }
 
   .empty-msg {
@@ -484,17 +488,39 @@
   }
 
   .drop-zone {
-    cursor: copy;
+    padding: 40px;
+    border: 2px inset #808080;
+    background-color: #ffffff;
+    text-align: center;
+    cursor: pointer;
+    margin: 4px;
   }
 
   .drop-zone:hover {
-    background-color: #e0ffe0;
-    border-color: #008000;
+    background-color: #eeeeee;
   }
 
-  .hint {
-    font-size: 10px;
-    color: #999;
+  .drop-zone.drag-over {
+    border: 2px inset #000080;
+    background-color: #e0e0ff;
+  }
+
+  .drop-zone-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .folder-icon {
+    width: 64px;
+    height: 64px;
+    image-rendering: pixelated;
+  }
+
+  .drop-text {
+    font-size: 14px;
+    color: #000000;
   }
 
   .preview-panel {
@@ -530,6 +556,11 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .size {
+    color: #666;
+    font-size: 10px;
   }
 
   .preview-image {
@@ -568,8 +599,6 @@
   }
 
   .position {
-    font-size: 11px;
-    font-family: monospace;
     min-width: 60px;
     text-align: center;
   }
