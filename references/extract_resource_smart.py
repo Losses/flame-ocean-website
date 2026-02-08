@@ -528,7 +528,8 @@ def extract_part5_bitmaps_smart(img_path, output_base_dir, debug=False):
     print(f"  {'ID':>4} {'Name':<30} {'Size':>10} {'Status':<10}")
     print("-" * 70)
 
-    start_index = first_valid_entry
+    # When misalignment = 1, Entry 0 CAN still be extracted using Entry[1]'s offset
+    start_index = 0
     end_index = len(metadata_entries) - (1 if misalignment > 0 else 0)
 
     for i in range(start_index, end_index):

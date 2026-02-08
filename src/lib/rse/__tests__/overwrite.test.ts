@@ -80,14 +80,14 @@ function createTestFirmware(): Uint8Array {
 
 	// Add metadata entry (offset must match ROCK26 entry offset)
 	const metadataOffset = 0x320000;
-	// Entry 0: (dummy entry, might be corrupted)
+	// Entry 0: Flash metadata structure placeholder (fields stored in Entry[1])
 	view.setUint32(metadataOffset + 20, 0x00000000, true); // offset
 	view.setUint32(metadataOffset + 24, 0, true); // width
 	view.setUint32(metadataOffset + 28, 0, true); // height
 	// Entry 1: TEST.BMP (this is what we'll actually use)
 	view.setUint32(metadataOffset + 108 + 20, 0x2000, true); // offset (matches ROCK26)
-	view.setUint32(metadataOffset + 108 + 24, 10, true); // width
-	view.setUint32(metadataOffset + 108 + 28, 10, true); // height
+	view.setUint32(metadataOffset + 108 + 24, 10, true); // width (used by Entry[0])
+	view.setUint32(metadataOffset + 108 + 28, 10, true); // height (used by Entry[0])
 	const name = new TextEncoder().encode('TEST.BMP\x00');
 	data.set(name, metadataOffset + 108 + 32);
 

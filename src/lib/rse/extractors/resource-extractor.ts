@@ -349,7 +349,8 @@ export class ResourceExtractor {
 		console.log(`  ${'ID'.padStart(4)} ${'Name'.padEnd(30)} ${'Size'.padStart(10)} ${'Status'.padEnd(10)}`);
 		console.log('-'.repeat(70));
 
-		const startIndex = firstValidEntry;
+		// When misalignment = 1, Entry 0 CAN still be extracted using Entry[1]'s offset
+		const startIndex = 0;
 		const endIndex = metadataEntries.length - (misalignment > 0 ? 1 : 0);
 
 		for (let i = startIndex; i < endIndex; i++) {
@@ -479,14 +480,15 @@ export class ResourceExtractor {
 		}
 
 		// Detect misalignment
-		const { misalignment, firstValidEntry } = this.detectOffsetMisalignment(
+		const { misalignment } = this.detectOffsetMisalignment(
 			metadataEntries,
 			part5Data,
 			rock26Offset
 		);
 
 		const files: BitmapFileInfo[] = [];
-		const startIndex = firstValidEntry;
+		// When misalignment = 1, Entry 0 CAN still be extracted using Entry[1]'s offset
+		const startIndex = 0;
 		const endIndex = metadataEntries.length - (misalignment > 0 ? 1 : 0);
 
 		for (let i = startIndex; i < endIndex; i++) {
@@ -571,7 +573,7 @@ export class ResourceExtractor {
 		}
 
 		// Detect misalignment
-		const { misalignment, firstValidEntry } = this.detectOffsetMisalignment(
+		const { misalignment } = this.detectOffsetMisalignment(
 			metadataEntries,
 			part5Data,
 			rock26Offset
@@ -584,7 +586,8 @@ export class ResourceExtractor {
 		}
 
 		// Check if index is in valid range
-		const startIndex = firstValidEntry;
+		// When misalignment = 1, Entry 0 CAN still be extracted using Entry[1]'s offset
+		const startIndex = 0;
 		const endIndex = metadataEntries.length - (misalignment > 0 ? 1 : 0);
 
 		if (targetIndex < startIndex || targetIndex >= endIndex) {
@@ -665,7 +668,7 @@ export class ResourceExtractor {
 		}
 
 		// Detect misalignment
-		const { misalignment, firstValidEntry } = this.detectOffsetMisalignment(
+		const { misalignment } = this.detectOffsetMisalignment(
 			metadataEntries,
 			part5Data,
 			rock26Offset
@@ -678,7 +681,8 @@ export class ResourceExtractor {
 		}
 
 		// Check if index is in valid range
-		const startIndex = firstValidEntry;
+		// When misalignment = 1, Entry 0 CAN still be extracted using Entry[1]'s offset
+		const startIndex = 0;
 		const endIndex = metadataEntries.length - (misalignment > 0 ? 1 : 0);
 
 		if (targetIndex < startIndex || targetIndex >= endIndex) {

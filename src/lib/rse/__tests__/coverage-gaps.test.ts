@@ -502,7 +502,7 @@ describe('ResourceExtractor Edge Case Writes', () => {
 			expect(readBack).toEqual(newData);
 		});
 
-		it('should reject write to corrupted metadata entry', () => {
+		it('should reject write to invalid metadata entry', () => {
 			const firmware = new Uint8Array(0x500000);
 
 			const view = new DataView(firmware.buffer);
@@ -514,18 +514,18 @@ describe('ResourceExtractor Edge Case Writes', () => {
 			view.setUint32(0x310016, 1, true);
 			view.setUint32(0x310020 + 12, 0x2000, true);
 
-			// Corrupted metadata entry (offset = 0xf564f564)
+			// Invalid metadata entry (offset = 0xf564f564 - Flash structure pattern)
 			const metadataOffset = 0x320000;
 			view.setUint32(metadataOffset + 20, 0xf564f564, true);
 			view.setUint32(metadataOffset + 24, 0, true);
 			view.setUint32(metadataOffset + 28, 0, true);
-			firmware.set(new TextEncoder().encode('CORRUPT.BMP\x00'), metadataOffset + 32);
+			firmware.set(new TextEncoder().encode('INVALID.BMP\x00'), metadataOffset + 32);
 
 			const extractor = new ResourceExtractor(firmware);
 
-			// Attempt to write to corrupted entry should fail
+			// Attempt to write to invalid entry should fail
 			const data = new Uint8Array(10 * 10 * 2);
-			const result = extractor.replaceBitmap('CORRUPT.BMP', data);
+			const result = extractor.replaceBitmap('INVALID.BMP', data);
 			expect(result).toBe(false);
 		});
 	});
