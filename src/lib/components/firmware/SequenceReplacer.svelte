@@ -788,6 +788,8 @@
     background-color: #000000;
     border: 2px solid #808080;
     image-rendering: pixelated;
+    max-width: 100%;
+    height: auto;
   }
 
   .canvas-placeholder .loading-text {
