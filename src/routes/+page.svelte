@@ -11,7 +11,7 @@
   } from "$lib/components/98css";
   import FontGridRenderer from "$lib/components/firmware/FontGridRenderer.svelte";
   import ImageRenderer from "$lib/components/firmware/ImageRenderer.svelte";
-  import SequenceReplacer from "$lib/components/firmware/SequenceReplacer.svelte";
+  import SequenceReplacerWindow from "$lib/components/firmware/SequenceReplacerWindow.svelte";
   import FirmwareWorker from "$lib/workers/firmware-worker.ts?worker";
   import {
     initDebugShortcut,
@@ -1065,7 +1065,7 @@
     {/if}
 
     <!-- Main Browser Interface -->
-    {#if firmwareData && treeNodes.length > 0}
+    {#if firmwareData && treeNodes.length > 0 && !showSequenceReplacer}
       <Window
         title="Resource Browser"
         class="browser-window"
@@ -1152,13 +1152,7 @@
               role="region"
               aria-label="Image viewer - drop images here to replace"
             >
-              {#if showSequenceReplacer}
-                 <SequenceReplacer
-                    targetImages={imageList}
-                    onApply={handleSequenceReplace}
-                    onCancel={() => showSequenceReplacer = false}
-                 />
-              {:else if selectedNode}
+              {#if selectedNode}
                 {#if isProcessing}
                   <div class="empty-state">
                     <p>Loading {selectedNode.type}...</p>
@@ -1198,6 +1192,15 @@
           </div>
         </WindowBody>
       </Window>
+    {/if}
+
+    <!-- Sequence Replacer Window -->
+    {#if firmwareData && treeNodes.length > 0 && showSequenceReplacer}
+      <SequenceReplacerWindow
+        targetImages={imageList}
+        onApply={handleSequenceReplace}
+        onClose={() => showSequenceReplacer = false}
+      />
     {/if}
   </div>
 
