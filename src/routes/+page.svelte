@@ -844,6 +844,14 @@
 </script>
 
 <div class="page-wrapper">
+  <!-- Hidden file input - always in DOM for toolbar button -->
+  <input
+    type="file"
+    bind:this={fileInput}
+    hidden
+    onchange={handleFileSelect}
+  />
+
   <div class="page-container">
     <!-- Drop Zone Window - hidden when loading or loaded -->
     {#if !firmwareData && !isProcessing}
@@ -865,12 +873,6 @@
             role="button"
             tabindex="0"
           >
-            <input
-              type="file"
-              bind:this={fileInput}
-              hidden
-              onchange={handleFileSelect}
-            />
             <div class="drop-zone-content">
               {#if !firmwareData}
                 <img
