@@ -121,7 +121,8 @@
     } else if (selectedNode?.type === "image" && imageData) {
       document.title = `${imageData.name} - FlameOcean`;
     } else if (selectedNode?.type === "plane" && planeData) {
-      document.title = `${planeData.name} (${planeData.fontType}) - FlameOcean`;
+      const fontType = (selectedNode.data as FontPlaneInfo)?.fontType;
+      document.title = `${planeData.name} (${fontType}) - FlameOcean`;
     } else {
       document.title = "Resource Browser - FlameOcean";
     }
@@ -138,7 +139,10 @@
     // Add paste listener for image replacement
     window.addEventListener("paste", async (e: ClipboardEvent) => {
       if (isProcessing) {
-        showWarningDialog("Busy", "A replacement is already in progress. Please wait.");
+        showWarningDialog(
+          "Busy",
+          "A replacement is already in progress. Please wait.",
+        );
         return;
       }
 
@@ -396,7 +400,7 @@
       loadFirmware(file);
     }
     // Reset input so the same file can be selected again
-    target.value = '';
+    target.value = "";
   }
 
   async function loadFirmware(file: File) {
@@ -456,7 +460,8 @@
       const pastedFileName = file.name.replace(/\.[^.]*$/, "").toUpperCase();
 
       const matchingImage = imageList.find(
-        (img) => img.name.replace(/\.[^.]*$/, "").toUpperCase() === pastedFileName
+        (img) =>
+          img.name.replace(/\.[^.]*$/, "").toUpperCase() === pastedFileName,
       );
 
       if (!matchingImage) {
@@ -470,10 +475,16 @@
       }
 
       try {
-        const rgb565Result = await imageToRgb565(file, matchingImage.width, matchingImage.height);
+        const rgb565Result = await imageToRgb565(
+          file,
+          matchingImage.width,
+          matchingImage.height,
+        );
 
         if (!rgb565Result) {
-          decodeError.push(`${file.name}: Dimension mismatch (expected ${matchingImage.width}x${matchingImage.height})`);
+          decodeError.push(
+            `${file.name}: Dimension mismatch (expected ${matchingImage.width}x${matchingImage.height})`,
+          );
           return null;
         }
 
@@ -498,11 +509,11 @@
       let message = "No valid images to replace.\n\n";
 
       if (notFound.length > 0) {
-        message += `Not found in firmware (${notFound.length}):\n${notFound.slice(0, 5).join(', ')}${notFound.length > 5 ? '...' : ''}\n\n`;
+        message += `Not found in firmware (${notFound.length}):\n${notFound.slice(0, 5).join(", ")}${notFound.length > 5 ? "..." : ""}\n\n`;
       }
 
       if (decodeError.length > 0) {
-        message += `Errors (${decodeError.length}):\n${decodeError.slice(0, 3).join('\n')}${decodeError.length > 3 ? '\n...' : ''}`;
+        message += `Errors (${decodeError.length}):\n${decodeError.slice(0, 3).join("\n")}${decodeError.length > 3 ? "\n..." : ""}`;
       }
 
       showWarningDialog("Replacement Failed", message.trim());
@@ -518,8 +529,8 @@
 
         if (id === "replaceImages") {
           // Only handle success/error messages, ignore progress
-          if (type === 'success') {
-            worker!.removeEventListener('message', handler);
+          if (type === "success") {
+            worker!.removeEventListener("message", handler);
 
             const data = result as {
               successCount: number;
@@ -536,7 +547,7 @@
                   name: r.imageName,
                   width: imageData.width,
                   height: imageData.height,
-                  rgb565Data: r.rgb565Data
+                  rgb565Data: r.rgb565Data,
                 };
               }
             }
@@ -550,36 +561,51 @@
 
             // Combine errors from main thread and worker
             const allNotFound = [...notFound, ...(data.notFound || [])];
-            const allDimensionMismatch = [...decodeError.filter(e => e.includes('Dimension mismatch')), ...(data.dimensionMismatch || [])];
-            const allReplaceError = [...decodeError.filter(e => !e.includes('Dimension mismatch')), ...(data.replaceError || [])];
+            const allDimensionMismatch = [
+              ...decodeError.filter((e) => e.includes("Dimension mismatch")),
+              ...(data.dimensionMismatch || []),
+            ];
+            const allReplaceError = [
+              ...decodeError.filter((e) => !e.includes("Dimension mismatch")),
+              ...(data.replaceError || []),
+            ];
 
-            const totalErrors = allNotFound.length + allDimensionMismatch.length + allReplaceError.length;
+            const totalErrors =
+              allNotFound.length +
+              allDimensionMismatch.length +
+              allReplaceError.length;
 
             if (totalErrors > 0) {
               let message = `Successfully replaced: ${data.successCount}\n\n`;
 
               if (allNotFound.length > 0) {
-                message += `Not found in firmware (${allNotFound.length}):\n${allNotFound.slice(0, 5).join(', ')}${allNotFound.length > 5 ? '...' : ''}\n\n`;
+                message += `Not found in firmware (${allNotFound.length}):\n${allNotFound.slice(0, 5).join(", ")}${allNotFound.length > 5 ? "..." : ""}\n\n`;
               }
 
               if (allDimensionMismatch.length > 0) {
-                message += `Dimension mismatch (${allDimensionMismatch.length}):\n${allDimensionMismatch.slice(0, 3).join('\n')}${allDimensionMismatch.length > 3 ? '\n...' : ''}\n\n`;
+                message += `Dimension mismatch (${allDimensionMismatch.length}):\n${allDimensionMismatch.slice(0, 3).join("\n")}${allDimensionMismatch.length > 3 ? "\n..." : ""}\n\n`;
               }
 
               if (allReplaceError.length > 0) {
-                message += `Replacement errors (${allReplaceError.length}):\n${allReplaceError.slice(0, 3).join('\n')}${allReplaceError.length > 3 ? '\n...' : ''}\n\n`;
+                message += `Replacement errors (${allReplaceError.length}):\n${allReplaceError.slice(0, 3).join("\n")}${allReplaceError.length > 3 ? "\n..." : ""}\n\n`;
               }
 
-              showWarningDialog("Replacement Completed with Errors", message.trim());
+              showWarningDialog(
+                "Replacement Completed with Errors",
+                message.trim(),
+              );
             } else {
               statusMessage = `Successfully replaced ${data.successCount} image(s)`;
             }
 
             isProcessing = false;
             resolve();
-          } else if (type === 'error') {
-            worker!.removeEventListener('message', handler);
-            showWarningDialog("Replacement Error", `Failed to replace images: ${result}`);
+          } else if (type === "error") {
+            worker!.removeEventListener("message", handler);
+            showWarningDialog(
+              "Replacement Error",
+              `Failed to replace images: ${result}`,
+            );
             isProcessing = false;
             resolve();
           }
@@ -587,19 +613,19 @@
         }
       };
 
-      worker!.addEventListener('message', handler);
+      worker!.addEventListener("message", handler);
 
       worker!.postMessage({
         type: "replaceImages",
         id: "replaceImages",
         firmware: new Uint8Array(),
-        images: replacements.map(r => ({
+        images: replacements.map((r) => ({
           imageName: r.image.name,
           width: r.image.width,
           height: r.image.height,
           offset: r.image.offset!,
-          rgb565Data: r.rgb565Data
-        }))
+          rgb565Data: r.rgb565Data,
+        })),
       });
     });
   }
@@ -616,26 +642,32 @@
 
     try {
       // Request the modified firmware from the worker
-      const modifiedFirmware = await new Promise<Uint8Array>((resolve, reject) => {
-        const handler = (e: MessageEvent) => {
-          const data = e.data;
-          if (data.id === "exportFirmware") {
-            worker!.removeEventListener("message", handler);
-            if (data.type === "success") {
-              resolve(data.result as Uint8Array);
-            } else {
-              reject(new Error(data.error || "Failed to retrieve modified firmware"));
+      const modifiedFirmware = await new Promise<Uint8Array>(
+        (resolve, reject) => {
+          const handler = (e: MessageEvent) => {
+            const data = e.data;
+            if (data.id === "exportFirmware") {
+              worker!.removeEventListener("message", handler);
+              if (data.type === "success") {
+                resolve(data.result as Uint8Array);
+              } else {
+                reject(
+                  new Error(
+                    data.error || "Failed to retrieve modified firmware",
+                  ),
+                );
+              }
             }
-          }
-        };
+          };
 
-        worker!.addEventListener("message", handler);
-        worker!.postMessage({
-          type: "getFirmware",
-          id: "exportFirmware",
-          firmware: new Uint8Array(),
-        });
-      });
+          worker!.addEventListener("message", handler);
+          worker!.postMessage({
+            type: "getFirmware",
+            id: "exportFirmware",
+            firmware: new Uint8Array(),
+          });
+        },
+      );
 
       // Update the main thread's firmware data with the modified version
       firmwareData = modifiedFirmware;
@@ -649,7 +681,7 @@
     } catch (err) {
       showWarningDialog(
         "Export Error",
-        `Failed to export firmware: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to export firmware: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       isProcessing = false;
@@ -701,7 +733,7 @@
     } catch (err) {
       showWarningDialog(
         "Export Error",
-        `Failed to bundle images: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to bundle images: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       isProcessing = false;
@@ -795,7 +827,7 @@
       handlePasteFiles(fileArray);
     }
     // Reset input so the same files can be selected again
-    target.value = '';
+    target.value = "";
   }
 
   // Handle close button on resource viewer - reset and show file picker
@@ -930,7 +962,7 @@
                 expanded={expandedNodes}
                 selected={selectedNodeIds}
                 onSelect={(nodeId) => handleSelectNode(nodeId)}
-                replacedImages={replacedImages}
+                {replacedImages}
               />
             </div>
 
@@ -1114,18 +1146,16 @@
   .toolbar {
     display: flex;
     gap: 2px;
-    padding: 2px;
-    margin-bottom: 4px;
-    border-bottom: 1px solid #808080;
+    margin-bottom: 6px;
   }
 
   .toolbar-button {
     display: inline-flex;
+    padding: 2px;
     align-items: center;
     justify-content: center;
-    min-width: 24px;
+    min-width: 22px;
     min-height: 22px;
-    padding: 0;
     border: 1px solid #ffffff;
     border-right-color: #000000;
     border-bottom-color: #000000;
@@ -1156,8 +1186,8 @@
   }
 
   .toolbar-icon {
-    width: 16px;
-    height: 16px;
+    width: 24px;
+    height: 24px;
     image-rendering: pixelated;
     pointer-events: none;
   }
