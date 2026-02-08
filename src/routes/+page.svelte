@@ -162,7 +162,12 @@
 
       if (files.length === 0) return;
 
-      await handlePasteFiles(files);
+      // Smart Replacement Logic for Paste:
+      if (files.length === 1 && selectedNode?.type === "image" && imageData) {
+        await replaceCurrentlySelectedImage(files[0]);
+      } else {
+        await handlePasteFiles(files);
+      }
     });
 
     worker = new FirmwareWorker();
@@ -804,8 +809,92 @@
     const files = Array.from(e.dataTransfer?.files ?? []);
     if (files.length === 0) return;
 
-    // Process dropped files
+    // Smart Replacement Logic:
+    // If exactly ONE file is dropped, AND we have an image selected,
+    // we assume the user wants to replace THIS specific image with the dropped file.
+    if (files.length === 1 && selectedNode?.type === "image" && imageData) {
+      await replaceCurrentlySelectedImage(files[0]);
+      return;
+    }
+
+    // Default: Process dropped files as batch replacement by filename
     await handlePasteFiles(files);
+  }
+
+  // Helper: Replace currently selected image with specific file (Smart Replace)
+  async function replaceCurrentlySelectedImage(file: File) {
+    if (!selectedNode || selectedNode.type !== "image" || !imageData) return;
+
+    // Confirm replacement? (Optional, currently direct action)
+    isProcessing = true;
+    statusMessage = `Processing ${file.name} for ${imageData.name}...`;
+
+    try {
+      // Auto-resize and format the image to match the target
+      const rgb565Result = await imageToRgb565(
+        file,
+        imageData.width,
+        imageData.height,
+        { resize: true, grayscale: false }
+      );
+
+      if (!rgb565Result) {
+        throw new Error("Failed to process image");
+      }
+
+      // Send replacement to worker
+      const replacement = {
+        imageName: imageData.name,
+        width: imageData.width,
+        height: imageData.height,
+        offset: (selectedNode.data as BitmapFileInfo).offset!,
+        rgb565Data: rgb565Result.rgb565Data,
+      };
+
+      await new Promise<void>((resolve, reject) => {
+         const handler = (e: MessageEvent) => {
+          const { type, id, result, error } = e.data;
+          
+          if (id === "replaceSingleImage") {
+            // Ignore progress messages
+            if (type === "progress") return;
+
+            worker!.removeEventListener("message", handler);
+            
+            if (type === "success") {
+               // Update UI
+               if (imageData) {
+                   imageData.rgb565Data = replacement.rgb565Data;
+               }
+               if (!replacedImages.includes(replacement.imageName)) {
+                  replacedImages = [...replacedImages, replacement.imageName];
+               }
+               statusMessage = `Successfully replaced ${replacement.imageName}`;
+               resolve();
+            } else {
+               reject(new Error(error || "Worker failed to replace image"));
+            }
+          }
+        };
+
+        worker!.addEventListener("message", handler);
+        
+        worker!.postMessage({
+          type: "replaceImages",
+          id: "replaceSingleImage",
+          firmware: new Uint8Array(),
+          images: [replacement],
+        });
+      });
+
+    } catch (err) {
+      showWarningDialog(
+        "Replacement Failed",
+        `Failed to process ${file.name}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      isProcessing = false;
+    }
   }
 
   // Trigger file input
@@ -819,12 +908,17 @@
   }
 
   // Handle edit file select (multiple files)
-  function handleEditFileSelect(e: Event) {
+  async function handleEditFileSelect(e: Event) {
     const target = e.target as HTMLInputElement;
     const files = target.files;
     if (files && files.length > 0) {
-      const fileArray = Array.from(files);
-      handlePasteFiles(fileArray);
+      // Check for single file smart replacement context
+      if (files.length === 1 && selectedNode?.type === "image" && imageData) {
+        await replaceCurrentlySelectedImage(files[0]);
+      } else {
+        const fileArray = Array.from(files);
+        await handlePasteFiles(fileArray);
+      }
     }
     // Reset input so the same files can be selected again
     target.value = "";
@@ -948,10 +1042,11 @@
             </button>
             <input
               type="file"
-              bind:this={editFileInput}
-              hidden
+              accept=".bmp,.png,.jpg,.jpeg"
               multiple
-              accept="image/*"
+              hidden
+              class="hidden-input"
+              bind:this={editFileInput}
               onchange={handleEditFileSelect}
             />
           </div>
