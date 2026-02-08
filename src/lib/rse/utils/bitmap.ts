@@ -190,7 +190,7 @@ export function parseMonoBmp(bmpData: Uint8Array): PixelData | null {
 
 	// Validate format (1-bit monochrome)
 	if (bitsPerPixel !== 1) return null;
-	if (width <= 0 || height <= 0 || width > 100 || height !== 16) return null;
+	if (width <= 0 || height <= 0 || width > 100 || height > 100) return null;
 
 	const pixels: boolean[][] = [];
 	const rowBytes = ((width + 31) >> 5) << 2; // ((width + 31) / 32) * 4

@@ -872,7 +872,13 @@ class FontExtractor:
 
                 header = lookup_val & 0xFF
                 name = f"0x{addr:06X}_H{header:02X}_U+{uni:04X}.bmp"
-                self.write_bmp(os.path.join(out_dir, name), pixels)
+
+                # For SMALL fonts, only extract the top-left 10x10 pixels
+                if font_type == "SMALL":
+                    pixels = [row[:10] for row in pixels[:10]]
+                    self.write_bmp(os.path.join(out_dir, name), pixels, width=10, height=10)
+                else:
+                    self.write_bmp(os.path.join(out_dir, name), pixels)
                 count += 1
 
             except Exception:
