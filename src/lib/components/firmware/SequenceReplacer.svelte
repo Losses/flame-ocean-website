@@ -170,6 +170,9 @@
       selectedImageId = `file-${group.prefix}-0`;
       currentSourceIndex = 0;
 
+      // Clear previous data to show loading state
+      targetImageData = null;
+
       // Load target image from firmware
       await loadTargetImage(group.images[0]);
 
@@ -191,6 +194,9 @@
         currentSourceIndex = idx;
       }
     }
+
+    // Clear previous data to show loading state
+    targetImageData = null;
 
     // Load target image from firmware
     if (selectedImage) {
@@ -464,6 +470,9 @@
                         width={selectedImage.width * 2}
                         height={selectedImage.height * 2}
                       ></canvas>
+                      {#if isLoadingTarget}
+                        <span class="loading-text">Loading...</span>
+                      {/if}
                     </div>
                     <div class="image-info">{selectedImage.name} - {selectedImage.width}x{selectedImage.height}</div>
                   </div>
@@ -550,10 +559,6 @@
 
 {#if isExtracting}
   <LoadingWindow message="Extracting frames from video..." showProgress={true} />
-{/if}
-
-{#if isLoadingTarget}
-  <LoadingWindow message="Loading target image..." showProgress={false} />
 {/if}
 
 <style>
@@ -816,6 +821,16 @@
     height: auto;
   }
 
+  .canvas-placeholder .loading-text {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #ffffff;
+    font-size: 12px;
+    pointer-events: none;
+  }
+
   .canvas-wrapper {
     display: flex;
     flex-direction: column;
@@ -840,14 +855,6 @@
     max-height: 200px;
     image-rendering: pixelated;
     object-fit: contain;
-  }
-
-  .mapping-status {
-    text-align: center;
-    font-size: 11px;
-    padding: 4px;
-    background-color: #f0f0f0;
-    border: 1px inset #ffffff;
   }
 
   .footer {
