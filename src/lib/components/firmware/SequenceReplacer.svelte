@@ -161,14 +161,18 @@
   }
 
   // Handle group selection from TreeView
-  function handleGroupSelect(nodeId: string) {
+  async function handleGroupSelect(nodeId: string) {
     selectedGroupId = nodeId;
     const group = groups.find((g) => `group-${g.prefix}` === nodeId);
     if (group && group.images.length > 0) {
       selectedImageId = `file-${group.prefix}-0`;
       currentSourceIndex = 0;
+
+      // Load target image from firmware
+      await loadTargetImage(group.images[0]);
     }
     cleanupPreview();
+    updatePreview();
   }
 
   // Handle image selection from TreeView
@@ -392,86 +396,77 @@
           {:else if !selectedImage}
             <div class="empty-msg">Select an image to replace</div>
           {:else}
-            <div class="preview-panel">
-              {#if sourceFiles.length > 0}
-                <div class="source-info">
-                  <span class="label">Source:</span>
-                  <span class="value"
-                    >{sourceFiles[currentSourceIndex]?.name || "--"}</span
-                  >
-                  <span class="size"
-                    >{sourceFiles[currentSourceIndex]
-                      ? (sourceFiles[currentSourceIndex].size / 1024).toFixed(
-                          1,
-                        ) + " KB"
-                      : "--"}</span
-                  >
-                </div>
-              {/if}
+            {#if sourceFiles.length > 0}
+              <div class="source-info">
+                <span class="label">Source:</span>
+                <span class="value"
+                  >{sourceFiles[currentSourceIndex]?.name || "--"}</span
+                >
+                <span class="size"
+                  >{sourceFiles[currentSourceIndex]
+                    ? (sourceFiles[currentSourceIndex].size / 1024).toFixed(1) +
+                      " KB"
+                    : "--"}</span
+                >
+              </div>
+            {/if}
 
-              <div class="preview-image">
-                <div class="preview-column before-column">
-                  <div class="preview-label">Before</div>
-                  {#if isLoadingTarget}
-                    <div class="preview-placeholder">Loading...</div>
-                  {:else if targetImageData}
-                    <ImageRenderer
-                      name={targetImageData.name}
-                      width={targetImageData.width}
-                      height={targetImageData.height}
-                      rgb565Data={targetImageData.rgb565Data}
-                      zoom={2}
-                    />
-                  {:else}
-                    <div class="preview-placeholder">
-                      {selectedImage.name}
-                      <div class="dim">
-                        {selectedImage.width}x{selectedImage.height}
-                      </div>
+            <div class="preview-image">
+              <div class="preview-column before-column">
+                <div class="preview-label">Before</div>
+                {#if isLoadingTarget}
+                  <div class="preview-placeholder">Loading...</div>
+                {:else if targetImageData}
+                  <ImageRenderer
+                    name={targetImageData.name}
+                    width={targetImageData.width}
+                    height={targetImageData.height}
+                    rgb565Data={targetImageData.rgb565Data}
+                    zoom={2}
+                  />
+                {:else}
+                  <div class="preview-placeholder">
+                    {selectedImage.name}
+                    <div class="dim">
+                      {selectedImage.width}x{selectedImage.height}
                     </div>
-                  {/if}
-                </div>
-                <div class="preview-column after-column">
-                  <div class="preview-label">After</div>
-                  {#if sourceFiles.length > 0 && previewUrl}
-                    <img src={previewUrl} alt="Preview" />
-                  {:else}
-                    <div class="preview-placeholder">
-                      Drop replacement images
-                    </div>
-                  {/if}
-                </div>
+                  </div>
+                {/if}
+              </div>
+              <div class="preview-column after-column">
+                <div class="preview-label">After</div>
+                {#if sourceFiles.length > 0 && previewUrl}
+                  <img src={previewUrl} alt="Preview" />
+                {:else}
+                  <div class="preview-placeholder">Drop replacement images</div>
+                {/if}
+              </div>
+            </div>
+
+            {#if sourceFiles.length > 0}
+              <div class="navigation">
+                <button onclick={prevImage} disabled={currentSourceIndex === 0}>
+                  &lt; Prev
+                </button>
+                <span class="position">
+                  {currentSourceIndex + 1} / {selectedGroup?.images.length || 0}
+                </span>
+                <button
+                  onclick={nextImage}
+                  disabled={currentSourceIndex >=
+                    (selectedGroup?.images.length || 0) - 1}
+                >
+                  Next &gt;
+                </button>
               </div>
 
-              {#if sourceFiles.length > 0}
-                <div class="navigation">
-                  <button
-                    onclick={prevImage}
-                    disabled={currentSourceIndex === 0}
-                  >
-                    &lt; Prev
-                  </button>
-                  <span class="position">
-                    {currentSourceIndex + 1} / {selectedGroup?.images.length ||
-                      0}
-                  </span>
-                  <button
-                    onclick={nextImage}
-                    disabled={currentSourceIndex >=
-                      (selectedGroup?.images.length || 0) - 1}
-                  >
-                    Next &gt;
-                  </button>
-                </div>
-
-                <div class="mapping-status">
-                  Mapped: {Math.min(
-                    sourceFiles.length,
-                    selectedGroup?.images.length || 0,
-                  )} / {selectedGroup?.images.length || 0}
-                </div>
-              {/if}
-            </div>
+              <div class="mapping-status">
+                Mapped: {Math.min(
+                  sourceFiles.length,
+                  selectedGroup?.images.length || 0,
+                )} / {selectedGroup?.images.length || 0}
+              </div>
+            {/if}
           {/if}
         </div>
       </div>
@@ -708,12 +703,6 @@
     color: #000000;
   }
 
-  .preview-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
   .source-info {
     display: flex;
     align-items: center;
@@ -742,6 +731,7 @@
   }
 
   .preview-image {
+    height: 100%;
     display: flex;
     flex-direction: column;
     gap: 8px;
