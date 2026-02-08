@@ -285,31 +285,40 @@ function getStrideInfoFromBmp(width: number): { srcStride: number; padding: numb
 export async function imageToRgb565(
 	file: File,
 	targetWidth: number,
-	targetHeight: number
+	targetHeight: number,
+	options: { resize?: boolean; grayscale?: boolean } = {}
 ): Promise<{ rgb565Data: Uint8Array; width: number; height: number } | null> {
 	// Create a bitmap from the file
 	const bitmap = await createImageBitmap(file);
 
 	// Validate dimensions match
-	if (bitmap.width !== targetWidth || bitmap.height !== targetHeight) {
+	if (!options.resize && (bitmap.width !== targetWidth || bitmap.height !== targetHeight)) {
 		return null;
 	}
 
 	// Create canvas to read pixel data
 	const canvas = document.createElement('canvas');
-	canvas.width = bitmap.width;
-	canvas.height = bitmap.height;
+	canvas.width = targetWidth;
+	canvas.height = targetHeight;
 	const ctx = canvas.getContext('2d');
 
 	if (!ctx) {
 		return null;
 	}
 
+	// Configure context for pixelated scaling (nearest neighbor)
+	ctx.imageSmoothingEnabled = false;
+
+	// Apply grayscale filter if requested
+	if (options.grayscale) {
+		ctx.filter = 'grayscale(100%)';
+	}
+
 	// Draw the image to canvas
-	ctx.drawImage(bitmap, 0, 0);
+	ctx.drawImage(bitmap, 0, 0, targetWidth, targetHeight);
 
 	// Get pixel data
-	const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+	const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
 	const pixels = imageData.data;
 
 	// Convert RGBA to RGB565
@@ -337,7 +346,7 @@ export async function imageToRgb565(
 
 	return {
 		rgb565Data,
-		width: bitmap.width,
-		height: bitmap.height
+		width: targetWidth,
+		height: targetHeight
 	};
 }
