@@ -11,6 +11,7 @@
   } from "$lib/components/98css";
   import FontGridRenderer from "$lib/components/firmware/FontGridRenderer.svelte";
   import ImageRenderer from "$lib/components/firmware/ImageRenderer.svelte";
+  import SequenceReplacer from "$lib/components/firmware/SequenceReplacer.svelte";
   import FirmwareWorker from "$lib/workers/firmware-worker.ts?worker";
   import {
     initDebugShortcut,
@@ -58,6 +59,15 @@
   let selectedNodeIds = $state(new Set<string>());
   let expandedNodes = $state(new Set<string>());
   let treeNodes = $state<TreeNode[]>([]);
+  
+  // Derived state for multi-selection
+  let selectedImages = $derived(
+    Array.from(selectedNodeIds)
+        .map(id => findNodeById(treeNodes, id))
+        .filter(n => n && n.type === 'image')
+        .map(n => n!.data as BitmapFileInfo)
+  );
+
   let imageList = $state<BitmapFileInfo[]>([]);
   let planeData = $state<{
     name: string;
@@ -350,12 +360,75 @@
     return null;
   }
 
+  // Helper to get all visible nodes in flattened order for Shift selection
+  function getVisibleNodes(nodes: TreeNode[], expanded: Set<string>): TreeNode[] {
+    let visible: TreeNode[] = [];
+    for (const node of nodes) {
+      visible.push(node);
+      if (node.children && expanded.has(node.id)) {
+        visible = [...visible, ...getVisibleNodes(node.children, expanded)];
+      }
+    }
+    return visible;
+  }
+
   // Handle tree node selection from TreeView onSelect
-  function handleSelectNode(nodeId: string) {
+  function handleSelectNode(nodeId: string, e?: MouseEvent | KeyboardEvent) {
     const node = findNodeById(treeNodes, nodeId);
-    if (node) {
-      selectedNodeIds = new Set([nodeId]);
-      handleNodeClick(node);
+    if (!node) return;
+
+    if (e && (e instanceof MouseEvent || e instanceof KeyboardEvent)) {
+      const ctrlKey = e.ctrlKey || e.metaKey;
+      const shiftKey = e.shiftKey;
+
+      if (shiftKey && selectedNodeIds.size > 0) {
+        // Range selection
+        const visibleNodes = getVisibleNodes(treeNodes, expandedNodes);
+        const lastSelectedId = Array.from(selectedNodeIds).pop();
+        const startIdx = visibleNodes.findIndex(n => n.id === lastSelectedId);
+        const endIdx = visibleNodes.findIndex(n => n.id === nodeId);
+        
+        if (startIdx !== -1 && endIdx !== -1) {
+          const [min, max] = [Math.min(startIdx, endIdx), Math.max(startIdx, endIdx)];
+          // Add range to selection (or replace if not adding? usually shift extends)
+          // Standard behavior: Shift+Click extends from "anchor". 
+          // For simplicity, we'll just add the range to current selection if Ctrl is held, 
+          // or replace if only Shift. But typically Shift implies extending.
+          // Let's just add the range for now to be safe.
+          const range = visibleNodes.slice(min, max + 1).map(n => n.id);
+          const newSet = new Set(selectedNodeIds);
+           // If usage is typical, Shift without Ctrl clears and selects range from anchor. 
+           // But let's keep it simple: Expand selection.
+           range.forEach(id => newSet.add(id));
+           selectedNodeIds = newSet;
+        }
+      } else if (ctrlKey) {
+        // Toggle selection
+        const newSet = new Set(selectedNodeIds);
+        if (newSet.has(nodeId)) {
+          newSet.delete(nodeId);
+        } else {
+          newSet.add(nodeId);
+        }
+        selectedNodeIds = newSet;
+      } else {
+        // Single selection
+        selectedNodeIds = new Set([nodeId]);
+      }
+    } else {
+        // Fallback for programmatic or basic selection
+        selectedNodeIds = new Set([nodeId]);
+    }
+
+    // Update main view based on selection
+    if (selectedNodeIds.size === 1) {
+       handleNodeClick(node);
+    } else if (selectedNodeIds.size > 1) {
+       // Multiple selected: Clear single view
+       planeData = null;
+       imageData = null;
+       selectedNode = null; // Or keep last clicked?
+       // We will handle multi-selection view later (SequenceReplacer)
     }
   }
 
@@ -760,6 +833,75 @@
     }
   }
 
+  // Handle sequence replacement
+  async function handleSequenceReplace(mappings: { target: BitmapFileInfo; source: File }[]) {
+     isProcessing = true;
+     statusMessage = `Processing ${mappings.length} images...`;
+
+     const replacements: any[] = [];
+     
+     try {
+         for (const { target, source } of mappings) {
+             const rgb565Result = await imageToRgb565(
+                source,
+                target.width,
+                target.height,
+                { resize: true, grayscale: false }
+             );
+             
+             if (!rgb565Result) throw new Error(`Failed to process ${source.name}`);
+
+             replacements.push({
+                 imageName: target.name,
+                 width: target.width,
+                 height: target.height,
+                 offset: target.offset!,
+                 rgb565Data: rgb565Result.rgb565Data
+             });
+         }
+
+          await new Promise<void>((resolve, reject) => {
+            const handler = (e: MessageEvent) => {
+              const { type, id, result, error } = e.data;
+              if (id === "replaceSequence") {
+                if (type === "progress") return;
+                
+                worker!.removeEventListener("message", handler);
+                if (type === "success") {
+                  // Update replaced images list
+                   for (const r of replacements) {
+                       if (!replacedImages.includes(r.imageName)) {
+                           replacedImages = [...replacedImages, r.imageName];
+                       }
+                   }
+                   statusMessage = `Successfully replaced ${replacements.length} images`;
+                   resolve();
+                } else {
+                   reject(new Error(error || "Worker failed to replace sequence"));
+                }
+              }
+            };
+
+            worker!.addEventListener("message", handler);
+            
+            worker!.postMessage({
+              type: "replaceImages",
+              id: "replaceSequence",
+              firmware: new Uint8Array(),
+              images: replacements,
+            });
+          });
+
+     } catch (err) {
+         showWarningDialog(
+            "Sequence Replacement Failed", 
+            err instanceof Error ? err.message : String(err)
+         );
+     } finally {
+         isProcessing = false;
+     }
+  }
+
   // Drag and drop handlers
   function handleDragOver(e: DragEvent) {
     e.preventDefault();
@@ -1058,7 +1200,7 @@
                 nodes={treeNodes}
                 expanded={expandedNodes}
                 selected={selectedNodeIds}
-                onSelect={(nodeId) => handleSelectNode(nodeId)}
+                onSelect={(nodeId, e) => handleSelectNode(nodeId, e)}
                 {replacedImages}
               />
             </div>
@@ -1073,7 +1215,13 @@
               role="region"
               aria-label="Image viewer - drop images here to replace"
             >
-              {#if selectedNode}
+              {#if selectedImages.length > 1}
+                 <SequenceReplacer 
+                    targetImages={selectedImages} 
+                    onApply={handleSequenceReplace} 
+                    onCancel={() => handleSelectNode(Array.from(selectedNodeIds)[0])} 
+                 />
+              {:else if selectedNode}
                 {#if isProcessing}
                   <div class="empty-state">
                     <p>Loading {selectedNode.type}...</p>

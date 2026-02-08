@@ -18,7 +18,7 @@
 		selected?: Set<string>;
 		replacedImages?: string[];
 		onToggle?: (nodeId: string) => void;
-		onSelect?: (nodeId: string) => void;
+		onSelect?: (nodeId: string, e?: MouseEvent | KeyboardEvent) => void;
 		children?: Snippet;
 	}
 
@@ -67,7 +67,7 @@
 	function handleLeafKeydown(nodeId: string, e: KeyboardEvent) {
 		if (e.key === 'Enter' || e.key === ' ') {
 			e.preventDefault();
-			onSelect?.(nodeId);
+			onSelect?.(nodeId, e);
 		}
 	}
 </script>
@@ -94,7 +94,7 @@
 															class="leaf-node"
 															class:selected={isSelected(grandchild.id)}
 															class:replaced={replacedImages.includes(grandchild.label)}
-															onclick={() => onSelect?.(grandchild.id)}
+															onclick={(e) => onSelect?.(grandchild.id, e)}
 															onkeydown={(e) => handleLeafKeydown(grandchild.id, e)}
 															role="button"
 															tabindex="0"
@@ -111,7 +111,7 @@
 										class="leaf-node"
 										class:selected={isSelected(child.id)}
 										class:replaced={replacedImages.includes(child.label)}
-										onclick={() => onSelect?.(child.id)}
+										onclick={(e) => onSelect?.(child.id, e)}
 										onkeydown={(e) => handleLeafKeydown(child.id, e)}
 										role="button"
 										tabindex="0"
@@ -128,7 +128,7 @@
 					class="leaf-node"
 					class:selected={isSelected(node.id)}
 					class:replaced={replacedImages.includes(node.label)}
-					onclick={() => onSelect?.(node.id)}
+					onclick={(e) => onSelect?.(node.id, e)}
 					onkeydown={(e) => handleLeafKeydown(node.id, e)}
 					role="button"
 					tabindex="0"
