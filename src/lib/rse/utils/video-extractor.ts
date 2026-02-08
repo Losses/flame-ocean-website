@@ -3,7 +3,11 @@
  * Extracts a sequence of frames from a video file.
  */
 
-export async function extractFrames(videoFile: File, count: number): Promise<File[]> {
+export async function extractFrames(
+    videoFile: File,
+    count: number,
+    onProgress?: (progress: number) => void
+): Promise<File[]> {
     return new Promise((resolve, reject) => {
         const video = document.createElement('video');
         const canvas = document.createElement('canvas');
@@ -43,6 +47,9 @@ export async function extractFrames(videoFile: File, count: number): Promise<Fil
                         const file = new File([blob], fileName, { type: 'image/png' });
                         frames.push(file);
                     }
+
+                    // Report progress (0-100)
+                    onProgress?.((i + 1) / count * 100);
                 }
 
                 resolve(frames);

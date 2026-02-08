@@ -34,6 +34,7 @@
   let isFromVideo = $state(false); // Track if sourceFiles came from video extraction
   let isDragOver = $state(false);
   let isExtracting = $state(false);
+  let extractProgress = $state(0);
   let previewUrl = $state<string | null>(null);
   let currentSourceIndex = $state(0);
 
@@ -228,12 +229,16 @@
     if (videoFile) {
       // VIDEO: Extract frames and use index-based matching
       isExtracting = true;
+      extractProgress = 0;
       isFromVideo = true;
       sourceFileMap.clear();
       try {
         const frames = await extractFrames(
           videoFile,
           selectedGroup?.images.length || 30,
+          (progress) => {
+            extractProgress = progress;
+          },
         );
         sourceFiles = frames;
       } catch (e) {
@@ -536,7 +541,7 @@
 </div>
 
 {#if isExtracting}
-  <LoadingWindow message="Extracting frames from video..." showProgress={true} />
+  <LoadingWindow message="Extracting frames from video..." progress={extractProgress} showProgress={true} />
 {/if}
 
 <style>
