@@ -438,28 +438,6 @@
           {#if !selectedImage}
             <div class="empty-msg">Select an image to replace</div>
           {:else}
-            {#if (isFromVideo && sourceFiles.length > 0) || (!isFromVideo && sourceFileMap.size > 0)}
-              <div class="source-info">
-                <span class="label">Source:</span>
-                <span class="value"
-                  >{isFromVideo
-                    ? sourceFiles[currentSourceIndex]?.name || "--"
-                    : (sourceFileMap.get(selectedImage?.name || "")?.name || "--")}</span
-                >
-                <span class="size"
-                  >{isFromVideo
-                    ? (sourceFiles[currentSourceIndex]
-                      ? (sourceFiles[currentSourceIndex].size / 1024).toFixed(1) +
-                        " KB"
-                      : "--")
-                    : (sourceFileMap.get(selectedImage?.name || "")
-                      ? (sourceFileMap.get(selectedImage?.name || "")!.size / 1024).toFixed(1) +
-                        " KB"
-                      : "--")}</span
-                >
-              </div>
-            {/if}
-
             <div class="preview-image">
               <div class="preview-column before-column">
                 <div class="preview-label">Before</div>
@@ -739,32 +717,7 @@
     color: #000000;
   }
 
-  .source-info {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 4px;
-    background-color: #f0f0f0;
-    border: 1px inset #ffffff;
-  }
 
-  .label {
-    font-weight: bold;
-    color: #000080;
-    min-width: 50px;
-  }
-
-  .value {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .size {
-    color: #666;
-    font-size: 10px;
-  }
 
   .preview-image {
     height: 100%;
