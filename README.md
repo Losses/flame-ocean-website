@@ -1,42 +1,71 @@
-# sv
+# FlameOcean
 
-Everything you need to build a Svelte project, powered by [`sv`](https://github.com/sveltejs/cli).
+A web-based firmware customization tool for Snowsky Echo Mini devices. FlameOcean allows you to extract, view, and replace resources embedded in Snowsky firmware binaries.
 
-## Creating a project
+## Features
 
-If you're seeing this, you've probably already done this step. Congrats!
+- **Firmware Analysis**: Parse and analyze Snowsky Echo Mini firmware files
+- **Resource Extraction**: Extract and display font glyphs (SMALL/LARGE) organized by Unicode planes
+- **Image Viewing**: View embedded bitmap images in RGB565 format
+- **Image Replacement**: Replace firmware images with custom ones via drag-and-drop, paste, or file selection
+- **Batch Operations**: Replace multiple images at once by filename matching
+- **Export**: Download modified firmware or export all images as a ZIP archive for easy editing
 
-```sh
-# create a new project
-npx sv create my-app
-```
+## Tech Stack
 
-To recreate this project with the same configuration:
+- Svelte 5 + SvelteKit
+- TypeScript
+- Web Workers for heavy processing
 
-```sh
-# recreate this project
-bun x sv create --template minimal --types ts --add mcp="ide:claude-code,opencode,vscode,gemini+setup:local" sveltekit-adapter="adapter:static" vitest="usages:unit,component" --install bun flame-ocean
-```
+## Usage
 
-## Developing
+1. Open the application in a web browser
+2. Drop a firmware file (`.bin`) onto the window or click to browse
+3. Navigate the resource tree to view fonts and images
+4. Replace images by:
+   - Dragging and dropping image files onto the viewer
+   - Pasting images from clipboard (Ctrl+V)
+   - Clicking the edit button and selecting files
+5. Export the modified firmware (Ctrl+S)
 
-Once you've created a project and installed dependencies with `npm install` (or `pnpm install` or `yarn`), start a development server:
+## Compatibility
 
-```sh
-npm run dev
+This tool is designed and tested specifically for **Snowsky Echo Mini** firmware.
 
-# or start the server and open the app in a new browser tab
-npm run dev -- --open
+The underlying resource extraction logic may work with other Snowsky device firmware, but this has not been tested. Use at your own risk.
+
+## WARNING
+
+**This tool modifies device firmware. Improper use may brick your device.**
+
+- Always backup your original firmware before making modifications
+- Ensure replacement images match the exact dimensions of the original
+- Flash modified firmware at your own risk
+- There is no guarantee of recovery if something goes wrong
+
+## NO SUPPORT
+
+**Don't ask me for help.**
+
+This tool is provided as-is, without any warranty or support. I will not provide:
+
+- Troubleshooting assistance
+- Recovery guidance for bricked devices
+- Pay you for the broken device
+
+Complaining to me about bricked devices will only earn you my scorn.
+
+## Development
+
+```bash
+bun install
+bun run dev
 ```
 
 ## Building
 
-To create a production version of your app:
-
-```sh
-npm run build
+```bash
+bun run build
 ```
 
-You can preview the production build with `npm run preview`.
-
-> To deploy your app, you may need to install an [adapter](https://svelte.dev/docs/kit/adapters) for your target environment.
+The static site will be output to `build/`.
