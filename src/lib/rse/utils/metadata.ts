@@ -1,6 +1,13 @@
 /**
  * Shared metadata extraction utilities
  * Used by both ResourceExtractor and firmware-worker
+ *
+ * IMPORTANT: Bootloader Field Reorganization
+ * ===========================================
+ * Flash metadata stores width/height fields in Entry[i+1], not Entry[i].
+ * This is NOT corruption - it's the Bootloader's runtime construction pattern:
+ *   Flash Entry[i+1].width  → runtime descriptor[i].width
+ *   Flash Entry[i+1].height → runtime descriptor[i].height
  */
 
 import type { BitmapMetadata } from '../types/index.js';
@@ -221,9 +228,10 @@ export function detectOffsetMisalignment(
 			}
 		}
 
-		// Check Entry 0 status
+		// Check for Flash metadata structure pattern
+		// Entry 0 offset appears invalid because fields are stored in Entry[1]
 		const entry0 = metadataEntries[0];
-		const isEntry0Corrupted =
+		const hasFlashMetadataStructure =
 			entry0.offset === 0 ||
 			entry0.offset >= part5Data.length ||
 			entry0.offset === 0xf564f564 ||

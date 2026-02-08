@@ -1,5 +1,17 @@
 /**
- * Resource Extractor - Smart bitmap extraction with offset misalignment detection
+ * Resource Extractor - Smart bitmap extraction with Bootloader field reorganization handling
+ *
+ * KEY INSIGHT FROM FIRMWARE ANALYSIS (2026-02-07):
+ * ================================================
+ * Entry 0 is NOT "corrupted" - the firmware works correctly!
+ *
+ * The Bootloader reorganizes Flash metadata fields when building runtime descriptors:
+ *   Flash Entry[i].offset   → runtime descriptor[i].offset
+ *   Flash Entry[i+1].width  → runtime descriptor[i].width
+ *   Flash Entry[i+1].height → runtime descriptor[i].height
+ *
+ * This is NOT a bug or corruption - it's the intentional storage format in Flash.
+ * When extracting, we must read width/height from Entry[i+1] for ALL entries.
  */
 
 import type {
@@ -179,9 +191,9 @@ export class ResourceExtractor {
 				result: { bestShift, confidence, totalVotes: Array.from(offsetShiftVotes.values()).reduce((a, b) => a + b, 0) }
 			});
 
-			// Check Entry 0 status
+			// Check Flash metadata structure (Entry 0 fields are stored in Entry[1])
 			const entry0 = metadataEntries[0];
-			const isEntry0Corrupted =
+			const hasFlashMetadataStructure =
 				entry0.offset === 0 ||
 				entry0.offset >= this.firmware.length ||
 				entry0.offset === 0xf564f564 ||
@@ -191,8 +203,8 @@ export class ResourceExtractor {
 				entry0.offset === 0x45294529;
 
 			checks.push({
-				name: 'Entry 0 corruption detection',
-				result: { corrupted: isEntry0Corrupted, offset: `0x${entry0.offset.toString(16)}` }
+				name: 'Flash metadata structure detection',
+				result: { hasBootloaderStructure: hasFlashMetadataStructure, offset: `0x${entry0.offset.toString(16)}` }
 			});
 
 			if (bestShift === 1) {
@@ -360,7 +372,8 @@ export class ResourceExtractor {
 
 			const name = entry.name;
 
-			// Get width/height from next entry
+			// Get width/height from Entry[i+1] (Bootloader field reorganization)
+			// Flash Entry[i+1].width/height → runtime descriptor[i].width/height
 			let width: number;
 			let height: number;
 			let whSource: string;
@@ -495,7 +508,7 @@ export class ResourceExtractor {
 
 			const name = entry.name;
 
-			// Get width/height from next entry
+			// Get width/height from Entry[i+1] (Bootloader field reorganization)
 			let width: number;
 			let height: number;
 			if (i + 1 < metadataEntries.length) {

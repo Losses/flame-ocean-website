@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 """
-Smart Bitmap Resource Extractor with Intelligent Misalignment Detection
+Smart Bitmap Resource Extractor with Bootloader Field Reorganization Handling
 
-This script extracts bitmap images from firmware firmware files by automatically
-detecting and correcting index misalignment issues between metadata tables and
-resource offset tables.
+This script extracts bitmap images from firmware files by correctly handling
+the Bootloader's runtime metadata field reorganization pattern.
+
+KEY INSIGHT FROM FIRMWARE ANALYSIS (2026-02-07):
+================================================
+Entry 0 is NOT "corrupted" - the firmware works correctly!
+
+The Bootloader reorganizes Flash metadata fields when building runtime descriptors:
+  Flash Entry[i].offset   → runtime descriptor[i].offset
+  Flash Entry[i+1].width  → runtime descriptor[i].width
+  Flash Entry[i+1].height → runtime descriptor[i].height
+
+This is NOT a bug or corruption - it's the intentional storage format in Flash.
+When extracting, we must read width/height from Entry[i+1] for ALL entries.
 
 Key Features:
-- Automatic detection of metadata table index misalignment
+- Automatic detection of Flash metadata structure pattern
 - Uses ROCK26 resource table as ground truth for offset verification
 - Statistical analysis to determine correct offset mapping
 - Handles firmware variations across different versions
@@ -172,16 +183,17 @@ def convert_to_bmp(raw_data, width, height):
 # ============================================================================
 
 def detect_offset_misalignment(part5_data, metadata_entries, rock26_offset):
-    """Intelligently detect offset misalignment in metadata table.
+    """Detect Bootloader field reorganization pattern in metadata table.
 
     This function performs statistical analysis to determine if metadata table
-    indices are misaligned with the ROCK26 resource table indices.
+    indices follow the Bootloader's runtime field reorganization pattern where
+    width/height for Entry[i] are stored in Entry[i+1].
 
     Algorithm:
     1. Read all offsets from ROCK26 table (ground truth)
     2. Compare with metadata entry offsets using multiple shift hypotheses
-    3. Use majority voting to determine the most likely misalignment pattern
-    4. Validate Entry 0 status to detect corruption
+    3. Use majority voting to determine the most likely offset pattern
+    4. Validate Entry 0 status to detect Flash metadata structure pattern
 
     Args:
         part5_data: Raw Part 5 firmware data containing all tables
@@ -244,8 +256,10 @@ def detect_offset_misalignment(part5_data, metadata_entries, rock26_offset):
             'total_votes': sum(offset_shift_votes.values())
         })
 
+        # Check for Flash metadata structure pattern
+        # Entry 0 offset appears invalid because fields are stored in Entry[1]
         entry0 = metadata_entries[0]
-        is_entry0_corrupted = (
+        has_flash_metadata_structure = (
             entry0['offset'] == 0 or
             entry0['offset'] >= len(part5_data) or
             entry0['offset'] == 0xF564F564 or
@@ -256,8 +270,8 @@ def detect_offset_misalignment(part5_data, metadata_entries, rock26_offset):
         )
 
         detection_info['checks'].append({
-            'name': 'Entry 0 corruption detection',
-            'result': is_entry0_corrupted,
+            'name': 'Flash metadata structure detection',
+            'result': has_flash_metadata_structure,
             'offset': hex(entry0['offset'])
         })
 
@@ -536,6 +550,7 @@ def extract_part5_bitmaps_smart(img_path, output_base_dir, debug=False):
 
         name = entry['name']
 
+        # Get width/height from Entry[i+1] (Bootloader field reorganization)
         if i + 1 < len(metadata_entries):
             width = metadata_entries[i + 1]['width']
             height = metadata_entries[i + 1]['height']
