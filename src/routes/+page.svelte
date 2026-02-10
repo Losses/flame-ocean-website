@@ -23,6 +23,7 @@
   import {
     loadAndValidateFontFile,
     unloadFontFile,
+    FontLoadingError,
   } from "$lib/rse/utils/font-loading";
   import { extractCharacter } from "$lib/rse/utils/font-extraction";
   import { loadTofuFont } from "$lib/rse/utils/tofu-font";
@@ -1138,10 +1139,16 @@
       });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      showWarningDialog(
-        "Font Replacement Error",
-        `Failed to replace font:\n${errorMessage}`
-      );
+
+      // Show specific modal for invalid font files (non-pixel-perfect)
+      if (err instanceof FontLoadingError) {
+        showWarningDialog("Invalid Font File", errorMessage);
+      } else {
+        showWarningDialog(
+          "Font Replacement Error",
+          `Failed to replace font:\n${errorMessage}`
+        );
+      }
       statusMessage = `Font replacement failed: ${errorMessage}`;
     } finally {
       // Clean up font resources
