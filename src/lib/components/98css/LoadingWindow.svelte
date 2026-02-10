@@ -12,6 +12,7 @@
   }
 
   interface Props {
+    title?: string;
     message?: string;
     progress?: number;
     showProgress?: boolean;
@@ -21,6 +22,7 @@
   }
 
   let {
+    title,
     message,
     progress = 0,
     showProgress = true,
@@ -76,7 +78,7 @@
 </script>
 
 <div class="loading-wrapper">
-  <Window {width} {statusFields}>
+  <Window {title} {width} {statusFields}>
     <WindowBody>
       <div class="loading-content">
         {#if showProgress}

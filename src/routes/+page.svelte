@@ -63,6 +63,7 @@
   let isProcessing = $state(false);
   let progress = $state(0);
   let statusMessage = $state("Ready to load firmware");
+  let loadingTitle = $state<string | undefined>(undefined);
   let selectedNode = $state<TreeNode | null>(null);
   let expandedNodes = $state(new Set<string>());
   let treeNodes = $state<TreeNode[]>([]);
@@ -834,6 +835,7 @@
     }
 
     isProcessing = true;
+    loadingTitle = "Replacing Font Glyphs";
     statusMessage = `Loading font file: ${file.name}...`;
 
     let fontResult: {
@@ -950,8 +952,21 @@
               summaryMessage += `Successfully replaced: ${data.successCount} characters\n`;
               summaryMessage += `Skipped: ${data.skippedCount} characters`;
 
+              // List first 20 skipped characters with Unicode values
+              if (data.skippedCharacters.length > 0) {
+                const skippedToList = data.skippedCharacters.slice(0, 20);
+                summaryMessage += `\n\nSkipped characters:\n`;
+                for (const char of skippedToList) {
+                  const reason = data.skippedReasons.get(char) ?? "unknown";
+                  summaryMessage += `  U+${char.toString(16).toUpperCase().padStart(4, "0")} (${reason})\n`;
+                }
+                if (data.skippedCharacters.length > 20) {
+                  summaryMessage += `  ...and ${data.skippedCharacters.length - 20} more\n`;
+                }
+              }
+
               if (data.errors.length > 0) {
-                summaryMessage += `\n\nErrors: ${data.errors.length}`;
+                summaryMessage += `\nErrors: ${data.errors.length}`;
                 summaryMessage += `\n${data.errors.slice(0, 3).join("\n")}`;
                 if (data.errors.length > 3) {
                   summaryMessage += `\n...and ${data.errors.length - 3} more`;
@@ -1001,6 +1016,7 @@
         }
       }
       isProcessing = false;
+      loadingTitle = undefined;
     }
   }
 
@@ -1319,7 +1335,7 @@
 
     <!-- Loading Window -->
     {#if showLoadingWindow}
-      <LoadingWindow message={statusMessage} {progress} />
+      <LoadingWindow title={loadingTitle} message={statusMessage} {progress} />
     {/if}
 
     <!-- Main Browser Interface -->
