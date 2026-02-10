@@ -11,6 +11,18 @@
 export type DetectedFontType = 'SMALL' | 'LARGE' | null;
 
 /**
+ * Debug image data for font rendering tests
+ */
+export interface FontDebugImage {
+	/** Data URL of the rendered test image */
+	dataUrl: string;
+	/** Number of anti-aliased pixels found */
+	antiAliasedCount: number;
+	/** Font size used for rendering */
+	fontSize: number;
+}
+
+/**
  * Result of font type detection
  */
 export interface FontDetectionResult {
@@ -22,6 +34,8 @@ export interface FontDetectionResult {
 	antiAliasedCount12px: number;
 	/** Number of anti-aliased pixels found at 16px */
 	antiAliasedCount16px: number;
+	/** Debug images showing rendered test results (only populated when pixel-perfect check fails) */
+	debugImages?: FontDebugImage[];
 }
 
 /**
@@ -45,9 +59,10 @@ const ANTI_ALIASING_THRESHOLD = 0;
 /**
  * Detect font type by rendering test characters and checking for anti-aliasing
  * @param fontFace - The FontFace object to test
+ * @param includeDebugImages - Whether to capture debug images for failed tests
  * @returns Font detection result
  */
-export async function detectFontType(fontFace: FontFace): Promise<FontDetectionResult> {
+export async function detectFontType(fontFace: FontFace, includeDebugImages = false): Promise<FontDetectionResult> {
 	// Ensure font is loaded
 	await fontFace.load();
 
@@ -73,11 +88,31 @@ export async function detectFontType(fontFace: FontFace): Promise<FontDetectionR
 		fontType = 'SMALL';
 	}
 
+	// Prepare debug images if requested and font is not pixel-perfect (failed at both sizes)
+	const bothFailed = !result12px.isPixelPerfect && !result16px.isPixelPerfect;
+
+	const debugImages: FontDebugImage[] | undefined =
+		includeDebugImages && bothFailed
+			? [
+					{
+						dataUrl: result12px.debugImage ?? '',
+						antiAliasedCount: result12px.antiAliasedCount,
+						fontSize: SMALL_TEST_SIZE
+					},
+					{
+						dataUrl: result16px.debugImage ?? '',
+						antiAliasedCount: result16px.antiAliasedCount,
+						fontSize: LARGE_TEST_SIZE
+					}
+			  ]
+			: undefined;
+
 	return {
 		fontType,
 		isPixelPerfect: result12px.isPixelPerfect || result16px.isPixelPerfect,
-		antiAliasedCount12px: result12px.antiAliatedCount,
-		antiAliasedCount16px: result16px.antiAliatedCount,
+		antiAliasedCount12px: result12px.antiAliasedCount,
+		antiAliasedCount16px: result16px.antiAliasedCount,
+		debugImages
 	};
 }
 
@@ -89,7 +124,8 @@ export async function detectFontType(fontFace: FontFace): Promise<FontDetectionR
  */
 function testFontSize(fontFamily: string, fontSize: number): {
 	isPixelPerfect: boolean;
-	antiAliatedCount: number;
+	antiAliasedCount: number;
+	debugImage: string | null;
 } {
 	// Create an offscreen canvas
 	const canvas = document.createElement('canvas');
@@ -98,7 +134,7 @@ function testFontSize(fontFamily: string, fontSize: number): {
 	const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
 	if (!ctx) {
-		return { isPixelPerfect: false, antiAliatedCount: 0 };
+		return { isPixelPerfect: false, antiAliasedCount: 0, debugImage: null };
 	}
 
 	// Clear canvas with white background
@@ -119,7 +155,7 @@ function testFontSize(fontFamily: string, fontSize: number): {
 	// Check for anti-aliasing by examining pixel data
 	const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
 	const pixels = imageData.data;
-	let antiAliatedCount = 0;
+	let antiAliasedCount = 0;
 
 	// Check each pixel for grayscale values (indicating anti-aliasing)
 	for (let i = 0; i < pixels.length; i += 4) {
@@ -133,10 +169,13 @@ function testFontSize(fontFamily: string, fontSize: number): {
 		if (r === g && g === b) {
 			// Grayscale pixel - check if it's not black or white
 			if (r > 0 && r < 255) {
-				antiAliatedCount++;
+				antiAliasedCount++;
 			}
 		}
 	}
+
+	// Capture debug image before cleanup
+	const debugImage = canvas.toDataURL('image/png');
 
 	// Clean up
 	ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -144,8 +183,9 @@ function testFontSize(fontFamily: string, fontSize: number): {
 	canvas.height = 0;
 
 	return {
-		isPixelPerfect: antiAliatedCount <= ANTI_ALIASING_THRESHOLD,
-		antiAliatedCount,
+		isPixelPerfect: antiAliasedCount <= ANTI_ALIASING_THRESHOLD,
+		antiAliasedCount,
+		debugImage
 	};
 }
 

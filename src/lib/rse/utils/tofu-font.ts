@@ -1,24 +1,23 @@
 /**
  * Tofu Fallback Font Utilities
  *
- * Uses a tofu.ttf fallback font to reliably detect missing characters in user-provided fonts.
- * The tofu font displays a generic placeholder glyph (�) for characters that don't exist in a font.
- * By comparing rendered characters against the known tofu signature, we can skip characters
- * that are missing from the user's font.
+ * Uses Adobe NotDef font to detect missing characters.
+ * Adobe NotDef is a special font that renders a distinctive .notdef glyph
+ * for any character, allowing us to detect when a user's font is missing a glyph.
  */
 
 import type { PixelData } from '../types/index.js';
 
 /**
  * Tofu pixel signature for a font size
- * Stores the canonical pixel representation of a tofu character
+ * Stores the canonical pixel representation of Adobe NotDef's .notdef glyph
  */
 export interface TofuSignature {
 	/** Font size for this signature */
 	fontSize: number;
 	/** Character used to generate the signature */
 	char: string;
-	/** Pixel grid (2D boolean array) of the tofu character */
+	/** Pixel grid (2D boolean array) of the Adobe NotDef render */
 	pixels: boolean[][];
 	/** Canvas dimensions used */
 	width: number;
@@ -29,10 +28,12 @@ export interface TofuSignature {
  * Registered tofu font state
  */
 interface TofuFontState {
-	/** FontFace object for tofu */
+	/** FontFace object for Adobe NotDef */
 	fontFace: FontFace | null;
-	/** Whether the font is loaded and registered */
-	isLoaded: boolean;
+	/** Font family name */
+	fontFamily: string;
+	/** Whether the font is loaded */
+	loaded: boolean;
 	/** Cached signatures by font size */
 	signatures: Map<number, TofuSignature>;
 }
@@ -42,81 +43,65 @@ interface TofuFontState {
  */
 const tofuState: TofuFontState = {
 	fontFace: null,
-	isLoaded: false,
+	fontFamily: 'Adobe-NotDef',
+	loaded: false,
 	signatures: new Map()
 };
 
 /**
  * Font family name for tofu fallback
  */
-export const TOFU_FONT_FAMILY = 'Tofu';
+export const TOFU_FONT_FAMILY = 'Adobe-NotDef';
 
 /**
  * Default test character for tofu signature generation
- * Using a character that typically doesn't exist in most fonts
+ * Using a character that won't exist in most pixel fonts
  */
-const DEFAULT_TOFU_TEST_CHAR = '\uD83D\uDD7A'; // 🔺 - Alien Monster, unlikely to be in pixel fonts
+const DEFAULT_TOFU_TEST_CHAR = '\uFFFD'; // Replacement character
 
 /**
- * Alternative test characters (fallbacks if the primary doesn't work)
+ * Initialize the tofu font system by loading Adobe NotDef
+ * @returns Promise that resolves when initialized
  */
-const ALTERNATIVE_TOFU_CHARS = [
-	'\u{1F600}', // 😀
-	'\u{2605}', // ★
-	'\u{2764}', // ❤
-	'A' // Common fallback
-];
-
-/**
- * Load the tofu font from static directory and register it
- * @param baseUrl - Base URL for static assets (defaults to '/tofu.ttf')
- * @returns Promise that resolves when the font is loaded and registered
- * @throws Error if font fails to load
- */
-export async function loadTofuFont(baseUrl = '/tofu.ttf'): Promise<void> {
-	// Already loaded
-	if (tofuState.isLoaded && tofuState.fontFace) {
+export async function loadTofuFont(): Promise<void> {
+	if (tofuState.loaded) {
 		return;
 	}
 
 	try {
-		// Fetch the tofu font file
-		const response = await fetch(baseUrl);
+		// Fetch the Adobe NotDef font file
+		const response = await fetch('/AND-Regular.ttf');
 		if (!response.ok) {
-			throw new Error(`Failed to fetch tofu font: ${response.status} ${response.statusText}`);
+			throw new Error(`Failed to fetch Adobe NotDef font: ${response.statusText}`);
 		}
 
-		const arrayBuffer = await response.arrayBuffer();
+		const buffer = await response.arrayBuffer();
 
 		// Create FontFace object
-		const fontFace = new FontFace(TOFU_FONT_FAMILY, arrayBuffer);
+		const fontFace = new FontFace(TOFU_FONT_FAMILY, buffer);
 
-		// Load the font
+		// Load and add to document fonts
 		await fontFace.load();
-
-		// Add to document.fonts for rendering
 		document.fonts.add(fontFace);
 
-		// Store the font face
+		// Store in state
 		tofuState.fontFace = fontFace;
-		tofuState.isLoaded = true;
+		tofuState.loaded = true;
 
-		// Pre-generate signatures for common font sizes
-		await generateTofuSignature(12);
-		await generateTofuSignature(16);
+		console.log(`Adobe NotDef font loaded successfully as "${TOFU_FONT_FAMILY}"`);
 	} catch (error) {
-		tofuState.isLoaded = false;
-		tofuState.fontFace = null;
-		throw new Error(`Failed to load tofu font: ${error instanceof Error ? error.message : String(error)}`);
+		console.error('Failed to load Adobe NotDef font:', error);
+		throw new Error(
+			`Failed to load tofu font: ${error instanceof Error ? error.message : String(error)}`
+		);
 	}
 }
 
 /**
- * Generate a tofu signature for a specific font size
+ * Generate an Adobe NotDef signature for a specific font size
  * @param fontSize - Font size in pixels
- * @param testChar - Optional test character (defaults to alien monster)
- * @returns The tofu signature
- * @throws Error if tofu font is not loaded
+ * @param testChar - Optional test character (defaults to replacement character)
+ * @returns The Adobe NotDef signature
  */
 export async function generateTofuSignature(
 	fontSize: number,
@@ -128,15 +113,14 @@ export async function generateTofuSignature(
 		return cached;
 	}
 
-	// Ensure tofu font is loaded
-	if (!tofuState.isLoaded || !tofuState.fontFace) {
-		throw new Error('Tofu font is not loaded. Call loadTofuFont() first.');
+	if (!tofuState.loaded) {
+		throw new Error('Tofu font not loaded. Call loadTofuFont() first.');
 	}
 
-	// Create canvas for rendering
+	// Create canvas for rendering - use same dimensions as extraction
+	const width = fontSize;
+	const height = fontSize;
 	const canvas = document.createElement('canvas');
-	const width = fontSize * 2; // Extra space for wider glyphs
-	const height = fontSize * 2;
 	canvas.width = width;
 	canvas.height = height;
 
@@ -149,15 +133,15 @@ export async function generateTofuSignature(
 	ctx.fillStyle = '#ffffff';
 	ctx.fillRect(0, 0, width, height);
 
-	// Configure font rendering
+	// Configure font rendering - using Adobe NotDef only
 	ctx.font = `${fontSize}px "${TOFU_FONT_FAMILY}"`;
-	ctx.textBaseline = 'middle';
-	ctx.textAlign = 'center';
-	ctx.imageSmoothingEnabled = false;
+	ctx.textBaseline = 'top';
+	ctx.textAlign = 'left';
+	ctx.imageSmoothingEnabled = false; // Keep pixel crisp
 
-	// Render the character
+	// Render the character (Adobe NotDef will render .notdef glyph for any character)
 	ctx.fillStyle = '#000000';
-	ctx.fillText(testChar, width / 2, height / 2);
+	ctx.fillText(testChar, 0, 0);
 
 	// Extract pixel data
 	const imageData = ctx.getImageData(0, 0, width, height);
@@ -192,11 +176,11 @@ export function getTofuSignature(fontSize: number): TofuSignature | null {
 }
 
 /**
- * Check if tofu font is loaded and ready
- * @returns True if tofu font is loaded
+ * Check if tofu font system is ready
+ * @returns True if Adobe NotDef is loaded
  */
 export function isTofuFontLoaded(): boolean {
-	return tofuState.isLoaded;
+	return tofuState.loaded;
 }
 
 /**
@@ -209,7 +193,6 @@ export function getTofuFontFamily(): string {
 
 /**
  * Unload the tofu font and clean up resources
- * Call this when font replacement operations are complete
  */
 export function unloadTofuFont(): void {
 	if (tofuState.fontFace) {
@@ -220,7 +203,7 @@ export function unloadTofuFont(): void {
 		}
 		tofuState.fontFace = null;
 	}
-	tofuState.isLoaded = false;
+	tofuState.loaded = false;
 	tofuState.signatures.clear();
 }
 
@@ -244,9 +227,9 @@ function imageDataToPixels(imageData: ImageData, width: number, height: number):
 			const b = data[i + 2];
 
 			// Consider a pixel "foreground" if it's dark enough
-			// Using threshold of 128 (middle gray)
+			// Using threshold of 200 to avoid anti-aliasing
 			const brightness = (r + g + b) / 3;
-			row.push(brightness < 128);
+			row.push(brightness < 200);
 		}
 		pixels.push(row);
 	}
@@ -256,10 +239,7 @@ function imageDataToPixels(imageData: ImageData, width: number, height: number):
 
 /**
  * Compare two pixel grids for equality
- * Used to detect if a rendered character matches the tofu signature
- * @param pixels1 - First pixel grid
- * @param pixels2 - Second pixel grid
- * @returns True if the pixel grids match exactly
+ * Used to detect if a rendered character matches the system fallback
  */
 export function pixelsMatch(pixels1: boolean[][], pixels2: boolean[][]): boolean {
 	if (pixels1.length !== pixels2.length) {
@@ -283,10 +263,10 @@ export function pixelsMatch(pixels1: boolean[][], pixels2: boolean[][]): boolean
 }
 
 /**
- * Check if a rendered character matches the tofu signature
+ * Check if a rendered character matches the system fallback signature
  * @param pixels - Rendered character pixels
  * @param fontSize - Font size used for rendering
- * @returns True if the character appears to be tofu (missing from font)
+ * @returns True if the character appears to use system fallback (missing from font)
  */
 export function isTofuCharacter(pixels: PixelData, fontSize: number): boolean {
 	const signature = getTofuSignature(fontSize);
@@ -299,27 +279,8 @@ export function isTofuCharacter(pixels: PixelData, fontSize: number): boolean {
 	const mutablePixels = pixels.map((row) => [...row]);
 	const mutableSigPixels = signature.pixels.map((row) => [...row]);
 
-	// The rendered character should be centered, so we need to find the bounding box
-	// and compare it with the signature
-	const bbox = findBoundingBox(mutablePixels);
-	const sigBbox = findBoundingBox(mutableSigPixels);
-
-	// If both are empty (no pixels), consider it tofu
-	if (bbox.width === 0 && bbox.height === 0 && sigBbox.width === 0 && sigBbox.height === 0) {
-		return true;
-	}
-
-	// If one is empty and the other isn't, not a match
-	if (bbox.width === 0 || sigBbox.width === 0) {
-		return false;
-	}
-
-	// Extract the bounding box region from both
-	const cropped = cropToBoundingBox(mutablePixels, bbox);
-	const sigCropped = cropToBoundingBox(mutableSigPixels, sigBbox);
-
-	// Compare the cropped regions
-	return comparePixelRegions(cropped, sigCropped);
+	// Check if pixels match the system fallback signature
+	return comparePixelRegions(mutablePixels, mutableSigPixels);
 }
 
 /**
@@ -417,29 +378,22 @@ function comparePixelRegions(pixels1: boolean[][], pixels2: boolean[][], toleran
 		}
 	}
 
-	// Require at least 95% match
-	return matches / total >= 0.95;
+	// Require at least 90% match (allowing for some anti-aliasing differences)
+	return matches / total >= 0.90;
 }
 
 /**
- * Render a single character using a font family (with tofu fallback)
- * This is a helper for use in batch character extraction
+ * Render a single character using user font with Adobe NotDef fallback
  * @param char - Character to render
  * @param fontFamily - Primary font family name
  * @param fontSize - Font size in pixels (12 or 16)
  * @returns Rendered pixel data
- * @throws Error if tofu font is not loaded
  */
 export async function renderCharacterWithTofu(
 	char: string,
 	fontFamily: string,
 	fontSize: 12 | 16
 ): Promise<boolean[][]> {
-	// Ensure tofu font is loaded
-	if (!tofuState.isLoaded) {
-		await loadTofuFont();
-	}
-
 	// Create canvas
 	const canvas = document.createElement('canvas');
 	const width = fontSize === 12 ? 12 : 16;
@@ -456,9 +410,13 @@ export async function renderCharacterWithTofu(
 	ctx.fillStyle = '#ffffff';
 	ctx.fillRect(0, 0, width, height);
 
-	// Configure font with tofu fallback
-	// The primary font is tried first, then tofu if the character is missing
-	ctx.font = `${fontSize}px "${fontFamily}", "${TOFU_FONT_FAMILY}"`;
+	// Configure font with Adobe NotDef fallback for missing characters
+	// If user font doesn't have the glyph, Adobe NotDef will render .notdef
+	const fontStack = tofuState.loaded
+		? `"${fontFamily}", "${TOFU_FONT_FAMILY}"`
+		: `"${fontFamily}"`;
+
+	ctx.font = `${fontSize}px ${fontStack}`;
 	ctx.textBaseline = 'top';
 	ctx.textAlign = 'left';
 	ctx.imageSmoothingEnabled = false;
@@ -496,24 +454,14 @@ export interface SkipCharacterResult {
 /**
  * Check if a character should be skipped during font replacement
  *
- * This function determines whether a character should be skipped by:
- * 1. Rendering the character with tofu fallback
- * 2. Comparing the rendered output against the known tofu signature
- * 3. Returning true if the character matches tofu (missing from user font)
+ * Checks by rendering the character and comparing against Adobe NotDef's .notdef glyph.
+ * If they match (within tolerance), the character is missing from the user's font.
  *
  * @param codePoint - Unicode code point of the character to check
  * @param fontFamily - Primary font family name
  * @param fontSize - Font size in pixels (12 or 16)
  * @param existsInFirmware - Optional callback to check if character exists in firmware address space
  * @returns SkipCharacterResult with skip decision and reason
- *
- * @example
- * ```ts
- * const result = await shouldSkipCharacter(0x41, 'UserFont', 12, (cp) => cp < 0x10000);
- * if (result.shouldSkip) {
- *   console.log(`Skipping U+${result.codePoint.toString(16)}: ${result.reason}`);
- * }
- * ```
  */
 export async function shouldSkipCharacter(
 	codePoint: number,
@@ -537,24 +485,28 @@ export async function shouldSkipCharacter(
 		}
 	}
 
-	// Ensure tofu font is loaded
-	if (!tofuState.isLoaded) {
-		await loadTofuFont();
-	}
+	// Check if character is missing from font by comparing against Adobe NotDef
+	if (tofuState.loaded) {
+		// Render the character (will use Adobe NotDef if missing)
+		const pixels = await renderCharacterWithTofu(char, fontFamily, fontSize);
 
-	// Render the character with tofu fallback
-	const pixels = await renderCharacterWithTofu(char, fontFamily, fontSize);
+		// Get or generate the tofu signature for this size
+		let signature = getTofuSignature(fontSize);
+		if (!signature) {
+			signature = await generateTofuSignature(fontSize);
+		}
 
-	// Check if the rendered character matches tofu signature
-	const matchesTofu = isTofuCharacter(pixels as PixelData, fontSize);
+		// Check if the render matches Adobe NotDef's .notdef glyph
+		const isTofu = comparePixelRegions(pixels, signature.pixels);
 
-	if (matchesTofu) {
-		return {
-			shouldSkip: true,
-			codePoint,
-			char,
-			reason: 'missing_from_font'
-		};
+		if (isTofu) {
+			return {
+				shouldSkip: true,
+				codePoint,
+				char,
+				reason: 'missing_from_font'
+			};
+		}
 	}
 
 	return {
@@ -575,19 +527,6 @@ export async function shouldSkipCharacter(
  * @param fontSize - Font size in pixels (12 or 16)
  * @param existsInFirmware - Optional callback to check if character exists in firmware address space
  * @returns Array of SkipCharacterResult for each character
- * @returns skippedCharacters - Array of code points that should be skipped
- * @returns skippedReasons - Map of code point to skip reason
- *
- * @example
- * ```ts
- * const results = await shouldSkipCharacters([0x41, 0x42, 0x1F600], 'UserFont', 12);
- * console.log(`Skipping ${results.skippedCharacters.length} characters`);
- * // Log skipped characters with their Unicode values
- * results.skippedCharacters.forEach(cp => {
- *   const reason = results.skippedReasons.get(cp);
- *   console.log(`U+${cp.toString(16)}: ${reason}`);
- * });
- * ```
  */
 export async function shouldSkipCharacters(
 	codePoints: number[],
@@ -602,11 +541,6 @@ export async function shouldSkipCharacters(
 	const results: SkipCharacterResult[] = [];
 	const skippedCharacters: number[] = [];
 	const skippedReasons = new Map<number, string>();
-
-	// Ensure tofu font is loaded once for all characters
-	if (!tofuState.isLoaded) {
-		await loadTofuFont();
-	}
 
 	// Process each character
 	for (const codePoint of codePoints) {

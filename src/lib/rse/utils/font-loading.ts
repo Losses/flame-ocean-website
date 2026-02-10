@@ -5,7 +5,7 @@
  * before starting the font replacement process.
  */
 
-import type { DetectedFontType } from './font-detection.js';
+import type { DetectedFontType, FontDebugImage } from './font-detection.js';
 
 /**
  * Result of loading and validating a font file
@@ -31,12 +31,15 @@ export class FontLoadingError extends Error {
 	readonly fileName: string;
 	/** The underlying error cause */
 	readonly cause?: Error;
+	/** Debug images showing why the font failed validation (for pixel-perfect failures) */
+	readonly debugImages?: FontDebugImage[];
 
-	constructor(message: string, fileName: string, cause?: Error) {
+	constructor(message: string, fileName: string, cause?: Error, debugImages?: FontDebugImage[]) {
 		super(message);
 		this.name = 'FontLoadingError';
 		this.fileName = fileName;
 		this.cause = cause;
+		this.debugImages = debugImages;
 	}
 }
 
@@ -170,7 +173,7 @@ export async function loadAndValidateFontFile(
 	// Perform font type detection
 	let detectionResult;
 	try {
-		detectionResult = await detectFontType(fontFace);
+		detectionResult = await detectFontType(fontFace, true); // Enable debug images
 	} catch (error) {
 		// Clean up font on detection failure
 		try {
@@ -196,7 +199,9 @@ export async function loadAndValidateFontFile(
 		throw new FontLoadingError(
 			`Invalid font file. The font must be a pixel art font with no anti-aliasing. ` +
 				`Please use a bitmap/pixel font designed for the target size (12px or 16px).`,
-			file.name
+			file.name,
+			undefined,
+			detectionResult.debugImages
 		);
 	}
 
@@ -295,7 +300,7 @@ export async function loadAndValidateFontFromArrayBuffer(
 	// Perform font type detection
 	let detectionResult;
 	try {
-		detectionResult = await detectFontType(fontFace);
+		detectionResult = await detectFontType(fontFace, true); // Enable debug images
 	} catch (error) {
 		// Clean up font on detection failure
 		try {
@@ -321,7 +326,9 @@ export async function loadAndValidateFontFromArrayBuffer(
 		throw new FontLoadingError(
 			`Invalid font data. The font must be a pixel art font with no anti-aliasing. ` +
 				`Please use a bitmap/pixel font designed for the target size (12px or 16px).`,
-			fontName
+			fontName,
+			undefined,
+			detectionResult.debugImages
 		);
 	}
 

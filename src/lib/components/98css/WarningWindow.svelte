@@ -90,7 +90,10 @@
 	}
 
 	.warning-content {
-		padding: 16px;
+		padding-top: 8px;
+		padding-left: 8px;
+		padding-right: 4px;
+		padding-bottom: 4px;
 	}
 
 	.warning-row {

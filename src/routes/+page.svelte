@@ -1,33 +1,33 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { get } from "svelte/store";
   import {
     Window,
-    WindowBody,
     TreeView,
     StatusBar,
+    WindowBody,
     LoadingWindow,
     WarningWindow,
+    FontDebugWindow,
   } from "$lib/components/98css";
-  import FontGridRenderer from "$lib/components/firmware/FontGridRenderer.svelte";
   import ImageRenderer from "$lib/components/firmware/ImageRenderer.svelte";
-  import SequenceReplacerWindow from "$lib/components/firmware/SequenceReplacerWindow.svelte";
   import FirmwareWorker from "$lib/workers/firmware-worker.ts?worker";
+  import FontGridRenderer from "$lib/components/firmware/FontGridRenderer.svelte";
+  import SequenceReplacerWindow from "$lib/components/firmware/SequenceReplacerWindow.svelte";
   import {
-    initDebugShortcut,
     debugMode,
+    initDebugShortcut,
     debugAnimationComplete,
   } from "$lib/stores";
-  import { fileIO } from "$lib/rse/utils/file-io";
-  import { imageToRgb565 } from "$lib/rse/utils/bitmap";
   import {
-    loadAndValidateFontFile,
     unloadFontFile,
     FontLoadingError,
+    loadAndValidateFontFile,
   } from "$lib/rse/utils/font-loading";
-  import { extractCharacter } from "$lib/rse/utils/font-extraction";
+  import { fileIO } from "$lib/rse/utils/file-io";
   import { loadTofuFont } from "$lib/rse/utils/tofu-font";
+  import { imageToRgb565 } from "$lib/rse/utils/bitmap";
   import { UNICODE_RANGES } from "$lib/rse/utils/unicode-ranges";
+  import { extractCharacter } from "$lib/rse/utils/font-extraction";
 
   // Types
   interface FontPlaneInfo {
@@ -90,6 +90,14 @@
   let showWarning = $state(false);
   let warningTitle = $state("");
   let warningMessage = $state("");
+
+  // Font debug window state
+  let showFontDebug = $state(false);
+  let fontDebugFileName = $state("");
+  let fontDebugMessage = $state("");
+  let fontDebugImages = $state<
+    import("$lib/rse/utils/font-detection").FontDebugImage[]
+  >([]);
 
   // Track replaced images - use array for better Svelte 5 reactivity
   let replacedImages = $state<string[]>([]);
@@ -196,7 +204,11 @@
       const imageFiles = files.filter((f) => !isFontFile(f));
       if (imageFiles.length === 0) return;
 
-      if (imageFiles.length === 1 && selectedNode?.type === "image" && imageData) {
+      if (
+        imageFiles.length === 1 &&
+        selectedNode?.type === "image" &&
+        imageData
+      ) {
         await replaceCurrentlySelectedImage(imageFiles[0]);
       } else {
         await handlePasteFiles(imageFiles);
@@ -830,7 +842,10 @@
     }
 
     if (isProcessing) {
-      showWarningDialog("Busy", "A replacement is already in progress. Please wait.");
+      showWarningDialog(
+        "Busy",
+        "A replacement is already in progress. Please wait.",
+      );
       return;
     }
 
@@ -855,7 +870,7 @@
         showWarningDialog(
           "Invalid Font File",
           `The font file "${file.name}" could not be validated. ` +
-            `Please ensure it is a pixel art font designed for 12px or 16px size.`
+            `Please ensure it is a pixel art font designed for 12px or 16px size.`,
         );
         return;
       }
@@ -891,7 +906,8 @@
 
       // Step 4: Extract pixel data for all characters in the main thread
       // (canvas rendering not available in worker)
-      const fontReplacements: Array<{ unicode: number; pixels: boolean[][] }> = [];
+      const fontReplacements: Array<{ unicode: number; pixels: boolean[][] }> =
+        [];
 
       for (let i = 0; i < codePointsToProcess.length; i++) {
         const codePoint = codePointsToProcess[i];
@@ -944,7 +960,10 @@
 
               // Add replaced characters to tracking set
               for (const char of data.replacedCharacters) {
-                replacedFontCharacters = new Set([...replacedFontCharacters, char]);
+                replacedFontCharacters = new Set([
+                  ...replacedFontCharacters,
+                  char,
+                ]);
               }
 
               // Show summary dialog
@@ -998,11 +1017,20 @@
 
       // Show specific modal for invalid font files (non-pixel-perfect)
       if (err instanceof FontLoadingError) {
-        showWarningDialog("Invalid Font File", errorMessage);
+        // Check if we have debug images
+        if (err.debugImages && err.debugImages.length > 0) {
+          // Store debug data and show warning with "See Details" button
+          fontDebugFileName = err.fileName;
+          fontDebugMessage = errorMessage;
+          fontDebugImages = err.debugImages;
+          showFontDebug = true;
+        } else {
+          showWarningDialog("Invalid Font File", errorMessage);
+        }
       } else {
         showWarningDialog(
           "Font Replacement Error",
-          `Failed to replace font:\n${errorMessage}`
+          `Failed to replace font:\n${errorMessage}`,
         );
       }
       statusMessage = `Font replacement failed: ${errorMessage}`;
@@ -1029,72 +1057,73 @@
   }
 
   // Handle sequence replacement
-  async function handleSequenceReplace(mappings: { target: BitmapFileInfo; source: File }[]) {
-     isProcessing = true;
-     statusMessage = `Processing ${mappings.length} images...`;
+  async function handleSequenceReplace(
+    mappings: { target: BitmapFileInfo; source: File }[],
+  ) {
+    isProcessing = true;
+    statusMessage = `Processing ${mappings.length} images...`;
 
-     const replacements: any[] = [];
-     
-     try {
-         for (const { target, source } of mappings) {
-             const rgb565Result = await imageToRgb565(
-                source,
-                target.width,
-                target.height,
-                { resize: true, grayscale: false }
-             );
-             
-             if (!rgb565Result) throw new Error(`Failed to process ${source.name}`);
+    const replacements: any[] = [];
 
-             replacements.push({
-                 imageName: target.name,
-                 width: target.width,
-                 height: target.height,
-                 offset: target.offset!,
-                 rgb565Data: rgb565Result.rgb565Data
-             });
-         }
+    try {
+      for (const { target, source } of mappings) {
+        const rgb565Result = await imageToRgb565(
+          source,
+          target.width,
+          target.height,
+          { resize: true, grayscale: false },
+        );
 
-          await new Promise<void>((resolve, reject) => {
-            const handler = (e: MessageEvent) => {
-              const { type, id, result, error } = e.data;
-              if (id === "replaceSequence") {
-                if (type === "progress") return;
-                
-                worker!.removeEventListener("message", handler);
-                if (type === "success") {
-                  // Update replaced images list
-                   for (const r of replacements) {
-                       if (!replacedImages.includes(r.imageName)) {
-                           replacedImages = [...replacedImages, r.imageName];
-                       }
-                   }
-                   statusMessage = `Successfully replaced ${replacements.length} images`;
-                   resolve();
-                } else {
-                   reject(new Error(error || "Worker failed to replace sequence"));
+        if (!rgb565Result) throw new Error(`Failed to process ${source.name}`);
+
+        replacements.push({
+          imageName: target.name,
+          width: target.width,
+          height: target.height,
+          offset: target.offset!,
+          rgb565Data: rgb565Result.rgb565Data,
+        });
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        const handler = (e: MessageEvent) => {
+          const { type, id, result, error } = e.data;
+          if (id === "replaceSequence") {
+            if (type === "progress") return;
+
+            worker!.removeEventListener("message", handler);
+            if (type === "success") {
+              // Update replaced images list
+              for (const r of replacements) {
+                if (!replacedImages.includes(r.imageName)) {
+                  replacedImages = [...replacedImages, r.imageName];
                 }
               }
-            };
+              statusMessage = `Successfully replaced ${replacements.length} images`;
+              resolve();
+            } else {
+              reject(new Error(error || "Worker failed to replace sequence"));
+            }
+          }
+        };
 
-            worker!.addEventListener("message", handler);
-            
-            worker!.postMessage({
-              type: "replaceImages",
-              id: "replaceSequence",
-              firmware: new Uint8Array(),
-              images: replacements,
-            });
-          });
+        worker!.addEventListener("message", handler);
 
-     } catch (err) {
-         showWarningDialog(
-            "Sequence Replacement Failed", 
-            err instanceof Error ? err.message : String(err)
-         );
-     } finally {
-         isProcessing = false;
-     }
+        worker!.postMessage({
+          type: "replaceImages",
+          id: "replaceSequence",
+          firmware: new Uint8Array(),
+          images: replacements,
+        });
+      });
+    } catch (err) {
+      showWarningDialog(
+        "Sequence Replacement Failed",
+        err instanceof Error ? err.message : String(err),
+      );
+    } finally {
+      isProcessing = false;
+    }
   }
 
   // Drag and drop handlers
@@ -1180,7 +1209,7 @@
         file,
         imageData.width,
         imageData.height,
-        { resize: true, grayscale: false }
+        { resize: true, grayscale: false },
       );
 
       if (!rgb565Result) {
@@ -1197,33 +1226,33 @@
       };
 
       await new Promise<void>((resolve, reject) => {
-         const handler = (e: MessageEvent) => {
+        const handler = (e: MessageEvent) => {
           const { type, id, result, error } = e.data;
-          
+
           if (id === "replaceSingleImage") {
             // Ignore progress messages
             if (type === "progress") return;
 
             worker!.removeEventListener("message", handler);
-            
+
             if (type === "success") {
-               // Update UI
-               if (imageData) {
-                   imageData.rgb565Data = replacement.rgb565Data;
-               }
-               if (!replacedImages.includes(replacement.imageName)) {
-                  replacedImages = [...replacedImages, replacement.imageName];
-               }
-               statusMessage = `Successfully replaced ${replacement.imageName}`;
-               resolve();
+              // Update UI
+              if (imageData) {
+                imageData.rgb565Data = replacement.rgb565Data;
+              }
+              if (!replacedImages.includes(replacement.imageName)) {
+                replacedImages = [...replacedImages, replacement.imageName];
+              }
+              statusMessage = `Successfully replaced ${replacement.imageName}`;
+              resolve();
             } else {
-               reject(new Error(error || "Worker failed to replace image"));
+              reject(new Error(error || "Worker failed to replace image"));
             }
           }
         };
 
         worker!.addEventListener("message", handler);
-        
+
         worker!.postMessage({
           type: "replaceImages",
           id: "replaceSingleImage",
@@ -1231,11 +1260,10 @@
           images: [replacement],
         });
       });
-
     } catch (err) {
       showWarningDialog(
         "Replacement Failed",
-        `Failed to process ${file.name}: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to process ${file.name}: ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       isProcessing = false;
@@ -1283,12 +1311,7 @@
 
 <div class="page-wrapper">
   <!-- Hidden file input - always in DOM for toolbar button -->
-  <input
-    type="file"
-    bind:this={fileInput}
-    hidden
-    onchange={handleFileSelect}
-  />
+  <input type="file" bind:this={fileInput} hidden onchange={handleFileSelect} />
 
   <div class="page-container">
     <!-- Drop Zone Window - hidden when loading or loaded -->
@@ -1388,7 +1411,7 @@
               type="button"
               class="toolbar-button"
               title="Replace Image Sequence"
-              onclick={() => showSequenceReplacer = !showSequenceReplacer}
+              onclick={() => (showSequenceReplacer = !showSequenceReplacer)}
               disabled={!firmwareData || imageList.length === 0}
             >
               <img src="/video.png" alt="" class="toolbar-icon-small" />
@@ -1410,7 +1433,7 @@
               <TreeView
                 nodes={treeNodes}
                 expanded={expandedNodes}
-                selected={selectedNode?.id ?? ''}
+                selected={selectedNode?.id ?? ""}
                 onSelect={(nodeId) => handleSelectNode(nodeId)}
                 {replacedImages}
               />
@@ -1442,7 +1465,11 @@
                     <p>{planeData.fonts.length} glyphs found</p>
                   </div>
                   <div class="flex-grow">
-                    <FontGridRenderer fonts={planeData.fonts} zoom={10} replacedChars={replacedFontCharacters} />
+                    <FontGridRenderer
+                      fonts={planeData.fonts}
+                      zoom={10}
+                      replacedChars={replacedFontCharacters}
+                    />
                   </div>
                 {:else if selectedNode.type === "image" && imageData}
                   <ImageRenderer
@@ -1474,7 +1501,7 @@
         targetImages={imageList}
         worker={worker!}
         onApply={handleSequenceReplace}
-        onClose={() => showSequenceReplacer = false}
+        onClose={() => (showSequenceReplacer = false)}
       />
     {/if}
   </div>
@@ -1493,6 +1520,16 @@
       message={warningMessage}
       onconfirm={() => (showWarning = false)}
       showCancel={false}
+    />
+  {/if}
+
+  <!-- Font Debug Window -->
+  {#if showFontDebug}
+    <FontDebugWindow
+      fileName={fontDebugFileName}
+      message={fontDebugMessage}
+      debugImages={fontDebugImages}
+      onclose={() => (showFontDebug = false)}
     />
   {/if}
 </div>
