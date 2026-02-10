@@ -35,7 +35,10 @@ interface WorkerRequest {
     | "replaceImages"
     | "getFirmware"
     | "bundleImagesAsZip"
-    | "replaceFonts";
+    | "replaceFonts"
+    | "replaceFontsStreamStart"
+    | "replaceFontsStreamAdd"
+    | "replaceFontsStreamFinish";
   id: string;
   firmware: Uint8Array;
   fontType?: "SMALL" | "LARGE";
@@ -55,13 +58,21 @@ interface WorkerRequest {
     offset: number;
     rgb565Data: Uint8Array;
   }>;
-  // Font replacement fields
+  // Font replacement fields (for batch mode)
   fontReplacements?: Array<{
     /** Unicode code point */
     unicode: number;
     /** Pixel data (16x16 boolean array) */
     pixels: boolean[][];
   }>;
+  // Streaming font replacement fields
+  totalCharacters?: number; // Total expected characters (for progress reporting)
+  character?: {
+    /** Unicode code point */
+    unicode: number;
+    /** Pixel data (16x16 boolean array) */
+    pixels: boolean[][];
+  };
 }
 
 interface FontPlaneInfo {
@@ -148,6 +159,30 @@ let firmwareData: Uint8Array | null = null;
 let SMALL_BASE = 0;
 let LARGE_BASE = 0;
 let LOOKUP_TABLE = 0x080000;
+
+// Streaming font replacement state
+interface FontReplacementStreamState {
+  id: string;
+  fontType: "SMALL" | "LARGE";
+  totalCharacters: number;
+  receivedCharacters: number;
+  processedCharacters: number;
+  queue: Array<{
+    unicode: number;
+    pixels: boolean[][];
+  }>;
+  results: {
+    replacedCharacters: number[];
+    skippedCharacters: number[];
+    skippedReasons: Map<number, string>;
+    errors: string[];
+    successCount: number;
+  };
+  isProcessing: boolean;
+  isFinished: boolean;
+}
+
+let streamState: FontReplacementStreamState | null = null;
 
 // Binary reading helpers
 function readU16LE(data: Uint8Array, offset: number): number {
@@ -332,6 +367,198 @@ function searchOffsetTable(firmware: Uint8Array): number | null {
   }
 
   return bestAddr;
+}
+
+/**
+ * Process a single character from the stream queue
+ */
+function processStreamCharacter(
+  unicode: number,
+  pixels: boolean[][],
+  state: FontReplacementStreamState
+): { success: boolean; skip: boolean; error?: string } {
+  const expectedSize = state.fontType === "SMALL" ? 12 : 16;
+
+  // Validate pixel data dimensions
+  if (pixels.length !== expectedSize) {
+    const errorMsg = `U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data height (got ${pixels.length}, expected ${expectedSize})`;
+    state.results.errors.push(errorMsg);
+    state.results.skippedCharacters.push(unicode);
+    state.results.skippedReasons.set(unicode, "invalid_pixel_data");
+    return { success: false, skip: true };
+  }
+
+  for (let row = 0; row < pixels.length; row++) {
+    if (pixels[row].length !== expectedSize) {
+      const errorMsg = `U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data width at row ${row} (got ${pixels[row].length}, expected ${expectedSize})`;
+      state.results.errors.push(errorMsg);
+      state.results.skippedCharacters.push(unicode);
+      state.results.skippedReasons.set(unicode, "invalid_pixel_data");
+      return { success: false, skip: true };
+    }
+  }
+
+  // Calculate firmware address based on font type
+  let addr: number;
+  let chunkSize: number;
+
+  if (state.fontType === "SMALL") {
+    if (unicode > 0xffff) {
+      state.results.skippedCharacters.push(unicode);
+      state.results.skippedReasons.set(unicode, "not_in_firmware");
+      return { success: false, skip: true };
+    }
+    addr = SMALL_BASE + unicode * SMALL_STRIDE;
+    chunkSize = SMALL_STRIDE;
+  } else {
+    if (unicode < 0x4e00 || unicode > 0x9fff) {
+      state.results.skippedCharacters.push(unicode);
+      state.results.skippedReasons.set(unicode, "not_in_firmware");
+      return { success: false, skip: true };
+    }
+    addr = LARGE_BASE + (unicode - 0x4e00) * LARGE_STRIDE;
+    chunkSize = LARGE_STRIDE;
+  }
+
+  // Check if address is valid
+  if (!firmwareData || addr + chunkSize > firmwareData.length) {
+    state.results.skippedCharacters.push(unicode);
+    state.results.skippedReasons.set(unicode, "not_in_firmware");
+    return { success: false, skip: true };
+  }
+
+  // Get lookup value for encoding
+  const lookupVal = firmwareData[LOOKUP_TABLE + (unicode >> 3)];
+
+  // Prepare pixel data for encoding
+  let pixelsToEncode: PixelData;
+  if (state.fontType === "SMALL") {
+    pixelsToEncode = padSmallFontPixels(pixels as PixelData);
+  } else {
+    pixelsToEncode = pixels as PixelData;
+  }
+
+  try {
+    // Encode pixels to firmware format
+    const encodedChunk = encodeV8(pixelsToEncode, lookupVal);
+
+    // For LARGE fonts, add the footer byte
+    const chunkToWrite =
+      state.fontType === "LARGE"
+        ? new Uint8Array(LARGE_STRIDE)
+        : new Uint8Array(SMALL_STRIDE);
+
+    chunkToWrite.set(encodedChunk);
+
+    if (state.fontType === "LARGE") {
+      const originalData = firmwareData.slice(addr, addr + LARGE_STRIDE);
+      chunkToWrite[LARGE_STRIDE - 1] = originalData[LARGE_STRIDE - 1];
+    }
+
+    // Write encoded data to firmware
+    firmwareData.set(chunkToWrite, addr);
+
+    // Verify by reading back
+    const writtenData = firmwareData.slice(addr, addr + chunkSize);
+    let verified = true;
+
+    for (let j = 0; j < chunkSize; j++) {
+      if (writtenData[j] !== chunkToWrite[j]) {
+        verified = false;
+        break;
+      }
+    }
+
+    if (!verified) {
+      return {
+        success: false,
+        skip: false,
+        error: `Verification failed for U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: written data does not match original`,
+      };
+    }
+
+    // Success
+    state.results.replacedCharacters.push(unicode);
+    state.results.successCount++;
+    return { success: true, skip: false };
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    state.results.errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: ${errorMsg}`);
+    state.results.skippedCharacters.push(unicode);
+    state.results.skippedReasons.set(unicode, "encoding_error");
+    return { success: false, skip: true };
+  }
+}
+
+/**
+ * Process the stream queue
+ */
+async function processStreamQueue(): Promise<void> {
+  if (!streamState || streamState.isProcessing) {
+    return;
+  }
+
+  streamState.isProcessing = true;
+
+  while (streamState.queue.length > 0) {
+    const character = streamState.queue.shift();
+    if (!character) break;
+
+    const { unicode, pixels } = character;
+
+    // Report progress periodically
+    if (streamState.processedCharacters % 10 === 0) {
+      self.postMessage({
+        type: "progress",
+        id: streamState.id,
+        message: `Processing U+${unicode.toString(16).toUpperCase().padStart(4, "0")} (${streamState.processedCharacters + 1}/${streamState.totalCharacters})...`,
+      });
+    }
+
+    // Process the character
+    const result = processStreamCharacter(unicode, pixels, streamState);
+    streamState.processedCharacters++;
+
+    // If there was a critical error (not a skip), abort
+    if (!result.success && !result.skip && result.error) {
+      self.postMessage({
+        type: "error",
+        id: streamState.id,
+        error: result.error,
+      });
+      streamState.isProcessing = false;
+      streamState = null;
+      return;
+    }
+
+    // Yield to event loop periodically to prevent blocking
+    if (streamState.processedCharacters % 50 === 0) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+  }
+
+  streamState.isProcessing = false;
+
+  // If we're finished and queue is empty, send completion
+  if (streamState.isFinished && streamState.queue.length === 0) {
+    self.postMessage({
+      type: "progress",
+      id: streamState.id,
+      message: "Stream processing complete...",
+    });
+  }
+}
+
+/**
+ * Wait for stream completion
+ */
+async function waitForStreamCompletion(): Promise<void> {
+  if (!streamState) return;
+
+  // Wait for queue to be empty and processing to finish
+  while (streamState.queue.length > 0 || streamState.isProcessing) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
 }
 
 // Unicode ranges (complete list matching RSE reference)
@@ -1254,6 +1481,127 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             skippedReasons,
           } as ReplaceFontsResult,
         });
+        break;
+      }
+
+      case "replaceFontsStreamStart": {
+        if (!firmwareData) {
+          self.postMessage({
+            type: "error",
+            id,
+            error: "Firmware not analyzed. Call analyze first.",
+          });
+          return;
+        }
+
+        const { fontType = "SMALL", totalCharacters = 0 } = e.data as WorkerRequest & {
+          fontType: "SMALL" | "LARGE";
+          totalCharacters: number;
+        };
+
+        // Initialize streaming state
+        streamState = {
+          id,
+          fontType,
+          totalCharacters,
+          receivedCharacters: 0,
+          processedCharacters: 0,
+          queue: [],
+          results: {
+            replacedCharacters: [],
+            skippedCharacters: [],
+            skippedReasons: new Map(),
+            errors: [],
+            successCount: 0,
+          },
+          isProcessing: false,
+          isFinished: false,
+        };
+
+        self.postMessage({
+          type: "progress",
+          id,
+          message: `Streaming font replacement initialized for ${fontType} fonts...`,
+        });
+        break;
+      }
+
+      case "replaceFontsStreamAdd": {
+        if (!streamState) {
+          self.postMessage({
+            type: "error",
+            id,
+            error: "Stream not initialized. Call replaceFontsStreamStart first.",
+          });
+          return;
+        }
+
+        const { character } = e.data as WorkerRequest & {
+          character: {
+            unicode: number;
+            pixels: boolean[][];
+          };
+        };
+
+        if (!character) {
+          self.postMessage({
+            type: "error",
+            id,
+            error: "No character data provided",
+          });
+          return;
+        }
+
+        // Add character to queue
+        streamState.queue.push(character);
+        streamState.receivedCharacters++;
+
+        // Send progress update
+        self.postMessage({
+          type: "progress",
+          id: streamState.id,
+          message: `Received character ${streamState.receivedCharacters}/${streamState.totalCharacters}...`,
+        });
+
+        // Process queue if not already processing
+        if (!streamState.isProcessing) {
+          processStreamQueue();
+        }
+        break;
+      }
+
+      case "replaceFontsStreamFinish": {
+        if (!streamState) {
+          self.postMessage({
+            type: "error",
+            id,
+            error: "Stream not initialized. Call replaceFontsStreamStart first.",
+          });
+          return;
+        }
+
+        // Mark as finished
+        streamState.isFinished = true;
+
+        // Wait for queue to drain and send final result
+        await waitForStreamCompletion();
+
+        // Send final success message
+        self.postMessage({
+          type: "success",
+          id: streamState.id,
+          result: {
+            successCount: streamState.results.successCount,
+            skippedCount: streamState.results.skippedCharacters.length,
+            errors: streamState.results.errors,
+            replacedCharacters: streamState.results.replacedCharacters,
+            skippedCharacters: streamState.results.skippedCharacters,
+            skippedReasons: streamState.results.skippedReasons,
+          } as ReplaceFontsResult,
+        });
+
+        // Clean up state
+        streamState = null;
         break;
       }
 

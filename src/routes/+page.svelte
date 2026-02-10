@@ -906,19 +906,25 @@
       statusMessage = `Extracting ${codePointsToProcess.length} characters from font...`;
       progress = 10; // Start at 10%
 
-      // Step 4: Extract pixel data for all characters in the main thread
-      // (canvas rendering not available in worker)
-      const fontReplacements: Array<{ unicode: number; pixels: boolean[][] }> =
-        [];
+      // Step 4: Streaming replacement - extract and send one character at a time
+      // Start the stream
+      worker!.postMessage({
+        type: "replaceFontsStreamStart",
+        id: "replaceFontsStream",
+        firmware: new Uint8Array(),
+        fontType: detectedType,
+        totalCharacters: codePointsToProcess.length,
+      });
 
+      // Extract and send characters one at a time
       for (let i = 0; i < codePointsToProcess.length; i++) {
         const codePoint = codePointsToProcess[i];
 
         // Update progress periodically and yield to UI
         if (i % 50 === 0 || i === codePointsToProcess.length - 1) {
           statusMessage = `Extracting character ${i + 1}/${codePointsToProcess.length}...`;
-          // Update progress: 10% to 70% during extraction
-          progress = 10 + Math.floor((i / codePointsToProcess.length) * 60);
+          // Update progress: 10% to 95% during extraction and processing
+          progress = 10 + Math.floor((i / codePointsToProcess.length) * 85);
           // Yield to browser to allow UI update
           await new Promise(resolve => setTimeout(resolve, 0));
         }
@@ -929,9 +935,15 @@
             fontSize,
             useTofuFallback: true,
           });
-          fontReplacements.push({
-            unicode: codePoint,
-            pixels: result.pixels,
+
+          // Send character to worker immediately
+          worker!.postMessage({
+            type: "replaceFontsStreamAdd",
+            id: "replaceFontsStream",
+            character: {
+              unicode: codePoint,
+              pixels: result.pixels,
+            },
           });
         } catch {
           // Skip characters that fail extraction
@@ -939,25 +951,19 @@
         }
       }
 
-      statusMessage = `Sending ${fontReplacements.length} characters to worker...`;
-      progress = 70; // 70% - extraction complete, sending to worker
+      statusMessage = `Waiting for worker to finish processing...`;
+      progress = 95; // 95% - all characters sent, waiting for worker
 
-      // Step 5: Send to worker for batch replacement
+      // Step 5: Finish stream and wait for results
       await new Promise<void>((resolve, reject) => {
         const handler = (e: MessageEvent) => {
           const { type, id, result, error } = e.data;
 
-          if (id === "replaceFonts") {
+          if (id === "replaceFontsStream") {
             if (type === "progress") {
               statusMessage = e.data.message;
-              // Update progress bar during worker processing: 70% to 95%
-              // The worker sends progress for each 10th character
-              const match = e.data.message.match(/Processing U\+([0-9A-F]+) \((\d+)\/(\d+)\.\.\./);
-              if (match) {
-                const current = parseInt(match[2]);
-                const total = parseInt(match[3]);
-                progress = 70 + Math.floor((current / total) * 25);
-              }
+              // Progress bar stays at 95% during final processing
+              progress = 95;
               return;
             }
 
@@ -1021,12 +1027,11 @@
 
         worker!.addEventListener("message", handler);
 
+        // Send finish signal
         worker!.postMessage({
-          type: "replaceFonts",
-          id: "replaceFonts",
+          type: "replaceFontsStreamFinish",
+          id: "replaceFontsStream",
           firmware: new Uint8Array(),
-          fontType: detectedType,
-          fontReplacements,
         });
       });
     } catch (err) {
