@@ -82,6 +82,8 @@
   let warningTitle = $state("");
   let warningMessage = $state("");
 
+  let showExportConfirm = $state(false);
+
   // Track replaced images - use array for better Svelte 5 reactivity
   let replacedImages = $state<string[]>([]);
 
@@ -637,18 +639,20 @@
     });
   }
 
-  // Export firmware with timestamp
-  async function exportFirmware() {
+  function exportFirmware() {
     if (!firmwareData || !worker) {
       showWarningDialog("Export Error", "No firmware data to export.");
       return;
     }
+    showExportConfirm = true;
+  }
 
+  async function doExportFirmware() {
+    showExportConfirm = false;
     isProcessing = true;
     statusMessage = "Retrieving modified firmware...";
 
     try {
-      // Request the modified firmware from the worker
       const modifiedFirmware = await new Promise<Uint8Array>(
         (resolve, reject) => {
           const handler = (e: MessageEvent) => {
@@ -676,12 +680,9 @@
         },
       );
 
-      // Update the main thread's firmware data with the modified version
       firmwareData = modifiedFirmware;
 
-      const now = new Date();
-      const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, -5);
-      const filename = `firmware_modified_${timestamp}.bin`;
+      const filename = "HIFIEC10.IMG";
 
       await fileIO.writeFile(filename, firmwareData);
       statusMessage = `Firmware exported as ${filename}`;
@@ -1211,6 +1212,18 @@
       <StatusBar statusFields={[{ text: statusMessage }]} />
     </div>
   </footer>
+
+  <!-- Export Confirmation -->
+  {#if showExportConfirm}
+    <WarningWindow
+      title="Save Firmware"
+      message="The file will be saved as HIFIEC10.IMG. Make sure to save it to a different folder so you don't overwrite your original firmware."
+      icon="info"
+      confirmText="Save"
+      onconfirm={doExportFirmware}
+      oncancel={() => (showExportConfirm = false)}
+    />
+  {/if}
 
   <!-- Warning Dialog -->
   {#if showWarning}
