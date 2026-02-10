@@ -1578,7 +1578,7 @@
                     <p>{planeData.fonts.length} glyphs found</p>
                   </div>
                   <div class="flex-grow">
-                    <FontGridRenderer fonts={planeData.fonts} zoom={10} />
+                    <FontGridRenderer fonts={planeData.fonts} zoom={10} replacedChars={replacedFontCharacters} />
                   </div>
                 {:else if selectedNode.type === "image" && imageData}
                   <ImageRenderer
