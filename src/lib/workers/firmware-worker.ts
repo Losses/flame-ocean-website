@@ -10,9 +10,10 @@ import {
   decodeV8,
   isDataEmpty,
   sliceSmallFontPixels,
+  padSmallFontPixels,
 } from "../rse/utils/font-decoder";
 import { type PixelData } from "../rse/types";
-import { validateBitmapData } from "../rse/utils/font-encoder";
+import { validateBitmapData, encodeV8 } from "../rse/utils/font-encoder";
 import { buildBitmapListFromMetadata } from "../rse/utils/metadata.js";
 import { convertToBmp, isValidFontData } from "../rse/utils/bitmap";
 
@@ -33,7 +34,8 @@ interface WorkerRequest {
     | "replaceImage"
     | "replaceImages"
     | "getFirmware"
-    | "bundleImagesAsZip";
+    | "bundleImagesAsZip"
+    | "replaceFonts";
   id: string;
   firmware: Uint8Array;
   fontType?: "SMALL" | "LARGE";
@@ -52,6 +54,13 @@ interface WorkerRequest {
     height: number;
     offset: number;
     rgb565Data: Uint8Array;
+  }>;
+  // Font replacement fields
+  fontReplacements?: Array<{
+    /** Unicode code point */
+    unicode: number;
+    /** Pixel data (16x16 boolean array) */
+    pixels: boolean[][];
   }>;
 }
 
@@ -108,6 +117,15 @@ interface ReplaceImagesResult {
   }>;
 }
 
+interface ReplaceFontsResult {
+  successCount: number;
+  skippedCount: number;
+  errors: string[];
+  replacedCharacters: number[];
+  skippedCharacters: number[];
+  skippedReasons: Map<number, string>;
+}
+
 type WorkerResponse =
   | {
       type: "success";
@@ -119,6 +137,7 @@ type WorkerResponse =
         | ImageData
         | ReplaceImageResult
         | ReplaceImagesResult
+        | ReplaceFontsResult
         | Uint8Array;
     }
   | { type: "progress"; id: string; message: string }
@@ -1045,6 +1064,183 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           type: "success",
           id,
           result: new Uint8Array(zipBlob),
+        });
+        break;
+      }
+
+      case "replaceFonts": {
+        if (!firmwareData) {
+          self.postMessage({
+            type: "error",
+            id,
+            error: "Firmware not analyzed. Call analyze first.",
+          });
+          return;
+        }
+
+        const { fontType = "SMALL", fontReplacements } = e.data as WorkerRequest & {
+          fontType: "SMALL" | "LARGE";
+          fontReplacements: Array<{
+            unicode: number;
+            pixels: boolean[][];
+          }>;
+        };
+
+        if (!fontReplacements || fontReplacements.length === 0) {
+          self.postMessage({
+            type: "error",
+            id,
+            error: "No font replacements provided",
+          });
+          return;
+        }
+
+        self.postMessage({
+          type: "progress",
+          id,
+          message: `Starting font replacement for ${fontReplacements.length} characters...`,
+        });
+
+        const replacedCharacters: number[] = [];
+        const skippedCharacters: number[] = [];
+        const skippedReasons = new Map<number, string>();
+        const errors: string[] = [];
+        let successCount = 0;
+
+        // Process each character replacement
+        for (let i = 0; i < fontReplacements.length; i++) {
+          const { unicode, pixels } = fontReplacements[i];
+
+          // Report progress periodically
+          if (i % 10 === 0 || i === fontReplacements.length - 1) {
+            self.postMessage({
+              type: "progress",
+              id,
+              message: `Processing U+${unicode.toString(16).toUpperCase().padStart(4, "0")} (${i + 1}/${fontReplacements.length})...`,
+            });
+          }
+
+          // Validate pixel data dimensions
+          if (pixels.length !== 16) {
+            errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data height`);
+            skippedCharacters.push(unicode);
+            skippedReasons.set(unicode, "invalid_pixel_data");
+            continue;
+          }
+
+          for (let row = 0; row < pixels.length; row++) {
+            if (pixels[row].length !== 16) {
+              errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data width at row ${row}`);
+              skippedCharacters.push(unicode);
+              skippedReasons.set(unicode, "invalid_pixel_data");
+              continue;
+            }
+          }
+
+          // Calculate firmware address based on font type
+          let addr: number;
+          let chunkSize: number;
+
+          if (fontType === "SMALL") {
+            // SMALL fonts use direct addressing from SMALL_BASE
+            if (unicode > 0xffff) {
+              skippedCharacters.push(unicode);
+              skippedReasons.set(unicode, "not_in_firmware");
+              continue;
+            }
+            addr = SMALL_BASE + unicode * SMALL_STRIDE;
+            chunkSize = SMALL_STRIDE;
+          } else {
+            // LARGE fonts use offset addressing from LARGE_BASE (CJK range 0x4e00-0x9fff)
+            if (unicode < 0x4e00 || unicode > 0x9fff) {
+              skippedCharacters.push(unicode);
+              skippedReasons.set(unicode, "not_in_firmware");
+              continue;
+            }
+            addr = LARGE_BASE + (unicode - 0x4e00) * LARGE_STRIDE;
+            chunkSize = LARGE_STRIDE;
+          }
+
+          // Check if address is valid
+          if (addr + chunkSize > firmwareData.length) {
+            skippedCharacters.push(unicode);
+            skippedReasons.set(unicode, "not_in_firmware");
+            continue;
+          }
+
+          // Get lookup value for encoding
+          const lookupVal = firmwareData[LOOKUP_TABLE + (unicode >> 3)];
+
+          // Prepare pixel data for encoding
+          let pixelsToEncode: PixelData;
+          if (fontType === "SMALL") {
+            // Pad SMALL font pixels from 12x12 to 16x16 for encoding
+            pixelsToEncode = padSmallFontPixels(pixels as PixelData);
+          } else {
+            pixelsToEncode = pixels as PixelData;
+          }
+
+          try {
+            // Encode pixels to firmware format
+            const encodedChunk = encodeV8(pixelsToEncode, lookupVal);
+
+            // For LARGE fonts, add the footer byte
+            const chunkToWrite =
+              fontType === "LARGE"
+                ? new Uint8Array(LARGE_STRIDE)
+                : new Uint8Array(SMALL_STRIDE);
+
+            chunkToWrite.set(encodedChunk);
+
+            if (fontType === "LARGE") {
+              // Copy existing footer byte from original data
+              const originalData = firmwareData.slice(addr, addr + LARGE_STRIDE);
+              chunkToWrite[LARGE_STRIDE - 1] = originalData[LARGE_STRIDE - 1];
+            }
+
+            // Write encoded data to firmware
+            firmwareData.set(chunkToWrite, addr);
+
+            // Verify by reading back
+            const writtenData = firmwareData.slice(addr, addr + chunkSize);
+            let verified = true;
+
+            for (let j = 0; j < chunkSize; j++) {
+              if (writtenData[j] !== chunkToWrite[j]) {
+                verified = false;
+                break;
+              }
+            }
+
+            if (!verified) {
+              errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Verification failed`);
+              skippedCharacters.push(unicode);
+              skippedReasons.set(unicode, "verification_failed");
+              continue;
+            }
+
+            // Success
+            replacedCharacters.push(unicode);
+            successCount++;
+          } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: ${errorMsg}`);
+            skippedCharacters.push(unicode);
+            skippedReasons.set(unicode, "encoding_error");
+          }
+        }
+
+        self.postMessage({
+          type: "success",
+          id,
+          result: {
+            successCount,
+            skippedCount: skippedCharacters.length,
+            errors,
+            replacedCharacters,
+            skippedCharacters,
+            skippedReasons,
+          } as ReplaceFontsResult,
         });
         break;
       }
