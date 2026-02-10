@@ -140,7 +140,7 @@
     // Add keyboard listener for Ctrl+S export
     window.addEventListener("keydown", handleKeyDown);
 
-    // Add paste listener for image replacement
+    // Add paste listener for image and font replacement
     window.addEventListener("paste", async (e: ClipboardEvent) => {
       if (isProcessing) {
         showWarningDialog(
@@ -161,16 +161,39 @@
           if (file) {
             files.push(file);
           }
+        } else if (item) {
+          // Check for font files by MIME type
+          const file = item.getAsFile();
+          if (file && isFontFile(file)) {
+            files.push(file);
+          }
         }
       }
 
       if (files.length === 0) return;
 
+      // Check for font files first
+      const fontFiles = files.filter(isFontFile);
+      if (fontFiles.length > 0) {
+        statusMessage = "Processing font file...";
+        showWarningDialog(
+          "Font File Detected",
+          `Found ${fontFiles.length} font file(s). Font replacement will be implemented in the next steps.`,
+        );
+        const imageFiles = files.filter((f) => !isFontFile(f));
+        if (imageFiles.length === 0) {
+          return;
+        }
+      }
+
       // Smart Replacement Logic for Paste:
-      if (files.length === 1 && selectedNode?.type === "image" && imageData) {
-        await replaceCurrentlySelectedImage(files[0]);
+      const imageFiles = files.filter((f) => !isFontFile(f));
+      if (imageFiles.length === 0) return;
+
+      if (imageFiles.length === 1 && selectedNode?.type === "image" && imageData) {
+        await replaceCurrentlySelectedImage(imageFiles[0]);
       } else {
-        await handlePasteFiles(files);
+        await handlePasteFiles(imageFiles);
       }
     });
 
@@ -441,6 +464,25 @@
   // Handle paste event - searches for matching image by filename
   // Processes multiple files in batch via worker
   async function handlePasteFiles(files: File[]) {
+    // Check for font files first - separate them from image processing
+    const fontFiles = files.filter(isFontFile);
+    const imageFiles = files.filter((f) => !isFontFile(f));
+
+    if (fontFiles.length > 0) {
+      // Font file detected - route to font replacement flow
+      statusMessage = "Processing font file...";
+      // For now, just show a message that font replacement is being prepared
+      // The actual font replacement will be implemented in subsequent user stories
+      showWarningDialog(
+        "Font File Detected",
+        `Found ${fontFiles.length} font file(s). Font replacement will be implemented in the next steps.`,
+      );
+      // Only process image files if there are any
+      if (imageFiles.length === 0) {
+        return;
+      }
+    }
+
     if (!firmwareData || imageList.length === 0) {
       showWarningDialog("Error", "No firmware loaded or no images available.");
       return;
@@ -452,7 +494,7 @@
     }
 
     isProcessing = true;
-    statusMessage = `Preparing to replace ${files.length} image(s)...`;
+    statusMessage = `Preparing to replace ${imageFiles.length} image(s)...`;
 
     // Collect all valid replacements
     const replacements: Array<{
@@ -463,7 +505,7 @@
     const decodeError: string[] = [];
 
     // Convert all files to RGB565 in parallel
-    const conversionPromises = files.map(async (file) => {
+    const conversionPromises = imageFiles.map(async (file) => {
       const pastedFileName = file.name.replace(/\.[^.]*$/, "").toUpperCase();
 
       const matchingImage = imageList.find(
@@ -754,6 +796,31 @@
     showWarning = true;
   }
 
+  // Font file type detection
+  const FONT_EXTENSIONS = [".ttf", ".otf", ".woff", ".woff2"];
+  const FONT_MIME_TYPES = [
+    "font/ttf",
+    "font/otf",
+    "font/woff",
+    "font/woff2",
+    "application/font-ttf",
+    "application/font-otf",
+    "application/font-woff",
+    "application/font-woff2",
+    "application/x-font-ttf",
+    "application/x-font-otf",
+    "application/x-font-woff",
+  ];
+
+  function isFontFile(file: File): boolean {
+    const fileName = file.name.toLowerCase();
+    const hasFontExtension = FONT_EXTENSIONS.some((ext) =>
+      fileName.endsWith(ext),
+    );
+    const hasFontMime = FONT_MIME_TYPES.includes(file.type);
+    return hasFontExtension || hasFontMime;
+  }
+
   // Handle keyboard shortcuts (Ctrl+S for export)
   function handleKeyDown(e: KeyboardEvent) {
     if (e.ctrlKey && e.key === "s") {
@@ -879,6 +946,20 @@
 
     const files = Array.from(e.dataTransfer?.files ?? []);
     if (files.length === 0) return;
+
+    // Check for font files first
+    const fontFiles = files.filter(isFontFile);
+    if (fontFiles.length > 0) {
+      // Font file detected - route to font replacement flow
+      statusMessage = "Processing font file...";
+      // For now, just show a message that font replacement is being prepared
+      // The actual font replacement will be implemented in subsequent user stories
+      showWarningDialog(
+        "Font File Detected",
+        `Found ${fontFiles.length} font file(s). Font replacement will be implemented in the next steps.`,
+      );
+      return;
+    }
 
     // Smart Replacement Logic:
     // If exactly ONE file is dropped, AND we have an image selected,
