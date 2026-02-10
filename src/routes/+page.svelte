@@ -852,6 +852,7 @@
     isProcessing = true;
     loadingTitle = "Replacing Font Glyphs";
     statusMessage = `Loading font file: ${file.name}...`;
+    progress = 0; // Reset progress
 
     let fontResult: {
       fontFace: FontFace;
@@ -903,6 +904,7 @@
       }
 
       statusMessage = `Extracting ${codePointsToProcess.length} characters from font...`;
+      progress = 10; // Start at 10%
 
       // Step 4: Extract pixel data for all characters in the main thread
       // (canvas rendering not available in worker)
@@ -912,9 +914,13 @@
       for (let i = 0; i < codePointsToProcess.length; i++) {
         const codePoint = codePointsToProcess[i];
 
-        // Update progress periodically
-        if (i % 100 === 0 || i === codePointsToProcess.length - 1) {
+        // Update progress periodically and yield to UI
+        if (i % 50 === 0 || i === codePointsToProcess.length - 1) {
           statusMessage = `Extracting character ${i + 1}/${codePointsToProcess.length}...`;
+          // Update progress: 10% to 70% during extraction
+          progress = 10 + Math.floor((i / codePointsToProcess.length) * 60);
+          // Yield to browser to allow UI update
+          await new Promise(resolve => setTimeout(resolve, 0));
         }
 
         try {
@@ -934,6 +940,7 @@
       }
 
       statusMessage = `Sending ${fontReplacements.length} characters to worker...`;
+      progress = 70; // 70% - extraction complete, sending to worker
 
       // Step 5: Send to worker for batch replacement
       await new Promise<void>((resolve, reject) => {
@@ -943,12 +950,22 @@
           if (id === "replaceFonts") {
             if (type === "progress") {
               statusMessage = e.data.message;
+              // Update progress bar during worker processing: 70% to 95%
+              // The worker sends progress for each 10th character
+              const match = e.data.message.match(/Processing U\+([0-9A-F]+) \((\d+)\/(\d+)\.\.\./);
+              if (match) {
+                const current = parseInt(match[2]);
+                const total = parseInt(match[3]);
+                progress = 70 + Math.floor((current / total) * 25);
+              }
               return;
             }
 
             worker!.removeEventListener("message", handler);
 
             if (type === "success") {
+              progress = 100; // Complete!
+
               const data = result as {
                 successCount: number;
                 skippedCount: number;
