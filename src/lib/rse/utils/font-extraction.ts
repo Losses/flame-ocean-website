@@ -141,6 +141,12 @@ export async function extractCharacter(
 	const imageData = ctx.getImageData(0, 0, width, height);
 	const pixels = imageDataToPixels(imageData, width, height);
 
+	// Log first few characters for debugging
+	if (codePoint < 0x20) {
+		const pixelCount = pixels.flat().filter(p => p).length;
+		console.log(`[extract] U+${codePoint.toString(16).padStart(4, '0')}: ${width}x${height}, pixels=${pixels.length}x${pixels[0]?.length}, foreground=${pixelCount}`);
+	}
+
 	// Clean up
 	ctx.clearRect(0, 0, width, height);
 	canvas.width = 0;

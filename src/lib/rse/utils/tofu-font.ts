@@ -493,11 +493,19 @@ export async function shouldSkipCharacter(
 		// Get or generate the tofu signature for this size
 		let signature = getTofuSignature(fontSize);
 		if (!signature) {
+			console.log(`[tofu] Generating signature for ${fontSize}px...`);
 			signature = await generateTofuSignature(fontSize);
+			console.log(`[tofu] Signature generated: ${signature.width}x${signature.height}, pixels:`, signature.pixels);
 		}
 
 		// Check if the render matches Adobe NotDef's .notdef glyph
 		const isTofu = comparePixelRegions(pixels, signature.pixels);
+
+		// Log first few characters for debugging
+		if (codePoint < 0x20) {
+			console.log(`[tofu] U+${codePoint.toString(16).padStart(4, '0')}: isTofu=${isTofu}, pixels=${pixels.length}x${pixels[0]?.length}`);
+			console.log(`[tofu] Signature: ${signature.width}x${signature.height}`);
+		}
 
 		if (isTofu) {
 			return {

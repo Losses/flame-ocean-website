@@ -1107,6 +1107,11 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
         const errors: string[] = [];
         let successCount = 0;
 
+        // Determine expected pixel size based on font type
+        const expectedSize = fontType === "SMALL" ? 12 : 16;
+
+        console.log(`[worker] Font type: ${fontType}, expected size: ${expectedSize}x${expectedSize}`);
+
         // Process each character replacement
         for (let i = 0; i < fontReplacements.length; i++) {
           const { unicode, pixels } = fontReplacements[i];
@@ -1120,17 +1125,22 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             });
           }
 
+          // Log first few characters for debugging
+          if (i < 5) {
+            console.log(`[worker] U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: pixels=${pixels.length}x${pixels[0]?.length}, expected=${expectedSize}x${expectedSize}`);
+          }
+
           // Validate pixel data dimensions
-          if (pixels.length !== 16) {
-            errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data height`);
+          if (pixels.length !== expectedSize) {
+            errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data height (got ${pixels.length}, expected ${expectedSize})`);
             skippedCharacters.push(unicode);
             skippedReasons.set(unicode, "invalid_pixel_data");
             continue;
           }
 
           for (let row = 0; row < pixels.length; row++) {
-            if (pixels[row].length !== 16) {
-              errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data width at row ${row}`);
+            if (pixels[row].length !== expectedSize) {
+              errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data width at row ${row} (got ${pixels[row].length}, expected ${expectedSize})`);
               skippedCharacters.push(unicode);
               skippedReasons.set(unicode, "invalid_pixel_data");
               continue;
