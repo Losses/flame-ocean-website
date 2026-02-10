@@ -478,3 +478,150 @@ export async function renderCharacterWithTofu(
 
 	return pixels;
 }
+
+/**
+ * Result of checking if a character should be skipped during font replacement
+ */
+export interface SkipCharacterResult {
+	/** Whether the character should be skipped */
+	readonly shouldSkip: boolean;
+	/** Unicode code point of the character */
+	readonly codePoint: number;
+	/** Character string */
+	readonly char: string;
+	/** Reason for skipping (if applicable) */
+	readonly reason?: 'missing_from_font' | 'not_in_firmware' | null;
+}
+
+/**
+ * Check if a character should be skipped during font replacement
+ *
+ * This function determines whether a character should be skipped by:
+ * 1. Rendering the character with tofu fallback
+ * 2. Comparing the rendered output against the known tofu signature
+ * 3. Returning true if the character matches tofu (missing from user font)
+ *
+ * @param codePoint - Unicode code point of the character to check
+ * @param fontFamily - Primary font family name
+ * @param fontSize - Font size in pixels (12 or 16)
+ * @param existsInFirmware - Optional callback to check if character exists in firmware address space
+ * @returns SkipCharacterResult with skip decision and reason
+ *
+ * @example
+ * ```ts
+ * const result = await shouldSkipCharacter(0x41, 'UserFont', 12, (cp) => cp < 0x10000);
+ * if (result.shouldSkip) {
+ *   console.log(`Skipping U+${result.codePoint.toString(16)}: ${result.reason}`);
+ * }
+ * ```
+ */
+export async function shouldSkipCharacter(
+	codePoint: number,
+	fontFamily: string,
+	fontSize: 12 | 16,
+	existsInFirmware?: (codePoint: number) => boolean
+): Promise<SkipCharacterResult> {
+	// Convert code point to string
+	const char = String.fromCodePoint(codePoint);
+
+	// Check if character exists in firmware (if callback provided)
+	if (existsInFirmware) {
+		const exists = existsInFirmware(codePoint);
+		if (!exists) {
+			return {
+				shouldSkip: true,
+				codePoint,
+				char,
+				reason: 'not_in_firmware'
+			};
+		}
+	}
+
+	// Ensure tofu font is loaded
+	if (!tofuState.isLoaded) {
+		await loadTofuFont();
+	}
+
+	// Render the character with tofu fallback
+	const pixels = await renderCharacterWithTofu(char, fontFamily, fontSize);
+
+	// Check if the rendered character matches tofu signature
+	const matchesTofu = isTofuCharacter(pixels as PixelData, fontSize);
+
+	if (matchesTofu) {
+		return {
+			shouldSkip: true,
+			codePoint,
+			char,
+			reason: 'missing_from_font'
+		};
+	}
+
+	return {
+		shouldSkip: false,
+		codePoint,
+		char,
+		reason: null
+	};
+}
+
+/**
+ * Check if multiple characters should be skipped during font replacement
+ *
+ * Batch version of shouldSkipCharacter for processing multiple characters efficiently.
+ *
+ * @param codePoints - Array of Unicode code points to check
+ * @param fontFamily - Primary font family name
+ * @param fontSize - Font size in pixels (12 or 16)
+ * @param existsInFirmware - Optional callback to check if character exists in firmware address space
+ * @returns Array of SkipCharacterResult for each character
+ * @returns skippedCharacters - Array of code points that should be skipped
+ * @returns skippedReasons - Map of code point to skip reason
+ *
+ * @example
+ * ```ts
+ * const results = await shouldSkipCharacters([0x41, 0x42, 0x1F600], 'UserFont', 12);
+ * console.log(`Skipping ${results.skippedCharacters.length} characters`);
+ * // Log skipped characters with their Unicode values
+ * results.skippedCharacters.forEach(cp => {
+ *   const reason = results.skippedReasons.get(cp);
+ *   console.log(`U+${cp.toString(16)}: ${reason}`);
+ * });
+ * ```
+ */
+export async function shouldSkipCharacters(
+	codePoints: number[],
+	fontFamily: string,
+	fontSize: 12 | 16,
+	existsInFirmware?: (codePoint: number) => boolean
+): Promise<{
+	results: SkipCharacterResult[];
+	skippedCharacters: number[];
+	skippedReasons: Map<number, string>;
+}> {
+	const results: SkipCharacterResult[] = [];
+	const skippedCharacters: number[] = [];
+	const skippedReasons = new Map<number, string>();
+
+	// Ensure tofu font is loaded once for all characters
+	if (!tofuState.isLoaded) {
+		await loadTofuFont();
+	}
+
+	// Process each character
+	for (const codePoint of codePoints) {
+		const result = await shouldSkipCharacter(codePoint, fontFamily, fontSize, existsInFirmware);
+		results.push(result);
+
+		if (result.shouldSkip) {
+			skippedCharacters.push(codePoint);
+			skippedReasons.set(codePoint, result.reason || 'unknown');
+		}
+	}
+
+	return {
+		results,
+		skippedCharacters,
+		skippedReasons
+	};
+}
