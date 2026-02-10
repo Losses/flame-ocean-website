@@ -539,6 +539,13 @@ async function processStreamQueue(): Promise<void> {
 
   streamState.isProcessing = false;
 
+  // CRITICAL FIX: If new items were added while we were processing,
+  // immediately restart processing to prevent deadlock
+  if (streamState.queue.length > 0) {
+    await processStreamQueue();
+    return;
+  }
+
   // If we're finished and queue is empty, send completion
   if (streamState.isFinished && streamState.queue.length === 0) {
     self.postMessage({
@@ -1563,9 +1570,12 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           message: `Received character ${streamState.receivedCharacters}/${streamState.totalCharacters}...`,
         });
 
-        // Process queue if not already processing
+        // Start processing queue if not already processing
+        // Don't await - let it process in background
         if (!streamState.isProcessing) {
-          processStreamQueue();
+          processStreamQueue().catch(err => {
+            console.error('[worker] Queue processing error:', err);
+          });
         }
         break;
       }
