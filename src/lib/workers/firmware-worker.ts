@@ -1213,10 +1213,12 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             }
 
             if (!verified) {
-              errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Verification failed`);
-              skippedCharacters.push(unicode);
-              skippedReasons.set(unicode, "verification_failed");
-              continue;
+              self.postMessage({
+                type: "error",
+                id,
+                error: `Verification failed for U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: written data does not match original`,
+              });
+              return;
             }
 
             // Success
