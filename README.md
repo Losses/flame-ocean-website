@@ -8,6 +8,7 @@ A web-based firmware customization tool for Snowsky Echo Mini devices. FlameOcea
 - **Resource Extraction**: Extract and display font glyphs (SMALL/LARGE) organized by Unicode planes
 - **Image Viewing**: View embedded bitmap images in RGB565 format
 - **Image Replacement**: Replace firmware images with custom ones via drag-and-drop, paste, or file selection
+- **Font Replacement**: Replace firmware fonts with custom pixel/bitmap fonts via drag-and-drop or paste
 - **Batch Operations**: Replace multiple images at once by filename matching
 - **Export**: Download modified firmware or export all images as a ZIP archive for easy editing
 
@@ -26,7 +27,11 @@ A web-based firmware customization tool for Snowsky Echo Mini devices. FlameOcea
    - Dragging and dropping image files onto the viewer
    - Pasting images from clipboard (Ctrl+V)
    - Clicking the edit button and selecting files
-5. Export the modified firmware (Ctrl+S)
+5. Replace fonts by:
+   - Dragging and dropping font files (.ttf, .otf, .woff, .woff2) onto the font viewer
+   - Pasting font files from clipboard (Ctrl+V)
+   - See [docs/font-replacement.md](docs/font-replacement.md) for detailed information
+6. Export the modified firmware (Ctrl+S)
 
 ## Compatibility
 
