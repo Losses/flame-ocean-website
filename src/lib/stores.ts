@@ -5,12 +5,21 @@ export const debugMode = writable(false);
 // Track when debug animation is complete
 export const debugAnimationComplete = writable(true);
 
+/**
+ * Extended global interface for debug mode
+ */
+declare global {
+	interface Window {
+		enableDebugMode?: (enabled?: boolean) => void;
+	}
+}
+
 // Global function to toggle debug mode
 export function initDebugShortcut() {
 	if (typeof window === 'undefined') return;
 
-	// Add global function to window/globalThis
-	(globalThis as any).enableDebugMode = (enabled: boolean = true) => {
+	// Add global function to window
+	window.enableDebugMode = (enabled: boolean = true) => {
 		debugMode.set(enabled);
 		if (!enabled) {
 			debugAnimationComplete.set(true);

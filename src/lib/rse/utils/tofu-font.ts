@@ -95,7 +95,7 @@ export async function loadTofuFont(baseUrl = '/tofu.ttf'): Promise<void> {
 		await fontFace.load();
 
 		// Add to document.fonts for rendering
-		(document.fonts as any).add(fontFace);
+		document.fonts.add(fontFace);
 
 		// Store the font face
 		tofuState.fontFace = fontFace;
@@ -214,7 +214,7 @@ export function getTofuFontFamily(): string {
 export function unloadTofuFont(): void {
 	if (tofuState.fontFace) {
 		try {
-			(document.fonts as any).delete(tofuState.fontFace);
+			document.fonts.delete(tofuState.fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}

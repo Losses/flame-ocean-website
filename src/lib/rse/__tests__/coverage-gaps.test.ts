@@ -16,6 +16,24 @@ import { ResourceExtractor } from '../extractors/resource-extractor.js';
 import { encodeV8, parseLookupConfig } from '../utils/font-encoder.js';
 import type { PixelData, FirmwareAddresses } from '../types/index.js';
 
+/**
+ * Test helper interface to access private methods of FirmwareAnalyzer for unit testing
+ */
+interface FirmwareAnalyzerTestAccess {
+	scoreWindow(windowStart: number, windowEnd: number, _state: unknown): {
+		score: number;
+		firstAddr: number;
+	};
+	quickFooterCheck(base: number, expectedSignature: number): boolean;
+	validateAddresses(
+		addresses: Omit<FirmwareAddresses, 'confidence'>
+	): {
+		smallFontValid: number;
+		largeFontValid: number;
+		movw0042Count: number;
+	};
+}
+
 // ============================================================================
 // FirmwareAnalyzer Unit Tests
 // ============================================================================
@@ -105,7 +123,7 @@ describe('FirmwareAnalyzer Unit Tests', () => {
 
 			const analyzer = new FirmwareAnalyzer(firmware);
 			// Access private method via testing
-			const scoreResult = (analyzer as any).scoreWindow(windowStart, windowEnd, null);
+			const scoreResult = (analyzer as unknown as FirmwareAnalyzerTestAccess).scoreWindow(windowStart, windowEnd, null);
 
 			expect(scoreResult.score).toBeGreaterThan(0);
 			expect(scoreResult.firstAddr).toBeGreaterThanOrEqual(windowStart);
@@ -126,7 +144,7 @@ describe('FirmwareAnalyzer Unit Tests', () => {
 			}
 
 			const analyzer = new FirmwareAnalyzer(firmware);
-			const scoreResult = (analyzer as any).scoreWindow(windowStart, windowEnd, null);
+			const scoreResult = (analyzer as unknown as FirmwareAnalyzerTestAccess).scoreWindow(windowStart, windowEnd, null);
 
 			// Should score zero or very low
 			expect(scoreResult.score).toBe(0);
@@ -136,7 +154,7 @@ describe('FirmwareAnalyzer Unit Tests', () => {
 			const firmware = new Uint8Array(0x1000);
 			const analyzer = new FirmwareAnalyzer(firmware);
 
-			const scoreResult = (analyzer as any).scoreWindow(0xf00, 0x1000, null);
+			const scoreResult = (analyzer as unknown as FirmwareAnalyzerTestAccess).scoreWindow(0xf00, 0x1000, null);
 
 			// Should not crash, return valid score
 			expect(typeof scoreResult.score).toBe('number');
@@ -159,7 +177,7 @@ describe('FirmwareAnalyzer Unit Tests', () => {
 			}
 
 			const analyzer = new FirmwareAnalyzer(firmware);
-			const result = (analyzer as any).quickFooterCheck(base, 0x90);
+			const result = (analyzer as unknown as FirmwareAnalyzerTestAccess).quickFooterCheck(base, 0x90);
 
 			expect(result).toBe(true);
 		});
@@ -177,7 +195,7 @@ describe('FirmwareAnalyzer Unit Tests', () => {
 			}
 
 			const analyzer = new FirmwareAnalyzer(firmware);
-			const result = (analyzer as any).quickFooterCheck(base, 0x90);
+			const result = (analyzer as unknown as FirmwareAnalyzerTestAccess).quickFooterCheck(base, 0x90);
 
 			expect(result).toBe(false);
 		});
@@ -211,7 +229,7 @@ describe('FirmwareAnalyzer Unit Tests', () => {
 			firmware[0x100a] = 0x42;
 
 			const analyzer = new FirmwareAnalyzer(firmware);
-			const confidence = (analyzer as any).validateAddresses(addresses);
+			const confidence = (analyzer as unknown as FirmwareAnalyzerTestAccess).validateAddresses(addresses);
 
 			expect(confidence.smallFontValid).toBeGreaterThan(0);
 			expect(confidence.largeFontValid).toBeGreaterThan(0);
@@ -227,7 +245,7 @@ describe('FirmwareAnalyzer Unit Tests', () => {
 			};
 
 			const analyzer = new FirmwareAnalyzer(firmware);
-			const confidence = (analyzer as any).validateAddresses(addresses);
+			const confidence = (analyzer as unknown as FirmwareAnalyzerTestAccess).validateAddresses(addresses);
 
 			expect(confidence.smallFontValid).toBe(0);
 			expect(confidence.largeFontValid).toBe(0);
@@ -243,7 +261,7 @@ describe('FirmwareAnalyzer Unit Tests', () => {
 			};
 
 			const analyzer = new FirmwareAnalyzer(firmware);
-			const confidence = (analyzer as any).validateAddresses(addresses);
+			const confidence = (analyzer as unknown as FirmwareAnalyzerTestAccess).validateAddresses(addresses);
 
 			// Should not crash
 			expect(confidence).toBeDefined();
@@ -484,7 +502,11 @@ describe('ResourceExtractor Edge Case Writes', () => {
 			expect(tableStart).not.toBeNull();
 
 			const metadata = extractor.parseMetadataTable(tableStart!);
-			const misalignment = extractor.detectOffsetMisalignment(metadata, 0x310000);
+			const part5Offset = 0x300000;
+			const part5Size = 0x100000;
+			const part5Data = firmware.slice(part5Offset, part5Offset + part5Size);
+			const rock26Offset = 0x310000 - part5Offset;
+			const misalignment = extractor.detectOffsetMisalignment(metadata, part5Data, rock26Offset);
 
 			// The important thing is that misalignment detection works and returns a number
 			expect(typeof misalignment.misalignment).toBe('number');
@@ -824,7 +846,11 @@ describe('Misalignment Detection Edge Cases', () => {
 			expect(Array.isArray(metadata)).toBe(true);
 
 			// detectOffsetMisalignment should handle metadata (possibly empty)
-			const misalignment = extractor.detectOffsetMisalignment(metadata, 0x310000);
+			const part5Offset = 0x300000;
+			const part5Size = 0x100000;
+			const part5Data = firmware.slice(part5Offset, part5Offset + part5Size);
+			const rock26Offset = 0x310000 - part5Offset;
+			const misalignment = extractor.detectOffsetMisalignment(metadata, part5Data, rock26Offset);
 
 			// Should return a valid result structure without crashing
 			expect(misalignment).toBeDefined();
@@ -858,7 +884,11 @@ describe('Misalignment Detection Edge Cases', () => {
 		expect(tableStart).not.toBeNull();
 
 		const metadata = extractor.parseMetadataTable(tableStart!);
-		const misalignment = extractor.detectOffsetMisalignment(metadata, 0x310000);
+		const part5Offset = 0x300000;
+		const part5Size = 0x100000;
+		const part5Data = firmware.slice(part5Offset, part5Offset + part5Size);
+		const rock26Offset = 0x310000 - part5Offset;
+		const misalignment = extractor.detectOffsetMisalignment(metadata, part5Data, rock26Offset);
 
 		// Should handle single entry
 		expect(misalignment.misalignment).toBeDefined();
@@ -893,7 +923,11 @@ describe('Misalignment Detection Edge Cases', () => {
 
 		const tableStart = extractor.findMetadataTableInPart5();
 		const metadata = extractor.parseMetadataTable(tableStart!);
-		const misalignment = extractor.detectOffsetMisalignment(metadata, 0x310000);
+		const part5Offset = 0x300000;
+		const part5Size = 0x100000;
+		const part5Data = firmware.slice(part5Offset, part5Offset + part5Size);
+		const rock26Offset = 0x310000 - part5Offset;
+		const misalignment = extractor.detectOffsetMisalignment(metadata, part5Data, rock26Offset);
 
 		// Should detect no misalignment
 		expect(misalignment.misalignment).toBe(0);

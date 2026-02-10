@@ -164,19 +164,19 @@ export async function detectFontTypeFromFile(file: File): Promise<FontDetectionR
 	try {
 		// Add to document.fonts for rendering
 		await fontFace.load();
-		(document.fonts as any).add(fontFace);
+		document.fonts.add(fontFace);
 
 		// Detect font type
 		const result = await detectFontType(fontFace);
 
 		// Remove font from document fonts
-		(document.fonts as any).delete(fontFace);
+		document.fonts.delete(fontFace);
 
 		return result;
 	} catch (error) {
 		// Clean up on error
 		try {
-			(document.fonts as any).delete(fontFace);
+			document.fonts.delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}
@@ -200,19 +200,19 @@ export async function detectFontTypeFromArrayBuffer(
 	try {
 		// Add to document.fonts for rendering
 		await fontFace.load();
-		(document.fonts as any).add(fontFace);
+		document.fonts.add(fontFace);
 
 		// Detect font type
 		const result = await detectFontType(fontFace);
 
 		// Remove font from document fonts
-		(document.fonts as any).delete(fontFace);
+		document.fonts.delete(fontFace);
 
 		return result;
 	} catch (error) {
 		// Clean up on error
 		try {
-			(document.fonts as any).delete(fontFace);
+			document.fonts.delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}

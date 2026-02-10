@@ -155,7 +155,7 @@ export async function loadAndValidateFontFile(
 
 	// Add to document.fonts for rendering
 	try {
-		(document.fonts as any).add(fontFace);
+		document.fonts.add(fontFace);
 	} catch (error) {
 		throw new FontLoadingError(
 			`Failed to register font with document.`,
@@ -174,7 +174,7 @@ export async function loadAndValidateFontFile(
 	} catch (error) {
 		// Clean up font on detection failure
 		try {
-			(document.fonts as any).delete(fontFace);
+			document.fonts.delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}
@@ -189,7 +189,7 @@ export async function loadAndValidateFontFile(
 	if (!detectionResult.isPixelPerfect) {
 		// Clean up font if validation fails
 		try {
-			(document.fonts as any).delete(fontFace);
+			document.fonts.delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}
@@ -228,7 +228,7 @@ export async function loadAndValidateFontFile(
  */
 export function unloadFontFile(fontFace: FontFace, fontFamily: string): void {
 	try {
-		(document.fonts as any).delete(fontFace);
+		document.fonts.delete(fontFace);
 	} catch (error) {
 		// Log but don't throw - cleanup failures are non-critical
 		console.warn(`Failed to unload font ${fontFamily}:`, error);
@@ -280,7 +280,7 @@ export async function loadAndValidateFontFromArrayBuffer(
 
 	// Add to document.fonts for rendering
 	try {
-		(document.fonts as any).add(fontFace);
+		document.fonts.add(fontFace);
 	} catch (error) {
 		throw new FontLoadingError(
 			`Failed to register font with document.`,
@@ -299,7 +299,7 @@ export async function loadAndValidateFontFromArrayBuffer(
 	} catch (error) {
 		// Clean up font on detection failure
 		try {
-			(document.fonts as any).delete(fontFace);
+			document.fonts.delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}
@@ -314,7 +314,7 @@ export async function loadAndValidateFontFromArrayBuffer(
 	if (!detectionResult.isPixelPerfect) {
 		// Clean up font if validation fails
 		try {
-			(document.fonts as any).delete(fontFace);
+			document.fonts.delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}
