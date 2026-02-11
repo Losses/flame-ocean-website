@@ -329,7 +329,7 @@
       .filter((p) => p.smallCount > 0)
       .map((plane) => ({
         id: `plane-small-${plane.name}`,
-        label: `${plane.name}`,
+        label: `${plane.name} (${plane.smallCount})`,
         type: "plane" as const,
         data: { ...plane, fontType: "SMALL" as const },
         children: [],
