@@ -59,7 +59,8 @@
   // State
   let firmwareData = $state<Uint8Array | null>(null);
   let originalFirmwareData = $state<Uint8Array | null>(null); // For rollback
-  let worker: Worker | null = null;
+  // svelte-ignore non_reactive_update
+    let worker: Worker | null = null;
   let isProcessing = $state(false);
   let progress = $state(0);
   let statusMessage = $state("Ready to load firmware");
@@ -1029,30 +1030,6 @@
               // Update status message with completion info
               statusMessage = `Font replacement completed: ${data.successCount} replaced, ${data.skippedCount} skipped`;
 
-              // List first 20 skipped characters with Unicode values
-              if (data.skippedCharacters.length > 0) {
-                const skippedToList = data.skippedCharacters.slice(0, 20);
-                summaryMessage += `\n\nSkipped characters:\n`;
-                for (const char of skippedToList) {
-                  const reason = data.skippedReasons.get(char) ?? "unknown";
-                  summaryMessage += `  U+${char.toString(16).toUpperCase().padStart(4, "0")} (${reason})\n`;
-                }
-                if (data.skippedCharacters.length > 20) {
-                  summaryMessage += `  ...and ${data.skippedCharacters.length - 20} more\n`;
-                }
-              }
-
-              if (data.errors.length > 0) {
-                summaryMessage += `\nErrors: ${data.errors.length}`;
-                summaryMessage += `\n${data.errors.slice(0, 3).join("\n")}`;
-                if (data.errors.length > 3) {
-                  summaryMessage += `\n...and ${data.errors.length - 3} more`;
-                }
-              }
-
-              statusMessage = `Font replacement complete: ${data.successCount} replaced, ${data.skippedCount} skipped`;
-
-              showWarningDialog("Font Replacement Complete", summaryMessage);
               resolve();
             } else {
               reject(new MessageEvent("error", { data: error }));
