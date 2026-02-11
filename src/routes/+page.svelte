@@ -133,6 +133,7 @@
     detectedType: "SMALL" | "LARGE" | null;
     fileName: string;
     isPixelPerfect: boolean;
+    fontData: ArrayBuffer;
   } | null>(null);
 
   // Track replaced images - use array for better Svelte 5 reactivity
@@ -1034,7 +1035,7 @@
     }
   }
 
-  // Perform the actual font replacement using worker-based extraction
+  // Perform the font replacement entirely in worker (no data shuttling)
   async function performFontReplacement(
     fontFamily: string,
     fontSize: 12 | 16,
@@ -1045,133 +1046,76 @@
     // Re-enable tofu debug mode for actual replacement
     setTofuDebugMode(debug);
 
-    // Set up handler for worker-based extraction
+    // Set up handler for worker-based replacement
     let finishHandler: ((e: MessageEvent) => void) | null = null;
 
     const resultPromise = new Promise<void>((resolve, reject) => {
       finishHandler = (e: MessageEvent) => {
-        const { type, id, result, error } = e.data;
+        const { type, id, result, error, message } = e.data;
 
-        if (id === "extractFonts") {
-          // Remove this handler
+        if (id === "replaceFontsWorker") {
+          // Ignore progress messages - just update status and progress bar
+          if (type === "progress") {
+            statusMessage = message;
+            progress = e.data.progress;
+            return; // Don't remove handler for progress
+          }
+
+          // Remove handler for success/error
           worker!.removeEventListener("message", finishHandler!);
           finishHandler = null;
 
           if (type === "success") {
             const data = result as {
-              extractedCharacters: { unicode: number; pixels: boolean[][] }[];
+              successCount: number;
               skippedCount: number;
+              errors: string[];
+              replacedCharacters: number[];
+              skippedCharacters: number[];
             };
 
-            // Now stream the extracted characters to the firmware
-            streamExtractedCharacters(
-              data.extractedCharacters,
-              fontType,
-              resolve,
-              reject
-            );
+            // Add replaced characters to tracking
+            const targetSet = fontType === "SMALL" ? replacedSmallFontCharacters : replacedLargeFontCharacters;
+            const mergedChars = new Set([...targetSet, ...data.replacedCharacters]);
+
+            if (fontType === "SMALL") {
+              replacedSmallFontCharacters = mergedChars;
+            } else {
+              replacedLargeFontCharacters = mergedChars;
+            }
+
+            statusMessage = `Font replacement completed: ${data.successCount} replaced, ${data.skippedCount} skipped`;
+            progress = 100;
+
+            if (data.errors.length > 0) {
+              console.warn("Font replacement errors:", data.errors);
+            }
+
+            resolve();
           } else {
-            reject(new Error(error || "Font extraction failed"));
+            reject(new Error(error || "Font replacement failed"));
           }
         }
       };
     });
 
-    // Add handler before sending extraction request
+    // Add handler before sending request
     worker!.addEventListener("message", finishHandler!);
 
-    // Send extraction request to worker
+    // Send complete font replacement request to worker
+    // Worker handles: loading fonts, tofu detection, extraction, encoding, firmware writing
     worker!.postMessage({
-      type: "extractFonts",
-      id: "extractFonts",
+      type: "replaceFontsWorker",
+      id: "replaceFontsWorker",
       fontData,
       fontFamily,
       fontSize,
+      fontType,
+      firmware: firmwareData,
       codePoints: codePointsToProcess,
     });
 
     await resultPromise;
-  }
-
-  // Stream extracted characters to firmware
-  async function streamExtractedCharacters(
-    extractedCharacters: { unicode: number; pixels: boolean[][] }[],
-    fontType: "SMALL" | "LARGE",
-    resolve: () => void,
-    reject: (err: Error) => void
-  ): Promise<void> {
-    // Start the firmware update stream
-    worker!.postMessage({
-      type: "replaceFontsStreamStart",
-      id: "replaceFontsStream",
-      firmware: new Uint8Array(),
-      fontType: fontType,
-      totalCharacters: extractedCharacters.length,
-    });
-
-    // Send all extracted characters
-    for (let i = 0; i < extractedCharacters.length; i++) {
-      const { unicode, pixels } = extractedCharacters[i];
-
-      // Update progress
-      if (i % 100 === 0 || i === extractedCharacters.length - 1) {
-        statusMessage = `Writing firmware: ${Math.floor((i / extractedCharacters.length) * 100)}% complete`;
-        progress = 95 + Math.floor((i / extractedCharacters.length) * 5);
-        await new Promise((r) => setTimeout(r, 0));
-      }
-
-      worker!.postMessage({
-        type: "replaceFontsStreamAdd",
-        id: "replaceFontsStream",
-        character: { unicode, pixels },
-      });
-    }
-
-    // Set up handler for completion
-    let finishHandler: ((e: MessageEvent) => void) | null = null;
-
-    const completionPromise = new Promise<void>((res, rej) => {
-      finishHandler = (e: MessageEvent) => {
-        const { type, id } = e.data;
-        if (id === "replaceFontsStream" && type === "success") {
-          worker!.removeEventListener("message", finishHandler!);
-          finishHandler = null;
-
-          const data = e.data.result as {
-            successCount: number;
-            skippedCount: number;
-            errors: string[];
-            replacedCharacters: number[];
-            skippedCharacters: number[];
-          };
-
-          // Add replaced characters to tracking
-          const targetSet = fontType === "SMALL" ? replacedSmallFontCharacters : replacedLargeFontCharacters;
-          const mergedChars = new Set([...targetSet, ...data.replacedCharacters]);
-
-          if (fontType === "SMALL") {
-            replacedSmallFontCharacters = mergedChars;
-          } else {
-            replacedLargeFontCharacters = mergedChars;
-          }
-
-          statusMessage = `Font replacement completed: ${data.successCount} replaced, ${data.skippedCount} skipped`;
-          progress = 100;
-          res();
-        }
-      };
-    });
-
-    worker!.addEventListener("message", finishHandler!);
-
-    // Signal completion
-    worker!.postMessage({
-      type: "replaceFontsStreamFinish",
-      id: "replaceFontsStream",
-      firmware: new Uint8Array(),
-    });
-
-    await completionPromise;
   }
 
   // Confirm font replacement after preview

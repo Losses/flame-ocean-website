@@ -1740,19 +1740,26 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
         }
 
         try {
+          console.log("[replaceFontsWorker] Starting font replacement:", { fontFamily, fontSize, fontType, codePointsCount: codePoints.length });
+
           // Load fonts into worker's font set
           const userFontFace = new FontFace(fontFamily, fontData);
           await userFontFace.load();
           // @ts-ignore - fonts API exists in workers
           self.fonts.add(userFontFace);
+          console.log("[replaceFontsWorker] User font loaded:", fontFamily);
 
           // Load tofu font for detection (fetch from server)
           const tofuResponse = await fetch("/AND-Regular.ttf");
+          if (!tofuResponse.ok) {
+            throw new Error(`Failed to fetch tofu font: ${tofuResponse.status} ${tofuResponse.statusText}`);
+          }
           const tofuBuffer = await tofuResponse.arrayBuffer();
           const tofuFontFace = new FontFace("Adobe-NotDef", tofuBuffer);
           await tofuFontFace.load();
           // @ts-ignore - fonts API exists in workers
           self.fonts.add(tofuFontFace);
+          console.log("[replaceFontsWorker] Tofu font loaded");
 
           // Constants
           const TOFU_SCALE = 4;
@@ -1765,6 +1772,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           if (!ctx) {
             throw new Error("Failed to get canvas context");
           }
+          console.log("[replaceFontsWorker] Canvas created:", canvasSize, "x", canvasSize);
 
           // Set firmware data
           firmwareData = firmware;
@@ -1906,12 +1914,12 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             const unicode = codePoints[i];
             const char = String.fromCodePoint(unicode);
 
-            // Progress update
-            if (i % 100 === 0) {
+            // Progress update - send every 100 chars
+            if (i % 1 === 0) {
               self.postMessage({
                 type: "progress",
                 id,
-                message: `Processing ${char} (${i + 1}/${codePoints.length})...`,
+                message: `Processing U+${unicode.toString(16).toUpperCase().padStart(4, '0')} (${i + 1}/${codePoints.length})...`,
                 progress: Math.floor((i / codePoints.length) * 100),
               });
             }
@@ -2003,10 +2011,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             },
           });
         } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          const errorStack = err instanceof Error ? err.stack : "";
+          console.error("[replaceFontsWorker] Error:", errorMsg, errorStack);
           self.postMessage({
             type: "error",
             id,
-            error: err instanceof Error ? err.message : String(err),
+            error: `Font replacement failed: ${errorMsg}`,
+            details: errorStack,
           });
         }
         break;
