@@ -1,6 +1,6 @@
 <script lang="ts">
   import { Button, Window, WindowBody } from "./index.js";
-  import { isTestChar, getTestCharCategory } from "$lib/rse/utils/tofu-font";
+  import { isTestChar, getTestCharCategory, pixelsToDataURL } from "$lib/rse/utils/tofu-font";
 
   interface TofuDebugData {
     codePoint: number;
@@ -22,34 +22,6 @@
   }
 
   let { debugData = [], onclose, onconfirm, showConfirm = false }: Props = $props();
-
-  function pixelsToDataURL(pixels: boolean[][], scale = 10): string {
-    const height = pixels.length;
-    const width = pixels[0]?.length || 0;
-
-    const canvas = document.createElement('canvas');
-    canvas.width = width * scale;
-    canvas.height = height * scale;
-    const ctx = canvas.getContext('2d');
-
-    if (!ctx) return 'data:image/png;base64,'; // Return empty data URL
-
-    // Fill white background
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw pixels
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        if (pixels[y][x]) {
-          ctx.fillStyle = '#000000';
-          ctx.fillRect(x * scale, y * scale, scale, scale);
-        }
-      }
-    }
-
-    return canvas.toDataURL('image/png');
-  }
 
   function getCharDescription(codePoint: number): string {
     return `U+${codePoint.toString(16).toUpperCase().padStart(4, '0')}`;
