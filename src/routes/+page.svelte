@@ -1,14 +1,5 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import {
-    Window,
-    TreeView,
-    StatusBar,
-    WindowBody,
-    LoadingWindow,
-    WarningWindow,
-    FontDebugWindow,
-  } from "$lib/components/98css";
   import ImageRenderer from "$lib/components/firmware/ImageRenderer.svelte";
   import FirmwareWorker from "$lib/workers/firmware-worker.ts?worker";
   import FontGridRenderer from "$lib/components/firmware/FontGridRenderer.svelte";
@@ -18,6 +9,15 @@
     initDebugShortcut,
     debugAnimationComplete,
   } from "$lib/stores";
+  import {
+    Window,
+    TreeView,
+    StatusBar,
+    WindowBody,
+    LoadingWindow,
+    WarningWindow,
+    FontDebugWindow,
+  } from "$lib/components/98css";
   import {
     unloadFontFile,
     FontLoadingError,
@@ -60,7 +60,7 @@
   let firmwareData = $state<Uint8Array | null>(null);
   let originalFirmwareData = $state<Uint8Array | null>(null); // For rollback
   // svelte-ignore non_reactive_update
-    let worker: Worker | null = null;
+  let worker: Worker | null = null;
   let isProcessing = $state(false);
   let progress = $state(0);
   let statusMessage = $state("Ready to load firmware");
@@ -947,7 +947,7 @@
           // Update progress: 10% to 95% during extraction and processing
           progress = 10 + Math.floor((i / codePointsToProcess.length) * 85);
           // Yield to browser to allow UI update
-          await new Promise(resolve => setTimeout(resolve, 0));
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
 
         try {
@@ -960,7 +960,7 @@
           // FLOW CONTROL: Wait for worker queue to have space
           // If queue is at capacity, wait for worker to send queueReady signal
           if (queueDepth >= queueCapacity - 10) {
-            await new Promise<void>(resolve => {
+            await new Promise<void>((resolve) => {
               resolveQueueReady = resolve;
             });
           }
@@ -986,29 +986,39 @@
       statusMessage = `Finishing font replacement...`;
       progress = 95; // 95% - all characters sent, waiting for worker
 
-      console.log(`[main] All ${codePointsToProcess.length} characters sent, sending finish signal`);
+      console.log(
+        `[main] All ${codePointsToProcess.length} characters sent, sending finish signal`,
+      );
 
-      // Step 5: Finish stream and wait for results
-      await Promise.race([
-        new Promise<void>((resolve, reject) => {
-          const handler = (e: MessageEvent) => {
-            const { type, id, result, error } = e.data;
+      // Step 5: Set up handler FIRST, then send finish signal and wait for results
+      let finishHandler: ((e: MessageEvent) => void) | null = null;
 
-            if (id === "replaceFontsStream") {
-              console.log(`[main] Received message: type=${type}, id=${id}`);
+      const resultPromise = new Promise<void>((resolve, reject) => {
+        finishHandler = (e: MessageEvent) => {
+          const { type, id, result, error } = e.data;
 
-              if (type === "progress") {
-                statusMessage = e.data.message;
-                // Progress bar stays at 95% during final processing
-                progress = 95;
-                return;
-              }
+          if (id === "replaceFontsStream") {
+            console.log(`[main] Received message: type=${type}, id=${id}`);
 
-              worker!.removeEventListener("message", handler);
+            if (type === "progress") {
+              statusMessage = e.data.message;
+              // Progress bar stays at 95% during final processing
+              progress = 95;
+              return;
+            }
 
-              if (type === "success") {
-                console.log(`[main] SUCCESS! Got result, resolving promise`);
-                progress = 100; // Complete!
+            // Ignore queueReady messages - they're flow control, not final results
+            if (type === "queueReady") {
+              return;
+            }
+
+            // Remove this handler for any non-progress/queueReady message
+            worker!.removeEventListener("message", finishHandler!);
+            finishHandler = null;
+
+            if (type === "success") {
+              console.log(`[main] SUCCESS! Got result, resolving promise`, result);
+              progress = 100; // Complete!
 
               const data = result as {
                 successCount: number;
@@ -1032,12 +1042,21 @@
 
               resolve();
             } else {
-              reject(new MessageEvent("error", { data: error }));
+              // Log the full error details from worker
+              console.error(`[main] Worker returned error:`, {
+                type,
+                id,
+                error,
+                result,
+                fullData: e.data,
+              });
+              reject(new Error(error || "Unknown font replacement error"));
             }
           }
         };
 
-        worker!.addEventListener("message", handler);
+        // Add handler BEFORE sending finish signal
+        worker!.addEventListener("message", finishHandler);
 
         // Send finish signal
         console.log(`[main] Sending replaceFontsStreamFinish message`);
@@ -1046,16 +1065,34 @@
           id: "replaceFontsStream",
           firmware: new Uint8Array(),
         });
-        console.log(`[main] Finish signal sent, now waiting for success message...`);
-      }),
-        // 30 second timeout
-        new Promise<void>((_, reject) =>
-          setTimeout(() => {
-            console.error(`[main] TIMEOUT waiting for worker response after 30 seconds`);
-            reject(new Error("Font replacement timeout - worker did not respond within 30 seconds"));
-          }, 30000)
-        ),
-      ]);
+        console.log(
+          `[main] Finish signal sent, now waiting for success message...`,
+        );
+      });
+
+      // 30 second timeout with proper cleanup
+      const timeoutPromise = new Promise<void>((_, reject) => {
+        const timeoutId = setTimeout(() => {
+          console.error(
+            `[main] TIMEOUT waiting for worker response after 30 seconds`,
+          );
+          // Clean up handler on timeout
+          if (finishHandler) {
+            worker!.removeEventListener("message", finishHandler);
+            finishHandler = null;
+          }
+          reject(
+            new Error(
+              "Font replacement timeout - worker did not respond within 30 seconds",
+            ),
+          );
+        }, 30000);
+
+        // Clear timeout if promise resolves
+        resultPromise.finally(() => clearTimeout(timeoutId));
+      });
+
+      await Promise.race([resultPromise, timeoutPromise]);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
