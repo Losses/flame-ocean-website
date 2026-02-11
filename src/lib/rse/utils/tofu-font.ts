@@ -518,14 +518,40 @@ function comparePixelRegions(
 				boundingBox1: { ...bbox1 },
 				boundingBox2: { ...bbox2 }
 			});
-		}
+	}
 
-		return false;
+		return isMatch;
 	}
 
 	// Crop to bounding boxes
 	const cropped1 = cropToBoundingBox(pixels1, bbox1);
 	const cropped2 = cropToBoundingBox(pixels2, bbox2);
+
+	// Handle empty cropped arrays (shouldn't happen after bbox checks, but be safe)
+	if (cropped1.length === 0 || cropped1[0]?.length === 0 ||
+	    cropped2.length === 0 || cropped2[0]?.length === 0) {
+		isMatch = false;
+		matchPercentage = 0.0;
+
+		// Capture debug data for empty crops before returning
+		if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
+			const isTest = isTestChar(codePoint);
+			console.log(`[Tofu] Collecting debug data for EMPTY CROP U+${codePoint.toString(16).padStart(4, '0')}${isTest ? ' [TEST]' : ''}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`);
+			debugDataCollection.push({
+				codePoint,
+				char,
+				fontSize,
+				renderedPixels: pixels1.map(row => [...row]),
+				tofuPixels: pixels2.map(row => [...row]),
+				match: isMatch,
+				matchPercentage,
+				boundingBox1: { ...bbox1 },
+				boundingBox2: { ...bbox2 }
+			});
+		}
+
+		return isMatch;
+	}
 
 	// Check if sizes are wildly different (not the same character)
 	const size1 = cropped1.length * cropped1[0].length;
@@ -534,7 +560,27 @@ function comparePixelRegions(
 
 	if (Math.abs(size1 - size2) > maxSize * 0.3) {
 		// More than 30% size difference = definitely not the same
-		return false;
+		isMatch = false;
+		matchPercentage = (size1 + size2) > 0 ? Math.min(size1, size2) / Math.max(size1, size2) : 0.0;
+
+		// Capture debug data for size mismatch before returning
+		if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
+			const isTest = isTestChar(codePoint);
+			console.log(`[Tofu] Collecting debug data for SIZE MISMATCH U+${codePoint.toString(16).padStart(4, '0')}${isTest ? ' [TEST]' : ''}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`);
+			debugDataCollection.push({
+				codePoint,
+				char,
+				fontSize,
+				renderedPixels: pixels1.map(row => [...row]),
+				tofuPixels: pixels2.map(row => [...row]),
+				match: isMatch,
+				matchPercentage,
+				boundingBox1: { ...bbox1 },
+				boundingBox2: { ...bbox2 }
+			});
+		}
+
+		return isMatch;
 	}
 
 	// Count matching pixels within overlapping region
