@@ -10,11 +10,10 @@
 
 import { TOFU_FONT_FAMILY, isTofuFontLoaded } from './tofu-font';
 import {
-	renderGlyphToPixels,
+	renderWithTofuPipeline,
 	getCanvasDimensions as getSharedCanvasDimensions,
 	buildFontStackString,
-	type FontSize,
-	type GlyphRenderConfig
+	type FontSize
 } from './glyph-renderer';
 
 /**
@@ -115,18 +114,18 @@ export async function extractCharacter(
 		opts.useTofuFallback ? TOFU_FONT_FAMILY : undefined
 	);
 
-	// Configure rendering options for shared renderer
-	const renderConfig: GlyphRenderConfig = {
-		fontFamily: fontStack,
-		fontSize: opts.fontSize,
-		bgColor: opts.bgColor,
-		fgColor: opts.fgColor,
-		useScaling: true, // Always use scaling for pixel-perfect extraction
-		scaleFactor: 10
-	};
-
-	// Render glyph using shared renderer
-	const pixels = await renderGlyphToPixels(char, renderConfig);
+	// Use unified tofu pipeline for consistent rendering with tofu detection
+	// Returns cropped result (downsampled to target size)
+	const pixels = await renderWithTofuPipeline(
+		char,
+		fontStack,
+		opts.fontSize,
+		{
+			returnType: "cropped",
+			fgColor: opts.fgColor,
+			bgColor: opts.bgColor
+		}
+	);
 
 	return {
 		codePoint,

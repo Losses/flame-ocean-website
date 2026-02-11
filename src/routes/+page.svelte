@@ -126,6 +126,14 @@
     fontType: "SMALL" | "LARGE";
     codePoints: number[];
   } | null>(null);
+  // Store font result from preview so it can be unloaded after replacement
+  let previewFontResult = $state<{
+    fontFace: FontFace;
+    fontFamily: string;
+    detectedType: "SMALL" | "LARGE" | null;
+    fileName: string;
+    isPixelPerfect: boolean;
+  } | null>(null);
 
   // Track replaced images - use array for better Svelte 5 reactivity
   let replacedImages = $state<string[]>([]);
@@ -958,6 +966,8 @@
             fontType: detectedType,
             codePoints: codePointsToProcess,
           };
+          // Store font result so it can be used/unloaded after confirmation
+          previewFontResult = fontResult;
           showTofuDebug = true;
           isProcessing = false; // Allow user to decide
           return; // Wait for user confirmation
@@ -994,13 +1004,10 @@
       }
       statusMessage = `Font replacement failed: ${errorMessage}`;
     } finally {
-      // Clean up font resources
-      if (fontResult) {
-        try {
-          unloadFontFile(fontResult.fontFace, fontResult.fontFamily);
-        } catch {
-          // Ignore cleanup errors
-        }
+      // Clean up font resources - ONLY if we're not showing the preview dialog
+      // If the preview dialog is shown, the font will be needed when user clicks Confirm
+      if (fontResult && !showTofuDebug) {
+        unloadFontFile(fontResult.fontFace, fontResult.fontFamily);
       }
       isProcessing = false;
       loadingTitle = undefined;
@@ -1255,6 +1262,11 @@
       );
       statusMessage = `Font replacement failed: ${errorMessage}`;
     } finally {
+      // Clean up font resources from preview mode
+      if (previewFontResult) {
+        unloadFontFile(previewFontResult.fontFace, previewFontResult.fontFamily);
+        previewFontResult = null;
+      }
       isProcessing = false;
       loadingTitle = undefined;
     }
@@ -1267,6 +1279,12 @@
     isProcessing = false;
     loadingTitle = undefined;
     statusMessage = "Font replacement cancelled";
+
+    // Clean up font resources from preview mode
+    if (previewFontResult) {
+      unloadFontFile(previewFontResult.fontFace, previewFontResult.fontFamily);
+      previewFontResult = null;
+    }
   }
 
   // Handle keyboard shortcuts (Ctrl+S for export)

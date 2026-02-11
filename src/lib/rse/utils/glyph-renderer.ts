@@ -356,3 +356,125 @@ export function pixelsToDataURL(
 export function getCanvasDimensions(fontSize: FontSize): { width: number; height: number } {
 	return { ...CANVAS_DIMENSIONS[fontSize] };
 }
+
+// ============================================================================
+// UNIFIED TOFU PIPELINE - Used by both tofu detection AND font extraction
+// ============================================================================
+
+/**
+ * Scale factor for tofu-compatible rendering (must match tofu signature generation)
+ */
+export const TOFU_SCALE = 4;
+
+/**
+ * Padding pixels on each side for tofu-compatible rendering
+ * Allows tofu font to render without clipping due to ascender/descender differences
+ */
+export const TOFU_PADDING = 10;
+
+/**
+ * Calculate padded canvas size for tofu-compatible rendering
+ * @param fontSize - Font size in pixels (12 or 16)
+ * @returns Total canvas size including padding
+ */
+export function getPaddedCanvasSize(fontSize: FontSize): number {
+	return fontSize * TOFU_SCALE + TOFU_PADDING * 2;
+}
+
+/**
+ * Render a character using the tofu-compatible pipeline
+ *
+ * This function is used by BOTH:
+ * 1. Tofu detection - returns the full padded canvas for signature matching
+ * 2. Font extraction - returns the cropped, downsampled result for firmware
+ *
+ * The pipeline ensures consistency between tofu detection and extraction.
+ *
+ * @param char - Character to render
+ * @param fontFamily - Font family (or stack) to use
+ * @param fontSize - Font size in pixels (12 or 16)
+ * @param options - Rendering options
+ * @returns Rendered pixels
+ */
+export async function renderWithTofuPipeline(
+	char: string,
+	fontFamily: string,
+	fontSize: FontSize,
+	options: {
+		/** Return full padded canvas (for tofu detection) or cropped result (for extraction) */
+		returnType: "full" | "cropped";
+		/** Foreground color (default: black) */
+		fgColor?: string;
+		/** Background color (default: white) */
+		bgColor?: string;
+	} = { returnType: "cropped" },
+): Promise<boolean[][]> {
+	const scale = TOFU_SCALE;
+	const padding = TOFU_PADDING;
+	const canvasSize = fontSize * scale + padding * 2;
+
+	// Create offscreen canvas at padded size
+	const canvas = document.createElement('canvas');
+	canvas.width = canvasSize;
+	canvas.height = canvasSize;
+
+	const ctx = canvas.getContext('2d', { willReadFrequently: true });
+	if (!ctx) {
+		throw new Error('Failed to get canvas context');
+	}
+
+	// Clear with background
+	ctx.fillStyle = options.bgColor ?? '#ffffff';
+	ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+	// Configure font rendering at scaled size
+	ctx.font = `${fontSize * scale}px ${fontFamily}`;
+	ctx.textBaseline = 'top';
+	ctx.textAlign = 'left';
+	ctx.imageSmoothingEnabled = false;
+
+	// Render character at padding offset
+	ctx.fillStyle = options.fgColor ?? '#000000';
+	ctx.fillText(char, padding, padding);
+
+	// Extract pixel data
+	const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+	const pixels = imageDataToPixels(imageData, 128);
+
+	// Clean up
+	ctx.clearRect(0, 0, canvas.width, canvas.height);
+	canvas.width = 0;
+	canvas.height = 0;
+
+	if (options.returnType === 'full') {
+		// Return full padded canvas (for tofu detection/signature generation)
+		return pixels;
+	}
+
+	// Extract the center pattern (same as tofu signature extraction)
+	const patternSize = fontSize * scale;
+	const pattern: boolean[][] = [];
+
+	for (let y = padding; y < padding + patternSize; y++) {
+		const row: boolean[] = [];
+		for (let x = padding; x < padding + patternSize; x++) {
+			row.push(pixels[y][x] ?? false);
+		}
+		pattern.push(row);
+	}
+
+	// Downsample to target font size (e.g., 12x12 or 16x16)
+	// This uses simple nearest-neighbor by taking every nth pixel
+	const downsampled: boolean[][] = [];
+	const downsampleFactor = scale; // 4x down to 1x
+
+	for (let y = 0; y < patternSize; y += downsampleFactor) {
+		const row: boolean[] = [];
+		for (let x = 0; x < patternSize; x += downsampleFactor) {
+			row.push(pattern[y][x]);
+		}
+		downsampled.push(row);
+	}
+
+	return downsampled;
+}

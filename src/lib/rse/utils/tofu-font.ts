@@ -11,11 +11,13 @@
 
 import type { PixelData } from "../types/index.js";
 import {
-  imageDataToPixels,
   renderGlyphToPixels,
   buildFontStackString,
   pixelsToDataURL,
   type FontSize,
+  renderWithTofuPipeline,
+  TOFU_SCALE,
+  TOFU_PADDING,
 } from "./glyph-renderer";
 
 /**
@@ -75,23 +77,8 @@ const DEFAULT_TOFU_TEST_CHAR = "\uFFFD"; // Replacement character
  * Scale factor for tofu pattern extraction
  * Tofu pattern is rendered at 4x the font size
  */
-const TOFU_PATTERN_SCALE = 4;
-
-/**
- * Padding pixels on each side for padded canvas
- * Allows for font metric variations (ascent/descent differences)
- */
-const PADDING_PIXELS = 10;
-
-/**
- * Calculate padded canvas size for a given font size
- * Canvas is (fontSize * TOFU_PATTERN_SCALE) + (PADDING_PIXELS * 2)
- * @param fontSize - Font size in pixels (12 or 16)
- * @returns Total canvas size including padding
- */
-function getPaddedCanvasSize(fontSize: FontSize): number {
-  return fontSize * TOFU_PATTERN_SCALE + PADDING_PIXELS * 2;
-}
+// TOFU_SCALE is now imported from glyph-renderer.ts
+// Note: PADDING_PIXELS is removed - use TOFU_PADDING from glyph-renderer.ts
 
 /**
  * Debug data for tofu detection comparison
@@ -230,19 +217,23 @@ export async function generateTofuSignature(
     throw new Error("Tofu font not loaded. Call loadTofuFont() first.");
   }
 
-  // Render in padded canvas and extract the 4x4 pattern from center
-  // This creates a canonical tofu signature that can be scanned across user renders
-  const paddedPixels = await renderInPaddedCanvas(testChar, TOFU_FONT_FAMILY, fontSize as FontSize);
+  // Use unified tofu pipeline - returns full padded canvas for signature
+  const fullPixels = await renderWithTofuPipeline(
+    testChar,
+    TOFU_FONT_FAMILY,
+    fontSize as FontSize,
+    { returnType: "full" }
+  );
 
-  // Extract the center 4x4 pattern (the actual tofu signature)
-  const patternSize = fontSize * TOFU_PATTERN_SCALE;
-  const padding = PADDING_PIXELS;
+  // Extract the center pattern (same extraction as used in font extraction)
+  const patternSize = fontSize * TOFU_SCALE;
+  const padding = TOFU_PADDING;
   const pattern: boolean[][] = [];
 
   for (let y = padding; y < padding + patternSize; y++) {
     const row: boolean[] = [];
     for (let x = padding; x < padding + patternSize; x++) {
-      row.push(paddedPixels[y][x] ?? false);
+      row.push(fullPixels[y][x] ?? false);
     }
     pattern.push(row);
   }
@@ -285,62 +276,6 @@ export function isTofuFontLoaded(): boolean {
  */
 export function getTofuFontFamily(): string {
   return TOFU_FONT_FAMILY;
-}
-
-/**
- * Render character in padded canvas with font stack
- * Uses larger canvas with padding to accommodate font metric variations
- * @param char - Character to render
- * @param fontFamily - Font family (or stack) to use
- * @param fontSize - Font size in pixels (12 or 16)
- * @returns Rendered pixel data in padded canvas
- */
-async function renderInPaddedCanvas(
-  char: string,
-  fontFamily: string,
-  fontSize: FontSize,
-): Promise<boolean[][]> {
-  const canvasSize = getPaddedCanvasSize(fontSize);
-  // Scale font by TOFU_PATTERN_SCALE (4x), not 10x
-  // The canvas is sized for 4x scaling, so font must match
-  const scaledFontSize = fontSize * TOFU_PATTERN_SCALE;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = canvasSize;
-  canvas.height = canvasSize;
-
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) {
-    throw new Error('Failed to get canvas context');
-  }
-
-  // Clear with background
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // Configure font rendering at scaled size (4x, not 10x)
-  ctx.font = `${scaledFontSize}px ${fontFamily}`;
-  ctx.textBaseline = 'top';
-  ctx.textAlign = 'left';
-  ctx.imageSmoothingEnabled = false;
-
-  // Render character at the padding offset on both axes
-  // This centers the 4x-scaled glyph in the padded canvas
-  const xOffset = PADDING_PIXELS;
-  const yOffset = PADDING_PIXELS;
-  ctx.fillStyle = '#000000';
-  ctx.fillText(char, xOffset, yOffset);
-
-  // Extract pixel data
-  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-  const pixels = imageDataToPixels(imageData, 128);
-
-  // Clean up
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  canvas.width = 0;
-  canvas.height = 0;
-
-  return pixels;
 }
 
 /**
@@ -747,11 +682,11 @@ function comparePixelRegions(
 
 /**
  * Render a single character using user font with Adobe NotDef fallback
- * Now uses padded canvas rendering for robust tofu detection
+ * Now uses the unified tofu pipeline for consistent rendering
  * @param char - Character to render
  * @param fontFamily - Primary font family name
  * @param fontSize - Font size in pixels (12 or 16)
- * @returns Rendered pixel data in padded canvas
+ * @returns Rendered pixel data (full padded canvas for tofu detection)
  */
 export async function renderCharacterWithTofu(
   char: string,
@@ -763,8 +698,13 @@ export async function renderCharacterWithTofu(
     ? buildFontStackString(fontFamily, TOFU_FONT_FAMILY)
     : buildFontStackString(fontFamily);
 
-  // Render in padded canvas using the same approach as signature
-  return await renderInPaddedCanvas(char, fontStack, fontSize as FontSize);
+  // Use unified tofu pipeline - returns full padded canvas
+  return await renderWithTofuPipeline(
+    char,
+    fontStack,
+    fontSize as FontSize,
+    { returnType: "full" }
+  );
 }
 
 /**
