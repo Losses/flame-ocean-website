@@ -120,12 +120,12 @@
   // Tofu debug window state
   let showTofuDebug = $state(false);
   let tofuDebugData = $state<TofuDebugData[]>([]);
-  let pendingReplacement: {
+  let pendingReplacement = $state<{
     fontFamily: string;
     fontSize: 12 | 16;
     fontType: "SMALL" | "LARGE";
     codePoints: number[];
-  } | null = null;
+  } | null>(null);
 
   // Track replaced images - use array for better Svelte 5 reactivity
   let replacedImages = $state<string[]>([]);
