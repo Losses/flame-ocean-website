@@ -12,6 +12,7 @@ import { TOFU_FONT_FAMILY, isTofuFontLoaded } from './tofu-font.js';
 import {
 	renderGlyphToPixels,
 	getCanvasDimensions as getSharedCanvasDimensions,
+	buildFontStackString,
 	type FontSize,
 	type GlyphRenderConfig
 } from './glyph-renderer.js';
@@ -58,29 +59,6 @@ const DEFAULT_OPTIONS: Required<Omit<ExtractionOptions, 'fontFamily' | 'fontSize
 	bgColor: '#ffffff',
 	fgColor: '#000000'
 };
-
-/**
- * Build font family string for canvas rendering
- * Ensures consistent formatting between tofu detection and actual font replacement
- *
- * @param fontFamily - Base font family name (e.g., "W95FA")
- * @param useTofuFallback - Whether to include Adobe NotDef in font stack
- * @returns Properly formatted font family string for canvas font property
- *
- * @example
- * ```ts
- * buildFontStackString("W95FA", true)  // Returns: 'W95FA, "Adobe-NotDef"'
- * buildFontStackString("W95FA", false) // Returns: 'W95FA'
- * ```
- */
-export function buildFontStackString(fontFamily: string, useTofuFallback: boolean): string {
-	// When tofu fallback is enabled, user font first, then Adobe NotDef
-	// IMPORTANT: Don't add extra quotes around fontFamily - it's already just the name
-	if (useTofuFallback) {
-		return `${fontFamily}, "${TOFU_FONT_FAMILY}"`;
-	}
-	return fontFamily;
-}
 
 /**
  * Extract pixel data for a single Unicode character
@@ -130,8 +108,12 @@ export async function extractCharacter(
 	// Get canvas dimensions
 	const { width, height } = getCanvasDimensions(opts.fontSize);
 
-	// Build font stack string
-	const fontStack = buildFontStackString(opts.fontFamily, opts.useTofuFallback);
+	// Build font stack string - use shared function from glyph-renderer
+	// Pass TOFU_FONT_FAMILY string directly when fallback is enabled
+	const fontStack = buildFontStackString(
+		opts.fontFamily,
+		opts.useTofuFallback ? TOFU_FONT_FAMILY : undefined
+	);
 
 	// Configure rendering options for shared renderer
 	const renderConfig: GlyphRenderConfig = {
