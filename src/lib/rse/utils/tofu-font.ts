@@ -101,42 +101,7 @@ export let debugModeEnabled = false;
  * These characters are very unlikely to exist in typical pixel fonts
  */
 export const RARE_TEST_CHARS: number[] = [
-	// Latin Extended-B (rare African phonetics)
-	0x0180, 0x0190, 0x01A0, 0x01B0, 0x01C0,
-	// Mathematical Operators (unlikely in pixel fonts)
-	0x2200, 0x2211, 0x222B, 0x2248, 0x2264,
-	// Arrows (some might exist)
-	0x2190, 0x21D2, 0x21E0,
-	// Miscellaneous Technical
-	0x2300, 0x2320, 0x2340,
-	// Geometric Shapes
-	0x25A0, 0x25CB, 0x25CF,
-	// Miscellaneous Symbols
-	0x2600, 0x2654, 0x2660, 0x2665,
-	// Dingbats
-	0x2702, 0x2713,
-	// Box Drawing
-	0x2500, 0x2510, 0x2518,
-	// Block Elements
-	0x2580, 0x2588,
-	// Halfwidth and Fullwidth Forms (U+FF00)
-	0xFF01, // Fullwidth exclamation mark ！
-	0xFF02, // Fullwidth quotation mark "
-	0xFF03, // Fullwidth number sign #
-	0xFF04, // Fullwidth dollar sign $
-	0xFF05, // Fullwidth percent sign %
-	0xFF10, // Fullwidth zero ０
-	0xFF11, // Fullwidth one １
-	0xFF12, // Fullwidth two ２
-	0xFF21, // Fullwidth A Ａ
-	0xFF22, // Fullwidth B Ｂ
-	0xFF23, // Fullwidth C Ｃ
-	0xFF41, // Fullwidth a ａ
-	0xFF42, // Fullwidth b ｂ
-	0xFF43, // Fullwidth c ｃ
-	0xFF61, // Halfwidth ideographic full stop ｡
-	0xFF64, // Halfwidthideographic comma ､
-	0xFF70, // Halfwidth Katakana-Hiragana prolonged sound mark ｰ
+	0x3330, 0x3331,
 ];
 
 /**
