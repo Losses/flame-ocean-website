@@ -152,7 +152,13 @@ type WorkerResponse =
         | Uint8Array;
     }
   | { type: "progress"; id: string; message: string }
-  | { type: "progress"; id: string; message: string; queueDepth: number; queueCapacity: number }
+  | {
+      type: "progress";
+      id: string;
+      message: string;
+      queueDepth: number;
+      queueCapacity: number;
+    }
   | { type: "queueReady"; id: string }
   | { type: "error"; id: string; error: string };
 
@@ -382,7 +388,7 @@ function searchOffsetTable(firmware: Uint8Array): number | null {
 function processStreamCharacter(
   unicode: number,
   pixels: boolean[][],
-  state: FontReplacementStreamState
+  state: FontReplacementStreamState,
 ): { success: boolean; skip: boolean; error?: string } {
   const expectedSize = state.fontType === "SMALL" ? 12 : 16;
 
@@ -490,7 +496,9 @@ function processStreamCharacter(
     return { success: true, skip: false };
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    state.results.errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: ${errorMsg}`);
+    state.results.errors.push(
+      `U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: ${errorMsg}`,
+    );
     state.results.skippedCharacters.push(unicode);
     state.results.skippedReasons.set(unicode, "encoding_error");
     return { success: false, skip: true };
@@ -502,11 +510,9 @@ function processStreamCharacter(
  */
 async function processStreamQueue(): Promise<void> {
   if (!streamState || streamState.isProcessing) {
-    console.log(`[worker] processStreamQueue: SKIP - state=${!!streamState}, isProcessing=${streamState?.isProcessing}`);
     return;
   }
 
-  console.log(`[worker] processStreamQueue: START - queue.length=${streamState.queue.length}, processed=${streamState.processedCharacters}/${streamState.totalCharacters}`);
   streamState.isProcessing = true;
 
   while (streamState.queue.length > 0) {
@@ -545,8 +551,10 @@ async function processStreamQueue(): Promise<void> {
 
     // Send queueReady signal when queue drops below threshold
     // This tells main thread it can send more characters
-    if (streamState.queue.length < QUEUE_READY_THRESHOLD && !streamState.lastSentReady) {
-      console.log(`[worker] Queue depth ${streamState.queue.length} < ${QUEUE_READY_THRESHOLD}, sending queueReady signal`);
+    if (
+      streamState.queue.length < QUEUE_READY_THRESHOLD &&
+      !streamState.lastSentReady
+    ) {
       self.postMessage({
         type: "queueReady",
         id: streamState.id,
@@ -561,25 +569,21 @@ async function processStreamQueue(): Promise<void> {
 
     // Yield to event loop periodically to prevent blocking
     if (streamState.processedCharacters % 50 === 0) {
-      console.log(`[worker] Yielding at character ${streamState.processedCharacters}, queue.length=${streamState.queue.length}`);
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
 
   streamState.isProcessing = false;
-  console.log(`[worker] processStreamQueue: END - isProcessing=${streamState.isProcessing}, queue.length=${streamState.queue.length}, isFinished=${streamState.isFinished}, processed=${streamState.processedCharacters}/${streamState.totalCharacters}, received=${streamState.receivedCharacters}`);
 
   // CRITICAL FIX: If new items were added while we were processing,
   // immediately restart processing to prevent deadlock
   if (streamState.queue.length > 0) {
-    console.log(`[worker] RESTARTING - queue has ${streamState.queue.length} new items, processed=${streamState.processedCharacters}/${streamState.totalCharacters}`);
     await processStreamQueue();
     return;
   }
 
   // If we're finished and queue is empty, send completion
   if (streamState.isFinished && streamState.queue.length === 0) {
-    console.log(`[worker] Stream processing complete! Processed ${streamState.processedCharacters} characters.`);
     self.postMessage({
       type: "progress",
       id: streamState.id,
@@ -587,7 +591,6 @@ async function processStreamQueue(): Promise<void> {
     });
   } else if (!streamState.isFinished && streamState.queue.length === 0) {
     // Queue is empty but stream not finished - waiting for more characters
-    console.log(`[worker] Queue empty but stream not finished (received=${streamState.receivedCharacters}/${streamState.totalCharacters}), waiting for more characters...`);
   }
 }
 
@@ -604,19 +607,17 @@ async function waitForStreamCompletion(): Promise<void> {
   while (streamState.queue.length > 0 || streamState.isProcessing) {
     iterations++;
 
-    if (iterations % 100 === 0) {
-      console.log(`[worker] waitForStreamCompletion iteration ${iterations}: queue.length=${streamState.queue.length}, isProcessing=${streamState.isProcessing}, processed=${streamState.processedCharacters}`);
-    }
-
     if (iterations > maxIterations) {
-      console.error(`[worker] waitForStreamCompletion TIMEOUT - queue.length=${streamState.queue.length}, isProcessing=${streamState.isProcessing}`);
-      throw new Error(`waitForStreamCompletion timeout after ${maxIterations} iterations`);
+      console.error(
+        `[worker] waitForStreamCompletion TIMEOUT - queue.length=${streamState.queue.length}, isProcessing=${streamState.isProcessing}`,
+      );
+      throw new Error(
+        `waitForStreamCompletion timeout after ${maxIterations} iterations`,
+      );
     }
 
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-
-  console.log(`[worker] waitForStreamCompletion DONE - took ${iterations} iterations`);
 }
 
 // Unicode ranges (complete list matching RSE reference)
@@ -1363,13 +1364,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           return;
         }
 
-        const { fontType = "SMALL", fontReplacements } = e.data as WorkerRequest & {
-          fontType: "SMALL" | "LARGE";
-          fontReplacements: Array<{
-            unicode: number;
-            pixels: boolean[][];
-          }>;
-        };
+        const { fontType = "SMALL", fontReplacements } =
+          e.data as WorkerRequest & {
+            fontType: "SMALL" | "LARGE";
+            fontReplacements: Array<{
+              unicode: number;
+              pixels: boolean[][];
+            }>;
+          };
 
         if (!fontReplacements || fontReplacements.length === 0) {
           self.postMessage({
@@ -1395,8 +1397,6 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
         // Determine expected pixel size based on font type
         const expectedSize = fontType === "SMALL" ? 12 : 16;
 
-        console.log(`[worker] Font type: ${fontType}, expected size: ${expectedSize}x${expectedSize}`);
-
         // Process each character replacement
         for (let i = 0; i < fontReplacements.length; i++) {
           const { unicode, pixels } = fontReplacements[i];
@@ -1410,14 +1410,11 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             });
           }
 
-          // Log first few characters for debugging
-          if (i < 5) {
-            console.log(`[worker] U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: pixels=${pixels.length}x${pixels[0]?.length}, expected=${expectedSize}x${expectedSize}`);
-          }
-
           // Validate pixel data dimensions
           if (pixels.length !== expectedSize) {
-            errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data height (got ${pixels.length}, expected ${expectedSize})`);
+            errors.push(
+              `U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data height (got ${pixels.length}, expected ${expectedSize})`,
+            );
             skippedCharacters.push(unicode);
             skippedReasons.set(unicode, "invalid_pixel_data");
             continue;
@@ -1425,7 +1422,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 
           for (let row = 0; row < pixels.length; row++) {
             if (pixels[row].length !== expectedSize) {
-              errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data width at row ${row} (got ${pixels[row].length}, expected ${expectedSize})`);
+              errors.push(
+                `U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: Invalid pixel data width at row ${row} (got ${pixels[row].length}, expected ${expectedSize})`,
+              );
               skippedCharacters.push(unicode);
               skippedReasons.set(unicode, "invalid_pixel_data");
               continue;
@@ -1489,7 +1488,10 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 
             if (fontType === "LARGE") {
               // Copy existing footer byte from original data
-              const originalData = firmwareData.slice(addr, addr + LARGE_STRIDE);
+              const originalData = firmwareData.slice(
+                addr,
+                addr + LARGE_STRIDE,
+              );
               chunkToWrite[LARGE_STRIDE - 1] = originalData[LARGE_STRIDE - 1];
             }
 
@@ -1520,8 +1522,11 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             replacedCharacters.push(unicode);
             successCount++;
           } catch (error) {
-            const errorMsg = error instanceof Error ? error.message : String(error);
-            errors.push(`U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: ${errorMsg}`);
+            const errorMsg =
+              error instanceof Error ? error.message : String(error);
+            errors.push(
+              `U+${unicode.toString(16).toUpperCase().padStart(4, "0")}: ${errorMsg}`,
+            );
             skippedCharacters.push(unicode);
             skippedReasons.set(unicode, "encoding_error");
           }
@@ -1552,10 +1557,11 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           return;
         }
 
-        const { fontType = "SMALL", totalCharacters = 0 } = e.data as WorkerRequest & {
-          fontType: "SMALL" | "LARGE";
-          totalCharacters: number;
-        };
+        const { fontType = "SMALL", totalCharacters = 0 } =
+          e.data as WorkerRequest & {
+            fontType: "SMALL" | "LARGE";
+            totalCharacters: number;
+          };
 
         // Initialize streaming state
         streamState = {
@@ -1590,7 +1596,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           self.postMessage({
             type: "error",
             id,
-            error: "Stream not initialized. Call replaceFontsStreamStart first.",
+            error:
+              "Stream not initialized. Call replaceFontsStreamStart first.",
           });
           return;
         }
@@ -1615,11 +1622,6 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
         streamState.queue.push(character);
         streamState.receivedCharacters++;
 
-        // Only log occasionally to reduce console spam
-        if (streamState.receivedCharacters % 100 === 0) {
-          console.log(`[worker] Progress: received=${streamState.receivedCharacters}/${streamState.totalCharacters}, queue.length=${streamState.queue.length}, processed=${streamState.processedCharacters}`);
-        }
-
         // Only send progress update every 50 characters to reduce message storm
         if (streamState.receivedCharacters % 50 === 0) {
           self.postMessage({
@@ -1635,9 +1637,11 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
         // If queue was full but now has space (items were processed), send ready signal
         if (streamState.queue.length >= MAX_QUEUE_SIZE) {
           streamState.lastSentReady = false;
-        } else if (streamState.queue.length < QUEUE_READY_THRESHOLD && !streamState.lastSentReady && streamState.isProcessing) {
-          // Queue is being processed and has space - send ready signal
-          console.log(`[worker] Queue has space (${streamState.queue.length} < ${QUEUE_READY_THRESHOLD}), sending queueReady signal`);
+        } else if (
+          streamState.queue.length < QUEUE_READY_THRESHOLD &&
+          !streamState.lastSentReady &&
+          streamState.isProcessing
+        ) {
           self.postMessage({
             type: "queueReady",
             id: streamState.id,
@@ -1648,16 +1652,12 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
         // Start processing queue if not already processing
         // Use setTimeout to avoid race condition with isProcessing flag
         if (!streamState.isProcessing && streamState.queue.length > 0) {
-          console.log(`[worker] Queue has items but not processing, starting processing...`);
           // Use setTimeout to break out of the message handler and allow isProcessing to be set
           setTimeout(() => {
             if (!streamState!.isProcessing && streamState!.queue.length > 0) {
-              console.log(`[worker] Confirmed: starting queue processing (queue.length=${streamState!.queue.length})`);
-              processStreamQueue().catch(err => {
-                console.error('[worker] Queue processing error:', err);
+              processStreamQueue().catch((err) => {
+                console.error("[worker] Queue processing error:", err);
               });
-            } else {
-              console.log(`[worker] Skipped restart: isProcessing=${streamState!.isProcessing}, queue.length=${streamState!.queue.length}`);
             }
           }, 0);
         }
@@ -1669,20 +1669,17 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           self.postMessage({
             type: "error",
             id,
-            error: "Stream not initialized. Call replaceFontsStreamStart first.",
+            error:
+              "Stream not initialized. Call replaceFontsStreamStart first.",
           });
           return;
         }
-
-        console.log(`[worker] FINISH received - queue.length=${streamState.queue.length}, isProcessing=${streamState.isProcessing}, received=${streamState.receivedCharacters}/${streamState.totalCharacters}`);
 
         // Mark as finished
         streamState.isFinished = true;
 
         // Wait for queue to drain and send final result
         await waitForStreamCompletion();
-
-        console.log(`[worker] WAIT COMPLETE - sending success message`);
 
         // Send final success message
         self.postMessage({

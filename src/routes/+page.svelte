@@ -986,10 +986,6 @@
       statusMessage = `Finishing font replacement...`;
       progress = 95; // 95% - all characters sent, waiting for worker
 
-      console.log(
-        `[main] All ${codePointsToProcess.length} characters sent, sending finish signal`,
-      );
-
       // Step 5: Set up handler FIRST, then send finish signal and wait for results
       let finishHandler: ((e: MessageEvent) => void) | null = null;
 
@@ -998,8 +994,6 @@
           const { type, id, result, error } = e.data;
 
           if (id === "replaceFontsStream") {
-            console.log(`[main] Received message: type=${type}, id=${id}`);
-
             if (type === "progress") {
               statusMessage = e.data.message;
               // Progress bar stays at 95% during final processing
@@ -1017,7 +1011,6 @@
             finishHandler = null;
 
             if (type === "success") {
-              console.log(`[main] SUCCESS! Got result, resolving promise`, result);
               progress = 100; // Complete!
 
               const data = result as {
@@ -1059,15 +1052,11 @@
         worker!.addEventListener("message", finishHandler);
 
         // Send finish signal
-        console.log(`[main] Sending replaceFontsStreamFinish message`);
         worker!.postMessage({
           type: "replaceFontsStreamFinish",
           id: "replaceFontsStream",
           firmware: new Uint8Array(),
         });
-        console.log(
-          `[main] Finish signal sent, now waiting for success message...`,
-        );
       });
 
       // 30 second timeout with proper cleanup
