@@ -16,7 +16,7 @@ import {
   buildFontStackString,
   pixelsToDataURL,
   type FontSize,
-} from "./glyph-renderer.js";
+} from "./glyph-renderer";
 
 /**
  * Tofu pixel signature for a font size

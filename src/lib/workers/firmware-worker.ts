@@ -14,7 +14,7 @@ import {
 } from "../rse/utils/font-decoder";
 import { type PixelData } from "../rse/types";
 import { validateBitmapData, encodeV8 } from "../rse/utils/font-encoder";
-import { buildBitmapListFromMetadata } from "../rse/utils/metadata.js";
+import { buildBitmapListFromMetadata } from "../rse/utils/metadata";
 import { convertToBmp, isValidFontData } from "../rse/utils/bitmap";
 
 // Constants

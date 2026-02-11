@@ -8,14 +8,14 @@
  * for consistent pixel-perfect rendering across all font operations.
  */
 
-import { TOFU_FONT_FAMILY, isTofuFontLoaded } from './tofu-font.js';
+import { TOFU_FONT_FAMILY, isTofuFontLoaded } from './tofu-font';
 import {
 	renderGlyphToPixels,
 	getCanvasDimensions as getSharedCanvasDimensions,
 	buildFontStackString,
 	type FontSize,
 	type GlyphRenderConfig
-} from './glyph-renderer.js';
+} from './glyph-renderer';
 
 /**
  * Character extraction result
