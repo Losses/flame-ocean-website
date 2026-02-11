@@ -208,14 +208,13 @@ export async function generateTofuSignature(
     throw new Error("Tofu font not loaded. Call loadTofuFont() first.");
   }
 
-  // Use shared renderer with direct rendering (no scaling) for tofu signature
-  // Direct rendering is used here because we're comparing against user fonts
-  // that are also rendered directly in the detection path
+  // Use scaled rendering for pixel-perfect, consistent results
+  // Scaled rendering produces stable output without anti-aliasing variations
   const pixels = await renderGlyphToPixels(testChar, {
     fontFamily: buildFontStackString(TOFU_FONT_FAMILY),
     fontSize: fontSize as FontSize,
-    brightnessThreshold: 200, // Use higher threshold to be conservative about anti-aliasing
-    useScaling: false, // Direct render for consistency with detection path
+    brightnessThreshold: 128, // Standard threshold for binary output
+    useScaling: true, // Use scaled rendering for consistency
   });
 
   const signature: TofuSignature = {
@@ -606,9 +605,8 @@ export async function renderCharacterWithTofu(
   fontFamily: string,
   fontSize: 12 | 16,
 ): Promise<boolean[][]> {
-  // Use shared renderer with direct rendering (no scaling)
-  // Direct rendering is used for tofu detection to be consistent with
-  // the signature generation approach
+  // Use scaled rendering for pixel-perfect, consistent results
+  // Scaled rendering eliminates anti-aliasing variations that cause unstable detection
   const fontStack = tofuState.loaded
     ? buildFontStackString(fontFamily, TOFU_FONT_FAMILY)
     : buildFontStackString(fontFamily);
@@ -616,8 +614,8 @@ export async function renderCharacterWithTofu(
   return await renderGlyphToPixels(char, {
     fontFamily: fontStack,
     fontSize: fontSize,
-    brightnessThreshold: 200, // Higher threshold for tofu detection
-    useScaling: false, // Direct render for speed and consistency
+    brightnessThreshold: 128, // Standard threshold for binary output
+    useScaling: true, // Use scaled rendering for stability
   });
 }
 
