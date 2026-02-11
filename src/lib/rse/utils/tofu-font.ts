@@ -503,27 +503,45 @@ function comparePixelRegions(
 		return isMatch;
 	}
 
-	// Count matching pixels within overlapping region
-	let matches = 0;
-	let total = 0;
+	// Try different offsets to find the best match
+	// This handles cases where fonts render the same glyph at slightly different positions
+	const maxOffset = 2; // Allow up to 2 pixels offset in each direction
+	let bestMatchPercentage = 0;
 
-	const rows = Math.min(cropped1.length, cropped2.length);
-	const cols = Math.min(cropped1[0].length, cropped2[0].length);
+	for (let dy = -maxOffset; dy <= maxOffset; dy++) {
+		for (let dx = -maxOffset; dx <= maxOffset; dx++) {
+			let matches = 0;
+			let total = 0;
 
-	for (let y = 0; y < rows; y++) {
-		for (let x = 0; x < cols; x++) {
-			const p1 = cropped1[y][x];
-			const p2 = cropped2[y][x];
-			if (p1 === p2) {
-				matches++;
+			// Compare crops with offset
+			for (let y = 0; y < cropped1.length; y++) {
+				for (let x = 0; x < cropped1[y].length; x++) {
+					// Calculate corresponding position in crop2 with offset
+					const y2 = y + dy;
+					const x2 = x + dx;
+
+					// Check if position is valid in crop2
+					if (y2 >= 0 && y2 < cropped2.length && x2 >= 0 && x2 < cropped2[y2].length) {
+						const p1 = cropped1[y][x];
+						const p2 = cropped2[y2][x2];
+						if (p1 === p2) {
+							matches++;
+						}
+						total++;
+					}
+				}
 			}
-			total++;
+
+			const percentage = total > 0 ? matches / total : 0;
+			if (percentage > bestMatchPercentage) {
+				bestMatchPercentage = percentage;
+			}
 		}
 	}
 
-	// Calculate match percentage
-	matchPercentage = total > 0 ? matches / total : 0;
-	isMatch = total > 0 && matchPercentage >= 0.95;
+	// Calculate match percentage using best offset found
+	matchPercentage = bestMatchPercentage;
+	isMatch = matchPercentage >= 0.95;
 
 	// Capture debug data if debug mode is enabled
 	if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
