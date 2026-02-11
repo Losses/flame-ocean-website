@@ -195,12 +195,6 @@
     display: block;
   }
 
-  .debug-image-hint {
-    margin: 0 !important;
-    font-size: 11px;
-    text-align: center;
-  }
-
   .debug-buttons {
     display: flex;
     justify-content: flex-end;

@@ -87,8 +87,6 @@ export async function loadTofuFont(): Promise<void> {
 		// Store in state
 		tofuState.fontFace = fontFace;
 		tofuState.loaded = true;
-
-		console.log(`Adobe NotDef font loaded successfully as "${TOFU_FONT_FAMILY}"`);
 	} catch (error) {
 		console.error('Failed to load Adobe NotDef font:', error);
 		throw new Error(
