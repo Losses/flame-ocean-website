@@ -304,7 +304,9 @@ async function renderInPaddedCanvas(
   fontSize: FontSize,
 ): Promise<boolean[][]> {
   const canvasSize = getPaddedCanvasSize(fontSize);
-  const scaledFontSize = fontSize * 10; // Use same scale factor as glyph-renderer
+  // Scale font by TOFU_PATTERN_SCALE (4x), not 10x
+  // The canvas is sized for 4x scaling, so font must match
+  const scaledFontSize = fontSize * TOFU_PATTERN_SCALE;
 
   const canvas = document.createElement('canvas');
   canvas.width = canvasSize;
@@ -319,17 +321,18 @@ async function renderInPaddedCanvas(
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  // Configure font rendering at scaled size
+  // Configure font rendering at scaled size (4x, not 10x)
   ctx.font = `${scaledFontSize}px ${fontFamily}`;
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
   ctx.imageSmoothingEnabled = false;
 
-  // Render character centered vertically in the padded canvas
-  // This allows for ascent/descent variations
+  // Render character at the padding offset on both axes
+  // This centers the 4x-scaled glyph in the padded canvas
+  const xOffset = PADDING_PIXELS;
   const yOffset = PADDING_PIXELS;
   ctx.fillStyle = '#000000';
-  ctx.fillText(char, 0, yOffset);
+  ctx.fillText(char, xOffset, yOffset);
 
   // Extract pixel data
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
