@@ -138,6 +138,8 @@ export async function extractCharacter(
 	scaledCtx.textBaseline = 'top';
 	scaledCtx.textAlign = 'left';
 	scaledCtx.imageSmoothingEnabled = false;
+	// Important: Use geometricPrecision to prevent anti-aliasing on pixel art fonts
+	(scaledCtx as any).textRendering = 'geometricPrecision';
 
 	// Render the character at scaled size
 	scaledCtx.fillStyle = opts.fgColor;
