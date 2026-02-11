@@ -502,6 +502,11 @@
       // Store original for rollback
       originalFirmwareData = new Uint8Array(arrayBuffer);
 
+      // Clear replacement tracking lists for new firmware
+      replacedImages = [];
+      replacedSmallFontCharacters = new Set();
+      replacedLargeFontCharacters = new Set();
+
       progress = 30;
       statusMessage = "Analyzing firmware...";
 
@@ -1433,6 +1438,10 @@
     planeData = null;
     imageData = null;
     statusMessage = "Ready to load firmware";
+    // Clear replacement tracking lists
+    replacedImages = [];
+    replacedSmallFontCharacters = new Set();
+    replacedLargeFontCharacters = new Set();
   }
 </script>
 
