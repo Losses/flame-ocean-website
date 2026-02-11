@@ -152,6 +152,8 @@ type WorkerResponse =
         | Uint8Array;
     }
   | { type: "progress"; id: string; message: string }
+  | { type: "progress"; id: string; message: string; queueDepth: number; queueCapacity: number }
+  | { type: "queueReady"; id: string }
   | { type: "error"; id: string; error: string };
 
 // Firmware data cache
@@ -159,6 +161,10 @@ let firmwareData: Uint8Array | null = null;
 let SMALL_BASE = 0;
 let LARGE_BASE = 0;
 let LOOKUP_TABLE = 0x080000;
+
+// Constants for streaming
+const MAX_QUEUE_SIZE = 100;
+const QUEUE_READY_THRESHOLD = 50; // Send "ready" signal when queue drops below this
 
 // Streaming font replacement state
 interface FontReplacementStreamState {
@@ -180,6 +186,7 @@ interface FontReplacementStreamState {
   };
   isProcessing: boolean;
   isFinished: boolean;
+  lastSentReady: boolean; // Track if we sent "ready" signal
 }
 
 let streamState: FontReplacementStreamState | null = null;
@@ -495,9 +502,11 @@ function processStreamCharacter(
  */
 async function processStreamQueue(): Promise<void> {
   if (!streamState || streamState.isProcessing) {
+    console.log(`[worker] processStreamQueue: SKIP - state=${!!streamState}, isProcessing=${streamState?.isProcessing}`);
     return;
   }
 
+  console.log(`[worker] processStreamQueue: START - queue.length=${streamState.queue.length}, processed=${streamState.processedCharacters}/${streamState.totalCharacters}`);
   streamState.isProcessing = true;
 
   while (streamState.queue.length > 0) {
@@ -506,12 +515,14 @@ async function processStreamQueue(): Promise<void> {
 
     const { unicode, pixels } = character;
 
-    // Report progress periodically
+    // Report progress periodically with queue depth
     if (streamState.processedCharacters % 10 === 0) {
       self.postMessage({
         type: "progress",
         id: streamState.id,
         message: `Processing U+${unicode.toString(16).toUpperCase().padStart(4, "0")} (${streamState.processedCharacters + 1}/${streamState.totalCharacters})...`,
+        queueDepth: streamState.queue.length,
+        queueCapacity: MAX_QUEUE_SIZE,
       });
     }
 
@@ -521,6 +532,7 @@ async function processStreamQueue(): Promise<void> {
 
     // If there was a critical error (not a skip), abort
     if (!result.success && !result.skip && result.error) {
+      console.error(`[worker] CRITICAL ERROR: ${result.error}`);
       self.postMessage({
         type: "error",
         id: streamState.id,
@@ -531,28 +543,51 @@ async function processStreamQueue(): Promise<void> {
       return;
     }
 
+    // Send queueReady signal when queue drops below threshold
+    // This tells main thread it can send more characters
+    if (streamState.queue.length < QUEUE_READY_THRESHOLD && !streamState.lastSentReady) {
+      console.log(`[worker] Queue depth ${streamState.queue.length} < ${QUEUE_READY_THRESHOLD}, sending queueReady signal`);
+      self.postMessage({
+        type: "queueReady",
+        id: streamState.id,
+      });
+      streamState.lastSentReady = true;
+    }
+
+    // Reset flag when queue grows again
+    if (streamState.queue.length >= QUEUE_READY_THRESHOLD) {
+      streamState.lastSentReady = false;
+    }
+
     // Yield to event loop periodically to prevent blocking
     if (streamState.processedCharacters % 50 === 0) {
+      console.log(`[worker] Yielding at character ${streamState.processedCharacters}, queue.length=${streamState.queue.length}`);
       await new Promise(resolve => setTimeout(resolve, 0));
     }
   }
 
   streamState.isProcessing = false;
+  console.log(`[worker] processStreamQueue: END - isProcessing=${streamState.isProcessing}, queue.length=${streamState.queue.length}, isFinished=${streamState.isFinished}, processed=${streamState.processedCharacters}/${streamState.totalCharacters}, received=${streamState.receivedCharacters}`);
 
   // CRITICAL FIX: If new items were added while we were processing,
   // immediately restart processing to prevent deadlock
   if (streamState.queue.length > 0) {
+    console.log(`[worker] RESTARTING - queue has ${streamState.queue.length} new items, processed=${streamState.processedCharacters}/${streamState.totalCharacters}`);
     await processStreamQueue();
     return;
   }
 
   // If we're finished and queue is empty, send completion
   if (streamState.isFinished && streamState.queue.length === 0) {
+    console.log(`[worker] Stream processing complete! Processed ${streamState.processedCharacters} characters.`);
     self.postMessage({
       type: "progress",
       id: streamState.id,
       message: "Stream processing complete...",
     });
+  } else if (!streamState.isFinished && streamState.queue.length === 0) {
+    // Queue is empty but stream not finished - waiting for more characters
+    console.log(`[worker] Queue empty but stream not finished (received=${streamState.receivedCharacters}/${streamState.totalCharacters}), waiting for more characters...`);
   }
 }
 
@@ -562,10 +597,26 @@ async function processStreamQueue(): Promise<void> {
 async function waitForStreamCompletion(): Promise<void> {
   if (!streamState) return;
 
+  let iterations = 0;
+  const maxIterations = 10000; // Safety limit
+
   // Wait for queue to be empty and processing to finish
   while (streamState.queue.length > 0 || streamState.isProcessing) {
+    iterations++;
+
+    if (iterations % 100 === 0) {
+      console.log(`[worker] waitForStreamCompletion iteration ${iterations}: queue.length=${streamState.queue.length}, isProcessing=${streamState.isProcessing}, processed=${streamState.processedCharacters}`);
+    }
+
+    if (iterations > maxIterations) {
+      console.error(`[worker] waitForStreamCompletion TIMEOUT - queue.length=${streamState.queue.length}, isProcessing=${streamState.isProcessing}`);
+      throw new Error(`waitForStreamCompletion timeout after ${maxIterations} iterations`);
+    }
+
     await new Promise(resolve => setTimeout(resolve, 10));
   }
+
+  console.log(`[worker] waitForStreamCompletion DONE - took ${iterations} iterations`);
 }
 
 // Unicode ranges (complete list matching RSE reference)
@@ -1523,6 +1574,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           },
           isProcessing: false,
           isFinished: false,
+          lastSentReady: false,
         };
 
         self.postMessage({
@@ -1563,19 +1615,51 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
         streamState.queue.push(character);
         streamState.receivedCharacters++;
 
-        // Send progress update
-        self.postMessage({
-          type: "progress",
-          id: streamState.id,
-          message: `Received character ${streamState.receivedCharacters}/${streamState.totalCharacters}...`,
-        });
+        // Only log occasionally to reduce console spam
+        if (streamState.receivedCharacters % 100 === 0) {
+          console.log(`[worker] Progress: received=${streamState.receivedCharacters}/${streamState.totalCharacters}, queue.length=${streamState.queue.length}, processed=${streamState.processedCharacters}`);
+        }
+
+        // Only send progress update every 50 characters to reduce message storm
+        if (streamState.receivedCharacters % 50 === 0) {
+          self.postMessage({
+            type: "progress",
+            id: streamState.id,
+            message: `Received character ${streamState.receivedCharacters}/${streamState.totalCharacters}...`,
+            queueDepth: streamState.queue.length,
+            queueCapacity: MAX_QUEUE_SIZE,
+          });
+        }
+
+        // If queue is full, reset the ready flag so we'll send it again when there's space
+        // If queue was full but now has space (items were processed), send ready signal
+        if (streamState.queue.length >= MAX_QUEUE_SIZE) {
+          streamState.lastSentReady = false;
+        } else if (streamState.queue.length < QUEUE_READY_THRESHOLD && !streamState.lastSentReady && streamState.isProcessing) {
+          // Queue is being processed and has space - send ready signal
+          console.log(`[worker] Queue has space (${streamState.queue.length} < ${QUEUE_READY_THRESHOLD}), sending queueReady signal`);
+          self.postMessage({
+            type: "queueReady",
+            id: streamState.id,
+          });
+          streamState.lastSentReady = true;
+        }
 
         // Start processing queue if not already processing
-        // Don't await - let it process in background
-        if (!streamState.isProcessing) {
-          processStreamQueue().catch(err => {
-            console.error('[worker] Queue processing error:', err);
-          });
+        // Use setTimeout to avoid race condition with isProcessing flag
+        if (!streamState.isProcessing && streamState.queue.length > 0) {
+          console.log(`[worker] Queue has items but not processing, starting processing...`);
+          // Use setTimeout to break out of the message handler and allow isProcessing to be set
+          setTimeout(() => {
+            if (!streamState!.isProcessing && streamState!.queue.length > 0) {
+              console.log(`[worker] Confirmed: starting queue processing (queue.length=${streamState!.queue.length})`);
+              processStreamQueue().catch(err => {
+                console.error('[worker] Queue processing error:', err);
+              });
+            } else {
+              console.log(`[worker] Skipped restart: isProcessing=${streamState!.isProcessing}, queue.length=${streamState!.queue.length}`);
+            }
+          }, 0);
         }
         break;
       }
@@ -1590,11 +1674,15 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           return;
         }
 
+        console.log(`[worker] FINISH received - queue.length=${streamState.queue.length}, isProcessing=${streamState.isProcessing}, received=${streamState.receivedCharacters}/${streamState.totalCharacters}`);
+
         // Mark as finished
         streamState.isFinished = true;
 
         // Wait for queue to drain and send final result
         await waitForStreamCompletion();
+
+        console.log(`[worker] WAIT COMPLETE - sending success message`);
 
         // Send final success message
         self.postMessage({

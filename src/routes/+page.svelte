@@ -903,7 +903,7 @@
         }
       }
 
-      statusMessage = `Extracting ${codePointsToProcess.length} characters from font...`;
+      statusMessage = `Replacing ${codePointsToProcess.length} font characters...`;
       progress = 10; // Start at 10%
 
       // Step 4: Streaming replacement - extract and send one character at a time
@@ -916,13 +916,33 @@
         totalCharacters: codePointsToProcess.length,
       });
 
+      // Track queue depth for flow control
+      let queueDepth = 0;
+      const queueCapacity = 100; // Must match MAX_QUEUE_SIZE in worker
+      let resolveQueueReady: (() => void) | null = null;
+
+      // Listen for queue status updates during extraction
+      const flowControlHandler = (e: MessageEvent) => {
+        const { type, id, queueDepth: newDepth } = e.data;
+        if (id === "replaceFontsStream") {
+          if (type === "progress" && newDepth !== undefined) {
+            queueDepth = newDepth;
+          } else if (type === "queueReady" && resolveQueueReady) {
+            resolveQueueReady();
+            resolveQueueReady = null;
+          }
+        }
+      };
+
+      worker!.addEventListener("message", flowControlHandler);
+
       // Extract and send characters one at a time
       for (let i = 0; i < codePointsToProcess.length; i++) {
         const codePoint = codePointsToProcess[i];
 
-        // Update progress periodically and yield to UI
-        if (i % 50 === 0 || i === codePointsToProcess.length - 1) {
-          statusMessage = `Extracting character ${i + 1}/${codePointsToProcess.length}...`;
+        // Update progress periodically and yield to UI (less frequently to reduce flashing)
+        if (i % 500 === 0 || i === codePointsToProcess.length - 1) {
+          statusMessage = `Replacing fonts: ${Math.floor((i / codePointsToProcess.length) * 100)}% complete (${i + 1}/${codePointsToProcess.length} replaced)`;
           // Update progress: 10% to 95% during extraction and processing
           progress = 10 + Math.floor((i / codePointsToProcess.length) * 85);
           // Yield to browser to allow UI update
@@ -935,6 +955,14 @@
             fontSize,
             useTofuFallback: true,
           });
+
+          // FLOW CONTROL: Wait for worker queue to have space
+          // If queue is at capacity, wait for worker to send queueReady signal
+          if (queueDepth >= queueCapacity - 10) {
+            await new Promise<void>(resolve => {
+              resolveQueueReady = resolve;
+            });
+          }
 
           // Send character to worker immediately
           worker!.postMessage({
@@ -951,26 +979,35 @@
         }
       }
 
-      statusMessage = `Waiting for worker to finish processing...`;
+      // Remove flow control handler
+      worker!.removeEventListener("message", flowControlHandler);
+
+      statusMessage = `Finishing font replacement...`;
       progress = 95; // 95% - all characters sent, waiting for worker
 
+      console.log(`[main] All ${codePointsToProcess.length} characters sent, sending finish signal`);
+
       // Step 5: Finish stream and wait for results
-      await new Promise<void>((resolve, reject) => {
-        const handler = (e: MessageEvent) => {
-          const { type, id, result, error } = e.data;
+      await Promise.race([
+        new Promise<void>((resolve, reject) => {
+          const handler = (e: MessageEvent) => {
+            const { type, id, result, error } = e.data;
 
-          if (id === "replaceFontsStream") {
-            if (type === "progress") {
-              statusMessage = e.data.message;
-              // Progress bar stays at 95% during final processing
-              progress = 95;
-              return;
-            }
+            if (id === "replaceFontsStream") {
+              console.log(`[main] Received message: type=${type}, id=${id}`);
 
-            worker!.removeEventListener("message", handler);
+              if (type === "progress") {
+                statusMessage = e.data.message;
+                // Progress bar stays at 95% during final processing
+                progress = 95;
+                return;
+              }
 
-            if (type === "success") {
-              progress = 100; // Complete!
+              worker!.removeEventListener("message", handler);
+
+              if (type === "success") {
+                console.log(`[main] SUCCESS! Got result, resolving promise`);
+                progress = 100; // Complete!
 
               const data = result as {
                 successCount: number;
@@ -982,17 +1019,15 @@
               };
 
               // Add replaced characters to tracking set
-              for (const char of data.replacedCharacters) {
-                replacedFontCharacters = new Set([
-                  ...replacedFontCharacters,
-                  char,
-                ]);
-              }
+              // Merge with existing set and create new Set once for reactivity
+              const mergedChars = new Set([
+                ...replacedFontCharacters,
+                ...data.replacedCharacters,
+              ]);
+              replacedFontCharacters = mergedChars;
 
-              // Show summary dialog
-              let summaryMessage = `Font replacement completed!\n\n`;
-              summaryMessage += `Successfully replaced: ${data.successCount} characters\n`;
-              summaryMessage += `Skipped: ${data.skippedCount} characters`;
+              // Update status message with completion info
+              statusMessage = `Font replacement completed: ${data.successCount} replaced, ${data.skippedCount} skipped`;
 
               // List first 20 skipped characters with Unicode values
               if (data.skippedCharacters.length > 0) {
@@ -1028,12 +1063,22 @@
         worker!.addEventListener("message", handler);
 
         // Send finish signal
+        console.log(`[main] Sending replaceFontsStreamFinish message`);
         worker!.postMessage({
           type: "replaceFontsStreamFinish",
           id: "replaceFontsStream",
           firmware: new Uint8Array(),
         });
-      });
+        console.log(`[main] Finish signal sent, now waiting for success message...`);
+      }),
+        // 30 second timeout
+        new Promise<void>((_, reject) =>
+          setTimeout(() => {
+            console.error(`[main] TIMEOUT waiting for worker response after 30 seconds`);
+            reject(new Error("Font replacement timeout - worker did not respond within 30 seconds"));
+          }, 30000)
+        ),
+      ]);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
