@@ -65,6 +65,14 @@
     children?: TreeNode[];
   }
 
+  interface SequenceReplacement {
+    imageName: string;
+    width: number;
+    height: number;
+    offset: number;
+    rgb565Data: Uint8Array;
+  }
+
   // State
   let firmwareData = $state<Uint8Array | null>(null);
   let originalFirmwareData = $state<Uint8Array | null>(null); // For rollback
@@ -1274,7 +1282,7 @@
     isProcessing = true;
     statusMessage = `Processing ${mappings.length} images...`;
 
-    const replacements: any[] = [];
+    const replacements: SequenceReplacement[] = [];
 
     try {
       for (const { target, source } of mappings) {

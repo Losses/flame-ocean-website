@@ -251,7 +251,7 @@ export async function generateTofuSignature(
 	ctx.textAlign = 'left';
 	ctx.imageSmoothingEnabled = false; // Keep pixel crisp
 	// Important: Use geometricPrecision for consistent rendering
-	(ctx as any).textRendering = 'geometricPrecision';
+	ctx.textRendering = 'geometricPrecision';
 
 	// Render the character (Adobe NotDef will render .notdef glyph for any character)
 	ctx.fillStyle = '#000000';
@@ -667,7 +667,7 @@ export async function renderCharacterWithTofu(
 	ctx.textAlign = 'left';
 	ctx.imageSmoothingEnabled = false;
 	// Important: Use geometricPrecision for consistent rendering
-	(ctx as any).textRendering = 'geometricPrecision';
+	ctx.textRendering = 'geometricPrecision';
 
 	// Render the character
 	ctx.fillStyle = '#000000';

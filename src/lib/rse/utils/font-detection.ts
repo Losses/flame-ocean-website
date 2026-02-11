@@ -189,7 +189,7 @@ function testFontRendering(
 	ctx.textAlign = 'left';
 	ctx.imageSmoothingEnabled = false;
 	// Important: Use geometricPrecision to prevent anti-aliasing on pixel art fonts
-	(ctx as any).textRendering = 'geometricPrecision';
+	ctx.textRendering = 'geometricPrecision';
 
 	// Use TextMetrics to find actual bounding box BEFORE rendering
 	// This tells us where the actual pixels will be

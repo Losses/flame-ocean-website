@@ -8,6 +8,11 @@ declare global {
 		// interface PageState {}
 		// interface Platform {}
 	}
+
+	// Extend CanvasRenderingContext2D to include Chrome-specific textRendering property
+	interface CanvasRenderingContext2D {
+		textRendering?: 'auto' | 'optimizeSpeed' | 'optimizeLegibility' | 'geometricPrecision';
+	}
 }
 
 export {};
