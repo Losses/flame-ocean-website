@@ -103,8 +103,9 @@
   // Track replaced images - use array for better Svelte 5 reactivity
   let replacedImages = $state<string[]>([]);
 
-  // Track replaced font characters - use Set for efficient lookup
-  let replacedFontCharacters = $state<Set<number>>(new Set());
+  // Track replaced font characters separately for SMALL and LARGE fonts
+  let replacedSmallFontCharacters = $state<Set<number>>(new Set());
+  let replacedLargeFontCharacters = $state<Set<number>>(new Set());
 
   // Show sequence replacer mode
   let showSequenceReplacer = $state(false);
@@ -1020,15 +1021,18 @@
                 replacedCharacters: number[];
                 skippedCharacters: number[];
                 skippedReasons: Map<number, string>;
+                fontType: "SMALL" | "LARGE";
               };
 
-              // Add replaced characters to tracking set
-              // Merge with existing set and create new Set once for reactivity
-              const mergedChars = new Set([
-                ...replacedFontCharacters,
-                ...data.replacedCharacters,
-              ]);
-              replacedFontCharacters = mergedChars;
+              // Add replaced characters to the appropriate tracking set based on font type
+              const targetSet = data.fontType === "SMALL" ? replacedSmallFontCharacters : replacedLargeFontCharacters;
+              const mergedChars = new Set([...targetSet, ...data.replacedCharacters]);
+
+              if (data.fontType === "SMALL") {
+                replacedSmallFontCharacters = mergedChars;
+              } else {
+                replacedLargeFontCharacters = mergedChars;
+              }
 
               // Update status message with completion info
               statusMessage = `Font replacement completed: ${data.successCount} replaced, ${data.skippedCount} skipped`;
@@ -1538,7 +1542,8 @@
                     <FontGridRenderer
                       fonts={planeData.fonts}
                       zoom={10}
-                      replacedChars={replacedFontCharacters}
+                      replacedSmallChars={replacedSmallFontCharacters}
+                      replacedLargeChars={replacedLargeFontCharacters}
                     />
                   </div>
                 {:else if selectedNode.type === "image" && imageData}

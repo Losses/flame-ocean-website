@@ -74,18 +74,18 @@ export async function detectFontType(fontFace: FontFace, includeDebugImages = fa
 	// Determine font type based on pixel-perfect rendering
 	let fontType: DetectedFontType = null;
 
-	// Classify as SMALL if 12px rendering produces only black/white pixels
-	if (result12px.isPixelPerfect) {
+	// If both are pixel-perfect, prefer SMALL (more common for pixel fonts)
+	if (result12px.isPixelPerfect && result16px.isPixelPerfect) {
+		fontType = 'SMALL';
+	}
+	// Classify as SMALL if only 12px rendering produces only black/white pixels
+	else if (result12px.isPixelPerfect) {
 		fontType = 'SMALL';
 	}
 	// Classify as LARGE if 16px rendering produces only black/white pixels
 	// (but 12px failed, meaning 12px likely had anti-aliasing)
 	else if (result16px.isPixelPerfect) {
 		fontType = 'LARGE';
-	}
-	// If both are pixel-perfect, prefer SMALL (more common for pixel fonts)
-	else if (result12px.isPixelPerfect && result16px.isPixelPerfect) {
-		fontType = 'SMALL';
 	}
 
 	// Prepare debug images if requested and font is not pixel-perfect (failed at both sizes)

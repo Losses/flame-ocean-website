@@ -135,6 +135,7 @@ interface ReplaceFontsResult {
   replacedCharacters: number[];
   skippedCharacters: number[];
   skippedReasons: Map<number, string>;
+  fontType: "SMALL" | "LARGE"; // Which font type was replaced
 }
 
 type WorkerResponse =
@@ -1542,6 +1543,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             replacedCharacters,
             skippedCharacters,
             skippedReasons,
+            fontType,
           } as ReplaceFontsResult,
         });
         break;
@@ -1692,6 +1694,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             replacedCharacters: streamState.results.replacedCharacters,
             skippedCharacters: streamState.results.skippedCharacters,
             skippedReasons: streamState.results.skippedReasons,
+            fontType: streamState.fontType,
           } as ReplaceFontsResult,
         });
 

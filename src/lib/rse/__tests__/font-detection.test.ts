@@ -102,12 +102,15 @@ describe('font-detection unit tests (via mocked canvas)', () => {
 		let fontType: DetectedFontType = null;
 
 		// Same logic as detectFontType function
-		if (is12pxPixelPerfect) {
+		// If both are pixel-perfect, prefer SMALL (more common for pixel fonts)
+		if (is12pxPixelPerfect && is16pxPixelPerfect) {
+			fontType = 'SMALL';
+		}
+		// Classify as SMALL if only 12px rendering produces only black/white pixels
+		else if (is12pxPixelPerfect) {
 			fontType = 'SMALL';
 		} else if (is16pxPixelPerfect) {
 			fontType = 'LARGE';
-		} else if (is12pxPixelPerfect && is16pxPixelPerfect) {
-			fontType = 'SMALL';
 		}
 
 		const antiAliasedCount12px = is12pxPixelPerfect ? 0 : 150;
@@ -370,18 +373,18 @@ describe('font type classification decision tree', () => {
 	): DetectedFontType {
 		let fontType: DetectedFontType = null;
 
-		// Classify as SMALL if 12px rendering produces only black/white pixels
-		if (is12pxPerfect) {
+		// If both are pixel-perfect, prefer SMALL (more common for pixel fonts)
+		if (is12pxPerfect && is16pxPerfect) {
+			fontType = 'SMALL';
+		}
+		// Classify as SMALL if only 12px rendering produces only black/white pixels
+		else if (is12pxPerfect) {
 			fontType = 'SMALL';
 		}
 		// Classify as LARGE if 16px rendering produces only black/white pixels
 		// (but 12px failed, meaning 12px likely had anti-aliasing)
 		else if (is16pxPerfect) {
 			fontType = 'LARGE';
-		}
-		// If both are pixel-perfect, prefer SMALL (more common for pixel fonts)
-		else if (is12pxPerfect && is16pxPerfect) {
-			fontType = 'SMALL';
 		}
 
 		return fontType;

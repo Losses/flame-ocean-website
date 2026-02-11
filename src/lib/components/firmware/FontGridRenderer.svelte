@@ -11,10 +11,11 @@
 	interface Props {
 		fonts: FontData[];
 		zoom?: number;
-		replacedChars?: Set<number>;
+		replacedSmallChars?: Set<number>;
+		replacedLargeChars?: Set<number>;
 	}
 
-	let { fonts, zoom = 10, replacedChars = new Set<number>() }: Props = $props();
+	let { fonts, zoom = 10, replacedSmallChars = new Set<number>(), replacedLargeChars = new Set<number>() }: Props = $props();
 
 	const LARGE_FONT_SIZE = 16;
 
@@ -112,7 +113,7 @@
 					height={(fonts[index]?.pixels.length ?? LARGE_FONT_SIZE) * zoom}
 				></canvas>
 			</div>
-			<div class="unicode-label" class:replaced={replacedChars.has(fonts[index].unicode)}>{getHexString(fonts[index].unicode)}</div>
+			<div class="unicode-label" class:replaced={fonts[index].fontType === 'SMALL' ? replacedSmallChars.has(fonts[index].unicode) : replacedLargeChars.has(fonts[index].unicode)}>{getHexString(fonts[index].unicode)}</div>
 		</div>
 	</Grid>
 </div>
