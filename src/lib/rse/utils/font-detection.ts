@@ -297,6 +297,9 @@ export async function detectFontTypeFromFile(file: File): Promise<FontDetectionR
 		// Add to document.fonts for rendering
 		await fontFace.load();
 		document.fonts.add(fontFace);
+		// Wait for browser to finish processing font addition
+		// Without this, canvas rendering may not recognize the new font immediately
+		await document.fonts.ready;
 
 		// Detect font type
 		const result = await detectFontType(fontFace);
@@ -333,6 +336,9 @@ export async function detectFontTypeFromArrayBuffer(
 		// Add to document.fonts for rendering
 		await fontFace.load();
 		document.fonts.add(fontFace);
+		// Wait for browser to finish processing font addition
+		// Without this, canvas rendering may not recognize the new font immediately
+		await document.fonts.ready;
 
 		// Detect font type
 		const result = await detectFontType(fontFace);

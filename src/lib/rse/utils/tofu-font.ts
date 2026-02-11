@@ -201,6 +201,9 @@ export async function loadTofuFont(): Promise<void> {
     // Load and add to document fonts
     await fontFace.load();
     document.fonts.add(fontFace);
+    // Wait for browser to finish processing font addition
+    // Without this, canvas rendering may not recognize the new font immediately
+    await document.fonts.ready;
 
     // Store in state
     tofuState.fontFace = fontFace;

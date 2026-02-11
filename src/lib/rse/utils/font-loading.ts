@@ -159,6 +159,9 @@ export async function loadAndValidateFontFile(
 	// Add to document.fonts for rendering
 	try {
 		document.fonts.add(fontFace);
+		// Wait for browser to finish processing font addition
+		// Without this, canvas rendering may not recognize the new font immediately
+		await document.fonts.ready;
 	} catch (error) {
 		throw new FontLoadingError(
 			`Failed to register font with document.`,
@@ -286,6 +289,9 @@ export async function loadAndValidateFontFromArrayBuffer(
 	// Add to document.fonts for rendering
 	try {
 		document.fonts.add(fontFace);
+		// Wait for browser to finish processing font addition
+		// Without this, canvas rendering may not recognize the new font immediately
+		await document.fonts.ready;
 	} catch (error) {
 		throw new FontLoadingError(
 			`Failed to register font with document.`,
