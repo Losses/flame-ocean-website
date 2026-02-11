@@ -64,6 +64,17 @@ const DEFAULT_OPTIONS: Required<Omit<ExtractionOptions, 'fontFamily' | 'fontSize
 };
 
 /**
+ * Build font family string for canvas rendering
+ * Ensures consistent formatting between tofu detection and actual font replacement
+ *
+ * @param fontFamily - Base font family name (e.g., "W95FA")
+ * @param useTofuFallback - Whether to include Adobe NotDef in font stack
+ * @returns Properly formatted font family string for canvas font property
+ *
+/**
+ * Extract pixel data for a single Unicode character
+
+/**
  * Extract pixel data for a single Unicode character
  *
  * Creates an offscreen canvas, renders the character using the provided font family
@@ -128,10 +139,8 @@ export async function extractCharacter(
 	scaledCtx.fillStyle = opts.bgColor;
 	scaledCtx.fillRect(0, 0, scaledCanvas.width, scaledCanvas.height);
 
-	// Build font family string with tofu fallback
-	const fontFamilyString = opts.useTofuFallback
-		? `"${opts.fontFamily}", "${TOFU_FONT_FAMILY}"`
-		: `"${opts.fontFamily}"`;
+	// Build font family string using shared function for consistency
+	const fontFamilyString = buildFontStackString(opts.fontFamily, opts.useTofuFallback);
 
 	// Configure font rendering at scaled size
 	scaledCtx.font = `${opts.fontSize * SCALE_FACTOR}px ${fontFamilyString}`;
@@ -293,4 +302,27 @@ function imageDataToPixels(imageData: ImageData, width: number, height: number):
  */
 export function getCanvasDimensions(fontSize: FontSize): { width: number; height: number } {
 	return { ...CANVAS_DIMENSIONS[fontSize] };
+}
+
+/**
+ * Build font family string for canvas rendering
+ * Ensures consistent formatting between tofu detection and actual font replacement
+ *
+ * @param fontFamily - Base font family name (e.g., "W95FA")
+ * @param useTofuFallback - Whether to include Adobe NotDef in font stack
+ * @returns Properly formatted font family string for canvas font property
+ *
+ * @example
+ * ```ts
+ * buildFontStackString("W95FA", true)  // Returns: 'W95FA", "Adobe-NotDef"'
+ * buildFontStackString("W95FA", false) // Returns: 'W95FA'
+ * ```
+ */
+export function buildFontStackString(fontFamily: string, useTofuFallback: boolean): string {
+	// When tofu fallback is enabled, user font first, then Adobe NotDef
+	// IMPORTANT: Don't add extra quotes around fontFamily - it's already just the name
+	if (useTofuFallback) {
+		return `${fontFamily}, "${TOFU_FONT_FAMILY}"`;
+	}
+	return fontFamily;
 }

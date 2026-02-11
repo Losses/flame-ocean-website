@@ -7,6 +7,7 @@
  */
 
 import type { PixelData } from '../types/index.js';
+import { buildFontStackString } from './font-extraction.js';
 
 /**
  * Tofu pixel signature for a font size
@@ -244,8 +245,8 @@ export async function generateTofuSignature(
 	ctx.fillStyle = '#ffffff';
 	ctx.fillRect(0, 0, width, height);
 
-	// Configure font rendering - using Adobe NotDef only
-	ctx.font = `${fontSize}px "${TOFU_FONT_FAMILY}"`;
+	// Configure font rendering - using shared font stack function
+	ctx.font = `${fontSize}px ${buildFontStackString(TOFU_FONT_FAMILY, false)}`;
 	ctx.textBaseline = 'top';
 	ctx.textAlign = 'left';
 	ctx.imageSmoothingEnabled = false; // Keep pixel crisp
@@ -658,8 +659,8 @@ export async function renderCharacterWithTofu(
 	// Configure font with Adobe NotDef fallback for missing characters
 	// If user font doesn't have the glyph, Adobe NotDef will render .notdef
 	const fontStack = tofuState.loaded
-		? `"${fontFamily}", "${TOFU_FONT_FAMILY}"`
-		: `"${fontFamily}"`;
+		? buildFontStackString(fontFamily, true)
+		: buildFontStackString(fontFamily, false);
 
 	ctx.font = `${fontSize}px ${fontStack}`;
 	ctx.textBaseline = 'top';
