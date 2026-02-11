@@ -21,6 +21,8 @@ export interface FontLoadingResult {
 	fileName: string;
 	/** Whether the font is pixel-perfect (no anti-aliasing) */
 	isPixelPerfect: boolean;
+	/** Font file data as ArrayBuffer (for worker-based extraction) */
+	fontData: ArrayBuffer;
 }
 
 /**
@@ -213,7 +215,8 @@ export async function loadAndValidateFontFile(
 		fontFamily,
 		detectedType: detectionResult.fontType,
 		fileName: file.name,
-		isPixelPerfect: detectionResult.isPixelPerfect
+		isPixelPerfect: detectionResult.isPixelPerfect,
+		fontData: arrayBuffer
 	};
 }
 
@@ -343,6 +346,7 @@ export async function loadAndValidateFontFromArrayBuffer(
 		fontFamily: fontName,
 		detectedType: detectionResult.fontType,
 		fileName: fontName,
-		isPixelPerfect: detectionResult.isPixelPerfect
+		isPixelPerfect: detectionResult.isPixelPerfect,
+		fontData: arrayBuffer
 	};
 }

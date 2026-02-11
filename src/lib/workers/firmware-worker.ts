@@ -38,7 +38,8 @@ interface WorkerRequest {
     | "replaceFonts"
     | "replaceFontsStreamStart"
     | "replaceFontsStreamAdd"
-    | "replaceFontsStreamFinish";
+    | "replaceFontsStreamFinish"
+    | "replaceFontsWorker"; // Complete font replacement in worker
   id: string;
   firmware: Uint8Array;
   fontType?: "SMALL" | "LARGE";
@@ -73,6 +74,11 @@ interface WorkerRequest {
     /** Pixel data (16x16 boolean array) */
     pixels: boolean[][];
   };
+  // Worker-based font extraction fields
+  fontData?: ArrayBuffer; // Font file data for worker to load
+  fontFamily?: string; // Font family name to use
+  fontSize?: 12 | 16; // Font size
+  codePoints?: number[]; // Code points to extract
 }
 
 interface FontPlaneInfo {
@@ -1700,6 +1706,309 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 
         // Clean up state
         streamState = null;
+        break;
+      }
+
+      // =========================================================================
+      // Complete Font Replacement in Worker
+      // =========================================================================
+
+      case "replaceFontsWorker": {
+        const {
+          fontData,
+          fontFamily,
+          fontSize = 12,
+          fontType = "SMALL",
+          firmware,
+          codePoints = []
+        } = e.data as WorkerRequest & {
+          fontData?: ArrayBuffer;
+          fontFamily?: string;
+          fontSize?: 12 | 16;
+          fontType?: "SMALL" | "LARGE";
+          firmware?: Uint8Array;
+          codePoints?: number[];
+        };
+
+        if (!fontData || !fontFamily || !firmware || codePoints.length === 0) {
+          self.postMessage({
+            type: "error",
+            id,
+            error: "Missing required parameters for replaceFontsWorker",
+          });
+          return;
+        }
+
+        try {
+          // Load fonts into worker's font set
+          const userFontFace = new FontFace(fontFamily, fontData);
+          await userFontFace.load();
+          // @ts-ignore - fonts API exists in workers
+          self.fonts.add(userFontFace);
+
+          // Load tofu font for detection (fetch from server)
+          const tofuResponse = await fetch("/AND-Regular.ttf");
+          const tofuBuffer = await tofuResponse.arrayBuffer();
+          const tofuFontFace = new FontFace("Adobe-NotDef", tofuBuffer);
+          await tofuFontFace.load();
+          // @ts-ignore - fonts API exists in workers
+          self.fonts.add(tofuFontFace);
+
+          // Constants
+          const TOFU_SCALE = 4;
+          const TOFU_PADDING = 10;
+          const canvasSize = fontSize * TOFU_SCALE + TOFU_PADDING * 2;
+
+          // Canvas for rendering
+          const canvas = new OffscreenCanvas(canvasSize, canvasSize);
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (!ctx) {
+            throw new Error("Failed to get canvas context");
+          }
+
+          // Set firmware data
+          firmwareData = firmware;
+
+          // Results tracking
+          const results = {
+            replacedCharacters: [] as number[],
+            successCount: 0,
+            skippedCharacters: [] as number[],
+            errors: [] as string[],
+          };
+
+          // Helper: Get tofu signature for this font size
+          async function getTofuSignature(): Promise<boolean[][]> {
+            // Render tofu char
+            ctx!.fillStyle = "#ffffff";
+            ctx!.fillRect(0, 0, canvas.width, canvas.height);
+            ctx!.font = `${fontSize * TOFU_SCALE}px Adobe-NotDef`;
+            ctx!.textBaseline = "top";
+            ctx!.textAlign = "left";
+            ctx!.imageSmoothingEnabled = false;
+            ctx!.fillText("\uFFFD", TOFU_PADDING, TOFU_PADDING);
+
+            const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
+            const pixels = imageDataToPixels(imageData, 128);
+
+            // Extract center pattern
+            const patternSize = fontSize * TOFU_SCALE;
+            const pattern: boolean[][] = [];
+            for (let y = TOFU_PADDING; y < TOFU_PADDING + patternSize; y++) {
+              const row: boolean[] = [];
+              for (let x = TOFU_PADDING; x < TOFU_PADDING + patternSize; x++) {
+                row.push(pixels[y]?.[x] ?? false);
+              }
+              pattern.push(row);
+            }
+            return pattern;
+          }
+
+          // Get tofu signature once
+          const tofuSignature = await getTofuSignature();
+
+          // Helper: Render char and extract pixels
+          async function renderAndExtract(char: string): Promise<boolean[][] | null> {
+            // Clear canvas
+            ctx!.fillStyle = "#ffffff";
+            ctx!.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Render user font
+            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}`;
+            ctx!.textBaseline = "top";
+            ctx!.textAlign = "left";
+            ctx!.imageSmoothingEnabled = false;
+            ctx!.fillText(char, TOFU_PADDING, TOFU_PADDING);
+
+            const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
+            const pixels = imageDataToPixels(imageData, 128);
+
+            // Tofu detection - scan for signature
+            let bestMatchRatio = 0;
+            const patternSize = fontSize * TOFU_SCALE;
+
+            for (let startY = 0; startY <= canvasSize - patternSize; startY++) {
+              for (let startX = 0; startX <= canvasSize - patternSize; startX++) {
+                let matches = 0;
+                let total = 0;
+
+                for (let py = 0; py < patternSize; py++) {
+                  for (let px = 0; px < patternSize; px++) {
+                    const renderedY = startY + py;
+                    const renderedX = startX + px;
+                    if (pixels[renderedY]?.[renderedX] === tofuSignature[py]?.[px]) {
+                      matches++;
+                    }
+                    total++;
+                  }
+                }
+
+                const ratio = matches / total;
+                if (ratio > bestMatchRatio) bestMatchRatio = ratio;
+              }
+            }
+
+            // If tofu (98%+ match), skip
+            if (bestMatchRatio >= 0.98) {
+              return null;
+            }
+
+            // Extract and downsample
+            const pattern: boolean[][] = [];
+            for (let y = TOFU_PADDING; y < TOFU_PADDING + patternSize; y++) {
+              const row: boolean[] = [];
+              for (let x = TOFU_PADDING; x < TOFU_PADDING + patternSize; x++) {
+                row.push(pixels[y]?.[x] ?? false);
+              }
+              pattern.push(row);
+            }
+
+            // Downsample to target size
+            const downsampled: boolean[][] = [];
+            for (let y = 0; y < patternSize; y += TOFU_SCALE) {
+              const row: boolean[] = [];
+              for (let x = 0; x < patternSize; x += TOFU_SCALE) {
+                row.push(pattern[y]?.[x] ?? false);
+              }
+              downsampled.push(row);
+            }
+
+            return downsampled;
+          }
+
+          // Helper: Convert ImageData to boolean pixels
+          function imageDataToPixels(imageData: globalThis.ImageData, threshold: number): boolean[][] {
+            const data = imageData.data;
+            const pixels: boolean[][] = [];
+            const width = imageData.width;
+            const height = imageData.height;
+
+            for (let y = 0; y < height; y++) {
+              const row: boolean[] = [];
+              for (let x = 0; x < width; x++) {
+                const i = (y * width + x) * 4;
+                const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
+                row.push(brightness < threshold);
+              }
+              pixels.push(row);
+            }
+            return pixels;
+          }
+
+          // Process all characters
+          const SMALL_BASE = 0x3e648;
+          const SMALL_STRIDE = 32;
+          const LARGE_BASE = 0x4a000;
+          const LARGE_STRIDE = 33;
+          const LOOKUP_TABLE = 0x4e7bc;
+
+          for (let i = 0; i < codePoints.length; i++) {
+            const unicode = codePoints[i];
+            const char = String.fromCodePoint(unicode);
+
+            // Progress update
+            if (i % 100 === 0) {
+              self.postMessage({
+                type: "progress",
+                id,
+                message: `Processing ${char} (${i + 1}/${codePoints.length})...`,
+                progress: Math.floor((i / codePoints.length) * 100),
+              });
+            }
+
+            // Render and extract
+            const pixels = await renderAndExtract(char);
+
+            if (!pixels) {
+              results.skippedCharacters.push(unicode);
+              continue;
+            }
+
+            // Write to firmware
+            let addr: number;
+            let chunkSize: number;
+
+            if (fontType === "SMALL") {
+              if (unicode > 0xffff) {
+                results.skippedCharacters.push(unicode);
+                continue;
+              }
+              addr = SMALL_BASE + unicode * SMALL_STRIDE;
+              chunkSize = SMALL_STRIDE;
+            } else {
+              if (unicode < 0x4e00 || unicode > 0x9fff) {
+                results.skippedCharacters.push(unicode);
+                continue;
+              }
+              addr = LARGE_BASE + (unicode - 0x4e00) * LARGE_STRIDE;
+              chunkSize = LARGE_STRIDE;
+            }
+
+            if (addr + chunkSize > firmwareData!.length) {
+              results.skippedCharacters.push(unicode);
+              continue;
+            }
+
+            // Encode and write
+            const lookupVal = firmwareData![LOOKUP_TABLE + (unicode >> 3)];
+            const encoded = encodeV8(pixels, lookupVal);
+
+            if (fontType === "LARGE") {
+              const footer = firmwareData![addr + LARGE_STRIDE - 1];
+              encoded[LARGE_STRIDE - 1] = footer;
+            }
+
+            firmwareData!.set(encoded, addr);
+
+            // Verify
+            const written = firmwareData!.slice(addr, addr + chunkSize);
+            let verified = true;
+            for (let j = 0; j < chunkSize; j++) {
+              if (written[j] !== encoded[j]) {
+                verified = false;
+                break;
+              }
+            }
+
+            if (!verified) {
+              results.errors.push(`Verification failed for U+${unicode.toString(16).toUpperCase()}`);
+              continue;
+            }
+
+            results.replacedCharacters.push(unicode);
+            results.successCount++;
+
+            // Yield periodically
+            if (i % 50 === 0) {
+              await new Promise((r) => setTimeout(r, 0));
+            }
+          }
+
+          // Clean up
+          // @ts-ignore - fonts API exists in workers
+          self.fonts.delete(userFontFace);
+          // @ts-ignore - fonts API exists in workers
+          self.fonts.delete(tofuFontFace);
+
+          // Return final firmware
+          const resultFirmware = firmwareData!.slice(0);
+
+          self.postMessage({
+            type: "success",
+            id,
+            result: {
+              ...results,
+              firmware: resultFirmware,
+              fontType,
+            },
+          });
+        } catch (err) {
+          self.postMessage({
+            type: "error",
+            id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
         break;
       }
 
