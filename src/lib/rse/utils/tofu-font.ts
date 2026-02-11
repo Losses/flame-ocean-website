@@ -154,7 +154,6 @@ export function getTestCharCategory(codePoint: number): string {
  * Enable/disable tofu debug collection
  */
 export function setTofuDebugMode(enabled: boolean): void {
-  console.log(`[Tofu] setTofuDebugMode(${enabled}) - clearing collection`);
   debugModeEnabled = enabled;
   if (enabled) {
     debugDataCollection = [];
@@ -166,11 +165,6 @@ export function setTofuDebugMode(enabled: boolean): void {
  */
 export function getTofuDebugData(): TofuDebugData[] {
   const data = [...debugDataCollection];
-  console.log(`[Tofu] getTofuDebugData() returning ${data.length} items`);
-  console.log(
-    `[Tofu] Code points in collection:`,
-    data.map((d) => `0x${d.codePoint.toString(16).padStart(4, "0")}`),
-  );
   debugDataCollection = [];
   return data;
 }
@@ -584,9 +578,6 @@ function comparePixelRegions(
     // Capture debug data for empty renders before returning
     if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
       const isTest = isTestChar(codePoint);
-      console.log(
-        `[Tofu] Collecting debug data for EMPTY 0x${codePoint.toString(16).padStart(4, "0")}${isTest ? " [TEST]" : ""}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`,
-      );
       debugDataCollection.push({
         codePoint,
         char,
@@ -609,9 +600,6 @@ function comparePixelRegions(
     // Capture debug data for empty signature before returning
     if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
       const isTest = isTestChar(codePoint);
-      console.log(
-        `[Tofu] Collecting debug data for EMPTY SIGNATURE 0x${codePoint.toString(16).padStart(4, "0")}${isTest ? " [TEST]" : ""}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`,
-      );
       debugDataCollection.push({
         codePoint,
         char,
@@ -645,9 +633,6 @@ function comparePixelRegions(
     // Capture debug data for empty crops before returning
     if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
       const isTest = isTestChar(codePoint);
-      console.log(
-        `[Tofu] Collecting debug data for EMPTY CROP 0x${codePoint.toString(16).padStart(4, "0")}${isTest ? " [TEST]" : ""}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`,
-      );
       debugDataCollection.push({
         codePoint,
         char,
@@ -678,9 +663,6 @@ function comparePixelRegions(
     // Capture debug data for size mismatch before returning
     if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
       const isTest = isTestChar(codePoint);
-      console.log(
-        `[Tofu] Collecting debug data for SIZE MISMATCH 0x${codePoint.toString(16).padStart(4, "0")}${isTest ? " [TEST]" : ""}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`,
-      );
       debugDataCollection.push({
         codePoint,
         char,
@@ -745,9 +727,6 @@ function comparePixelRegions(
   // Capture debug data if debug mode is enabled
   if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
     const isTest = isTestChar(codePoint);
-    console.log(
-      `[Tofu] Collecting debug data for 0x${codePoint.toString(16).padStart(4, "0")}${isTest ? " [TEST]" : ""}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`,
-    );
     debugDataCollection.push({
       codePoint,
       char,
@@ -823,17 +802,11 @@ export async function shouldSkipCharacter(
   // Convert code point to string
   const char = String.fromCodePoint(codePoint);
   const isTest = isTestChar(codePoint);
-  console.log(
-    `[shouldSkip] 0x${codePoint.toString(16).padStart(4, "0")} (${char})${isTest ? " [TEST]" : ""} existsInFirmware=${!!existsInFirmware}`,
-  );
 
   // Check if character exists in firmware (if callback provided)
   if (existsInFirmware) {
     const exists = existsInFirmware(codePoint);
     if (!exists) {
-      console.log(
-        `[shouldSkip] 0x${codePoint.toString(16).padStart(4, "0")} NOT in firmware, returning early`,
-      );
       return {
         shouldSkip: true,
         codePoint,
@@ -848,12 +821,7 @@ export async function shouldSkipCharacter(
     // Get or generate tofu signature for this size
     let signature = getTofuSignature(fontSize);
     if (!signature) {
-      console.log(`[tofu] Generating signature for ${fontSize}px...`);
       signature = await generateTofuSignature(fontSize);
-      console.log(
-        `[tofu] Signature generated: ${signature.width}x${signature.height}, pixels:`,
-        signature.pixels,
-      );
     }
 
     // Render character in padded canvas (will use Adobe NotDef if missing)
@@ -869,10 +837,6 @@ export async function shouldSkipCharacter(
       const bbox1 = findBoundingBox(pixels);
       const bbox2 = findBoundingBox(signature.pixels);
 
-      console.log(
-        `[Tofu] Collecting debug data for 0x${codePoint.toString(16).padStart(4, "0")}${isTest ? " [TEST]" : ""}: isMatch=${isTofu}, matchRatio=${(result.matchRatio * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`,
-      );
-
       // Store the rendered pixels (padded canvas) and signature pattern (4x4)
       debugDataCollection.push({
         codePoint,
@@ -887,22 +851,7 @@ export async function shouldSkipCharacter(
       });
     }
 
-    // Log test characters and control characters for debugging
-    if (isTest) {
-      console.log(
-        `[tofu] TEST CHAR 0x${codePoint.toString(16).padStart(4, "0")}: isTofu=${isTofu}, matchRatio=${(result.matchRatio * 100).toFixed(1)}%, shouldSkip=true`,
-      );
-    } else if (codePoint < 0x20) {
-      console.log(
-        `[tofu] 0x${codePoint.toString(16).padStart(4, "0")}: isTofu=${isTofu}, pixels=${pixels.length}x${pixels[0]?.length}`,
-      );
-      console.log(`[tofu] Signature: ${signature.width}x${signature.height}`);
-    }
-
     if (isTofu) {
-      console.log(
-        `[shouldSkip] 0x${codePoint.toString(16).padStart(4, "0")}: TOFU DETECTED, shouldSkip=true`,
-      );
       return {
         shouldSkip: true,
         codePoint,
@@ -910,14 +859,8 @@ export async function shouldSkipCharacter(
         reason: "missing_from_font",
       };
     }
-    console.log(
-      `[shouldSkip] 0x${codePoint.toString(16).padStart(4, "0")}: NOT tofu, shouldSkip=false`,
-    );
   }
 
-  console.log(
-    `[shouldSkip] 0x${codePoint.toString(16).padStart(4, "0")}: tofu font not loaded, shouldSkip=false`,
-  );
   return {
     shouldSkip: false,
     codePoint,

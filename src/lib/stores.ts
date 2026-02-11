@@ -24,7 +24,6 @@ export function initDebugShortcut() {
 		if (!enabled) {
 			debugAnimationComplete.set(true);
 		}
-		console.log(`[Debug] Debug mode ${enabled ? 'enabled' : 'disabled'}`);
 	};
 
 	// Also add keyboard shortcut (Ctrl+Shift+D)
@@ -36,7 +35,7 @@ export function initDebugShortcut() {
 				if (!newValue) {
 					debugAnimationComplete.set(true);
 				}
-				console.log(`[Debug] Debug mode ${newValue ? 'enabled' : 'disabled'} (Ctrl+Shift+D)`);
+
 				return newValue;
 			});
 		}

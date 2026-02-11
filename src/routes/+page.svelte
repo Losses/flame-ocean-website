@@ -944,23 +944,20 @@
         // Combine first 50 from range + all rare test chars for preview
         const previewCodePoints = [
           ...codePointsToProcess.slice(0, 50),
-          ...RARE_TEST_CHARS
+          ...RARE_TEST_CHARS,
         ];
-
-        console.log(`[Page] Preview code points: ${previewCodePoints.length} total`);
-        console.log(`[Page] First 10:`, previewCodePoints.slice(0, 10).map(cp => `U+${cp.toString(16).padStart(4, '0')}`));
-        console.log(`[Page] Last 10:`, previewCodePoints.slice(-10).map(cp => `U+${cp.toString(16).padStart(4, '0')}`));
-        console.log(`[Page] RARE_TEST_CHARS count: ${RARE_TEST_CHARS.length}`);
 
         await runTofuDetectionPreview(fontFamily, fontSize, previewCodePoints);
 
         const previewData = getTofuDebugData();
-        console.log(`[Page] Got ${previewData.length} debug items from tofu detection`);
         if (previewData.length > 0) {
           tofuDebugData = previewData;
-          console.log(`[Page] tofuDebugData set with ${tofuDebugData.length} items`);
-          console.log(`[Page] Test chars in tofuDebugData:`, tofuDebugData.filter(d => isTestChar(d.codePoint)).map(d => `U+${d.codePoint.toString(16).padStart(4, '0')}`));
-          pendingReplacement = { fontFamily, fontSize, fontType: detectedType, codePoints: codePointsToProcess };
+          pendingReplacement = {
+            fontFamily,
+            fontSize,
+            fontType: detectedType,
+            codePoints: codePointsToProcess,
+          };
           showTofuDebug = true;
           isProcessing = false; // Allow user to decide
           return; // Wait for user confirmation
@@ -968,7 +965,12 @@
       }
 
       // Step 5: Proceed with actual replacement
-      await performFontReplacement(fontFamily, fontSize, detectedType, codePointsToProcess);
+      await performFontReplacement(
+        fontFamily,
+        fontSize,
+        detectedType,
+        codePointsToProcess,
+      );
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
@@ -1009,24 +1011,18 @@
   async function runTofuDetectionPreview(
     fontFamily: string,
     fontSize: 12 | 16,
-    codePoints: number[]
+    codePoints: number[],
   ): Promise<void> {
     // Clear any previous debug data
     setTofuDebugMode(true); // Ensure debug mode is on for collection
-
-    console.log(`[Preview] Processing ${codePoints.length} code points`);
-    console.log(`[Preview] First 10:`, codePoints.slice(0, 10).map(cp => `U+${cp.toString(16).padStart(4, '0')}`));
 
     let testCharsProcessed = 0;
     for (let i = 0; i < codePoints.length; i++) {
       const codePoint = codePoints[i];
       const isTest = isTestChar(codePoint);
-      console.log(`[Preview] Processing ${i}/${codePoints.length}: U+${codePoint.toString(16).padStart(4, '0')} ${isTest ? '[TEST]' : ''}`);
       await shouldSkipCharacter(codePoint, fontFamily, fontSize);
       if (isTest) testCharsProcessed++;
     }
-
-    console.log(`[Preview] Finished processing ${codePoints.length} code points (${testCharsProcessed} test chars)`);
   }
 
   // Perform the actual font replacement
@@ -1034,7 +1030,7 @@
     fontFamily: string,
     fontSize: 12 | 16,
     fontType: "SMALL" | "LARGE",
-    codePointsToProcess: number[]
+    codePointsToProcess: number[],
   ): Promise<void> {
     // Re-enable tofu debug mode for actual replacement
     setTofuDebugMode(debug);
@@ -1156,8 +1152,14 @@
             };
 
             // Add replaced characters to the appropriate tracking set based on font type
-            const targetSet = data.fontType === "SMALL" ? replacedSmallFontCharacters : replacedLargeFontCharacters;
-            const mergedChars = new Set([...targetSet, ...data.replacedCharacters]);
+            const targetSet =
+              data.fontType === "SMALL"
+                ? replacedSmallFontCharacters
+                : replacedLargeFontCharacters;
+            const mergedChars = new Set([
+              ...targetSet,
+              ...data.replacedCharacters,
+            ]);
 
             if (data.fontType === "SMALL") {
               replacedSmallFontCharacters = mergedChars;
@@ -1758,7 +1760,8 @@
     <TofuDebugWindow
       debugData={tofuDebugData}
       showConfirm={pendingReplacement !== null}
-      onclose={() => pendingReplacement ? cancelFontReplacement() : (showTofuDebug = false)}
+      onclose={() =>
+        pendingReplacement ? cancelFontReplacement() : (showTofuDebug = false)}
       onconfirm={() => confirmFontReplacement()}
     />
   {/if}
