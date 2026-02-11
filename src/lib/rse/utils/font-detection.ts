@@ -127,30 +127,53 @@ function testFontSize(fontFamily: string, fontSize: number): {
 	antiAliasedCount: number;
 	debugImage: string | null;
 } {
-	// Create an offscreen canvas
+	// SCALE FACTOR WORKAROUND: Render at larger size and scale down
+	// This is needed because browser canvas API doesn't provide a direct way
+	// to disable font anti-aliasing. By rendering at a larger scale and then
+	// downscaling with imageSmoothingEnabled=false, we get pixelated rendering.
+	const SCALE_FACTOR = 10;
+
+	// Create an offscreen canvas at scaled size
+	const scaledCanvas = document.createElement('canvas');
+	scaledCanvas.width = fontSize * TEST_CHARACTERS.length * SCALE_FACTOR;
+	scaledCanvas.height = fontSize * 2 * SCALE_FACTOR;
+	const scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true });
+
+	if (!scaledCtx) {
+		return { isPixelPerfect: false, antiAliasedCount: 0, debugImage: null };
+	}
+
+	// Clear canvas with white background
+	scaledCtx.fillStyle = '#ffffff';
+	scaledCtx.fillRect(0, 0, scaledCanvas.width, scaledCanvas.height);
+
+	// Configure font rendering at scaled size
+	scaledCtx.font = `${fontSize * SCALE_FACTOR}px "${fontFamily}", sans-serif`;
+	scaledCtx.textBaseline = 'middle';
+	scaledCtx.textAlign = 'left';
+	scaledCtx.imageSmoothingEnabled = false;
+
+	// Render test characters at scaled size
+	scaledCtx.fillStyle = '#000000';
+	scaledCtx.fillText(TEST_CHARACTERS, 0, (fontSize * SCALE_FACTOR) / 2);
+
+	// Create final canvas at target size
 	const canvas = document.createElement('canvas');
 	canvas.width = fontSize * TEST_CHARACTERS.length;
-	canvas.height = fontSize * 2; // Extra space for descenders
+	canvas.height = fontSize * 2;
 	const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
 	if (!ctx) {
 		return { isPixelPerfect: false, antiAliasedCount: 0, debugImage: null };
 	}
 
-	// Clear canvas with white background
+	// Clear final canvas with white background
 	ctx.fillStyle = '#ffffff';
 	ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-	// Configure font rendering for pixel-perfect results
-	ctx.font = `${fontSize}px "${fontFamily}", sans-serif`;
-	ctx.textBaseline = 'middle';
-	ctx.textAlign = 'left';
-	// Disable anti-aliasing
+	// Scale down with NO smoothing to get pixel-perfect result
 	ctx.imageSmoothingEnabled = false;
-
-	// Render test characters
-	ctx.fillStyle = '#000000';
-	ctx.fillText(TEST_CHARACTERS, 0, fontSize / 2);
+	ctx.drawImage(scaledCanvas, 0, 0, canvas.width, canvas.height);
 
 	// Check for anti-aliasing by examining pixel data
 	const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);

@@ -108,7 +108,42 @@ export async function extractCharacter(
 	// Get canvas dimensions
 	const { width, height } = CANVAS_DIMENSIONS[opts.fontSize];
 
-	// Create offscreen canvas
+	// SCALE FACTOR WORKAROUND: Render at larger size and scale down
+	// Browser canvas API doesn't provide a direct way to disable font anti-aliasing.
+	// By rendering at a larger scale and then downscaling with imageSmoothingEnabled=false,
+	// we get pixelated rendering without anti-aliasing artifacts.
+	const SCALE_FACTOR = 10;
+
+	// Create offscreen canvas at scaled size
+	const scaledCanvas = document.createElement('canvas');
+	scaledCanvas.width = width * SCALE_FACTOR;
+	scaledCanvas.height = height * SCALE_FACTOR;
+
+	const scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true });
+	if (!scaledCtx) {
+		throw new Error('Failed to get scaled canvas context');
+	}
+
+	// Clear with background color
+	scaledCtx.fillStyle = opts.bgColor;
+	scaledCtx.fillRect(0, 0, scaledCanvas.width, scaledCanvas.height);
+
+	// Build font family string with tofu fallback
+	const fontFamilyString = opts.useTofuFallback
+		? `"${opts.fontFamily}", "${TOFU_FONT_FAMILY}"`
+		: `"${opts.fontFamily}"`;
+
+	// Configure font rendering at scaled size
+	scaledCtx.font = `${opts.fontSize * SCALE_FACTOR}px ${fontFamilyString}`;
+	scaledCtx.textBaseline = 'top';
+	scaledCtx.textAlign = 'left';
+	scaledCtx.imageSmoothingEnabled = false;
+
+	// Render the character at scaled size
+	scaledCtx.fillStyle = opts.fgColor;
+	scaledCtx.fillText(char, 0, 0);
+
+	// Create final canvas at target size
 	const canvas = document.createElement('canvas');
 	canvas.width = width;
 	canvas.height = height;
@@ -122,20 +157,9 @@ export async function extractCharacter(
 	ctx.fillStyle = opts.bgColor;
 	ctx.fillRect(0, 0, width, height);
 
-	// Build font family string with tofu fallback
-	const fontFamilyString = opts.useTofuFallback
-		? `"${opts.fontFamily}", "${TOFU_FONT_FAMILY}"`
-		: `"${opts.fontFamily}"`;
-
-	// Configure font rendering
-	ctx.font = `${opts.fontSize}px ${fontFamilyString}`;
-	ctx.textBaseline = 'top';
-	ctx.textAlign = 'left';
+	// Scale down with NO smoothing to get pixel-perfect result
 	ctx.imageSmoothingEnabled = false;
-
-	// Render the character
-	ctx.fillStyle = opts.fgColor;
-	ctx.fillText(char, 0, 0);
+	ctx.drawImage(scaledCanvas, 0, 0, width, height);
 
 	// Extract pixel data
 	const imageData = ctx.getImageData(0, 0, width, height);

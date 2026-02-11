@@ -50,7 +50,15 @@
           {#each debugImages as debugImage (debugImage.fontSize)}
             <div class="debug-image-item">
               <div class="debug-image-header">
-                <span class="font-size-label">{debugImage.fontSize}px Test</span>
+                <span class="font-size-label">{debugImage.fontSize}px Test</span
+                >
+
+                {#if debugImage.antiAliasedCount > 0}
+                  <span class="fail">FAILED:</span> Found {debugImage.antiAliasedCount}
+                  gray pixels
+                {:else}
+                  <span class="pass">PASSED</span>
+                {/if}
               </div>
               <div class="debug-image-container">
                 <img
@@ -61,14 +69,6 @@
                     3}px; height: {debugImage.fontSize * 2 * 3}px;"
                 />
               </div>
-              <p class="debug-image-hint">
-                {#if debugImage.antiAliasedCount > 0}
-                  <span class="fail">FAILED:</span> Found {debugImage.antiAliasedCount}
-                  gray pixels (anti-aliasing detected)
-                {:else}
-                  <span class="pass">PASSED:</span> No anti-aliasing detected
-                {/if}
-              </p>
             </div>
           {/each}
         </div>
