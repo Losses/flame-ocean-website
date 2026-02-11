@@ -8,7 +8,8 @@
  * for consistent pixel-perfect rendering across all font operations.
  */
 
-import { TOFU_FONT_FAMILY, isTofuFontLoaded } from './tofu-font';
+import { TOFU_FONT_FAMILY, isTofuFontLoaded, getTofuSignature, scanForTofuPattern } from './tofu-font';
+import { TOFU_SCALE, TOFU_PADDING } from './glyph-renderer';
 import {
 	renderWithTofuPipeline,
 	getCanvasDimensions as getSharedCanvasDimensions,
@@ -115,22 +116,66 @@ export async function extractCharacter(
 	);
 
 	// Use unified tofu pipeline for consistent rendering with tofu detection
-	// Returns cropped result (downsampled to target size)
-	const pixels = await renderWithTofuPipeline(
+	// First render to full padded canvas for tofu detection
+	const fullPixels = await renderWithTofuPipeline(
 		char,
 		fontStack,
 		opts.fontSize,
 		{
-			returnType: "cropped",
+			returnType: "full",
 			fgColor: opts.fgColor,
 			bgColor: opts.bgColor
 		}
 	);
 
+	// Check for tofu BEFORE downsampling - compare against signature
+	let isTofu = false;
+	if (opts.useTofuFallback) {
+		const signature = getTofuSignature(opts.fontSize);
+		if (signature) {
+			const result = scanForTofuPattern(fullPixels, signature.pixels);
+			isTofu = result.isMatch;
+		}
+	}
+
+	// If tofu, return empty pixels (will be skipped by caller)
+	if (isTofu) {
+		return {
+			codePoint,
+			char,
+			pixels: Array.from({ length: height }, () => Array(width).fill(false)),
+			fontSize: opts.fontSize,
+			width,
+			height
+		};
+	}
+
+	// Extract and downsample for non-tofu characters
+	const patternSize = opts.fontSize * TOFU_SCALE;
+	const pattern: boolean[][] = [];
+
+	for (let y = TOFU_PADDING; y < TOFU_PADDING + patternSize; y++) {
+		const row: boolean[] = [];
+		for (let x = TOFU_PADDING; x < TOFU_PADDING + patternSize; x++) {
+			row.push(fullPixels[y][x] ?? false);
+		}
+		pattern.push(row);
+	}
+
+	// Downsample to target font size
+	const downsampled: boolean[][] = [];
+	for (let y = 0; y < patternSize; y += TOFU_SCALE) {
+		const row: boolean[] = [];
+		for (let x = 0; x < patternSize; x += TOFU_SCALE) {
+			row.push(pattern[y][x]);
+		}
+		downsampled.push(row);
+	}
+
 	return {
 		codePoint,
 		char,
-		pixels,
+		pixels: downsampled,
 		fontSize: opts.fontSize,
 		width,
 		height

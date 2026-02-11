@@ -281,7 +281,7 @@ export function getTofuFontFamily(): string {
 /**
  * Result of pattern scanning for tofu detection
  */
-interface PatternScanResult {
+export interface PatternScanResult {
   /** Whether tofu pattern was found with sufficient confidence */
   readonly isMatch: boolean;
   /** Best match ratio found (0-1) */
@@ -292,13 +292,14 @@ interface PatternScanResult {
 
 /**
  * Scan for tofu pattern in rendered canvas
- * Slides the 4x4 tofu pattern across the rendered canvas looking for best match
+ * Slides the 4x tofu pattern across the rendered canvas looking for best match
+ *
  * @param rendered - Rendered pixel grid from user font
- * @param pattern - 4x4 tofu pattern to scan for
+ * @param pattern - 4x tofu pattern to scan for
  * @param matchThreshold - Minimum match ratio to consider it tofu (default 0.98)
  * @returns PatternScanResult with match status, ratio, and position
  */
-function scanForTofuPattern(
+export function scanForTofuPattern(
   rendered: boolean[][],
   pattern: boolean[][],
   matchThreshold = 0.98,

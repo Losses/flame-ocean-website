@@ -1092,6 +1092,13 @@
           useTofuFallback: true,
         });
 
+        // Skip tofu characters (all-white pixels from tofu fallback)
+        const isAllWhite = result.pixels.every(row => row.every(p => !p));
+        if (isAllWhite) {
+          // Character is tofu - skip sending to worker
+          continue;
+        }
+
         // FLOW CONTROL: Wait for worker queue to have space
         // If queue is at capacity, wait for worker to send queueReady signal
         if (queueDepth >= queueCapacity - 10) {
