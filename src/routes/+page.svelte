@@ -17,6 +17,7 @@
     LoadingWindow,
     WarningWindow,
     FontDebugWindow,
+    TofuDebugWindow,
   } from "$lib/components/98css";
   import {
     unloadFontFile,
@@ -24,7 +25,15 @@
     loadAndValidateFontFile,
   } from "$lib/rse/utils/font-loading";
   import { fileIO } from "$lib/rse/utils/file-io";
-  import { loadTofuFont } from "$lib/rse/utils/tofu-font";
+  import {
+    loadTofuFont,
+    setTofuDebugMode,
+    getTofuDebugData,
+    shouldSkipCharacter,
+    RARE_TEST_CHARS,
+    isTestChar,
+    type TofuDebugData,
+  } from "$lib/rse/utils/tofu-font";
   import { imageToRgb565 } from "$lib/rse/utils/bitmap";
   import { UNICODE_RANGES } from "$lib/rse/utils/unicode-ranges";
   import { extractCharacter } from "$lib/rse/utils/font-extraction";
@@ -100,6 +109,16 @@
     import("$lib/rse/utils/font-detection").FontDebugImage[]
   >([]);
 
+  // Tofu debug window state
+  let showTofuDebug = $state(false);
+  let tofuDebugData = $state<TofuDebugData[]>([]);
+  let pendingReplacement: {
+    fontFamily: string;
+    fontSize: 12 | 16;
+    fontType: "SMALL" | "LARGE";
+    codePoints: number[];
+  } | null = null;
+
   // Track replaced images - use array for better Svelte 5 reactivity
   let replacedImages = $state<string[]>([]);
 
@@ -129,6 +148,8 @@
   // Subscribe to stores
   debugMode.subscribe((value) => {
     debug = value;
+    // Also enable tofu debug mode when debug mode is on
+    setTofuDebugMode(value);
   });
   debugAnimationComplete.subscribe((value) => {
     debugAnimComplete = value;
@@ -908,184 +929,38 @@
       statusMessage = `Replacing ${codePointsToProcess.length} font characters...`;
       progress = 10; // Start at 10%
 
-      // Step 4: Streaming replacement - extract and send one character at a time
-      // Start the stream
-      worker!.postMessage({
-        type: "replaceFontsStreamStart",
-        id: "replaceFontsStream",
-        firmware: new Uint8Array(),
-        fontType: detectedType,
-        totalCharacters: codePointsToProcess.length,
-      });
+      // Step 4: PREVIEW MODE - Run tofu detection first to show debug window
+      if (debug) {
+        statusMessage = "Running tofu detection preview...";
 
-      // Track queue depth for flow control
-      let queueDepth = 0;
-      const queueCapacity = 100; // Must match MAX_QUEUE_SIZE in worker
-      let resolveQueueReady: (() => void) | null = null;
+        // Combine first 50 from range + all rare test chars for preview
+        const previewCodePoints = [
+          ...codePointsToProcess.slice(0, 50),
+          ...RARE_TEST_CHARS
+        ];
 
-      // Listen for queue status updates during extraction
-      const flowControlHandler = (e: MessageEvent) => {
-        const { type, id, queueDepth: newDepth } = e.data;
-        if (id === "replaceFontsStream") {
-          if (type === "progress" && newDepth !== undefined) {
-            queueDepth = newDepth;
-          } else if (type === "queueReady" && resolveQueueReady) {
-            resolveQueueReady();
-            resolveQueueReady = null;
-          }
-        }
-      };
+        console.log(`[Page] Preview code points: ${previewCodePoints.length} total`);
+        console.log(`[Page] First 10:`, previewCodePoints.slice(0, 10).map(cp => `U+${cp.toString(16).padStart(4, '0')}`));
+        console.log(`[Page] Last 10:`, previewCodePoints.slice(-10).map(cp => `U+${cp.toString(16).padStart(4, '0')}`));
+        console.log(`[Page] RARE_TEST_CHARS count: ${RARE_TEST_CHARS.length}`);
 
-      worker!.addEventListener("message", flowControlHandler);
+        await runTofuDetectionPreview(fontFamily, fontSize, previewCodePoints);
 
-      // Extract and send characters one at a time
-      for (let i = 0; i < codePointsToProcess.length; i++) {
-        const codePoint = codePointsToProcess[i];
-
-        // Update progress periodically and yield to UI (less frequently to reduce flashing)
-        if (i % 500 === 0 || i === codePointsToProcess.length - 1) {
-          statusMessage = `Replacing fonts: ${Math.floor((i / codePointsToProcess.length) * 100)}% complete (${i + 1}/${codePointsToProcess.length} replaced)`;
-          // Update progress: 10% to 95% during extraction and processing
-          progress = 10 + Math.floor((i / codePointsToProcess.length) * 85);
-          // Yield to browser to allow UI update
-          await new Promise((resolve) => setTimeout(resolve, 0));
-        }
-
-        try {
-          const result = await extractCharacter(codePoint, {
-            fontFamily,
-            fontSize,
-            useTofuFallback: true,
-          });
-
-          // FLOW CONTROL: Wait for worker queue to have space
-          // If queue is at capacity, wait for worker to send queueReady signal
-          if (queueDepth >= queueCapacity - 10) {
-            await new Promise<void>((resolve) => {
-              resolveQueueReady = resolve;
-            });
-          }
-
-          // Send character to worker immediately
-          worker!.postMessage({
-            type: "replaceFontsStreamAdd",
-            id: "replaceFontsStream",
-            character: {
-              unicode: codePoint,
-              pixels: result.pixels,
-            },
-          });
-        } catch {
-          // Skip characters that fail extraction
-          // (these will be filtered out by tofu check in worker)
+        const previewData = getTofuDebugData();
+        console.log(`[Page] Got ${previewData.length} debug items from tofu detection`);
+        if (previewData.length > 0) {
+          tofuDebugData = previewData;
+          console.log(`[Page] tofuDebugData set with ${tofuDebugData.length} items`);
+          console.log(`[Page] Test chars in tofuDebugData:`, tofuDebugData.filter(d => isTestChar(d.codePoint)).map(d => `U+${d.codePoint.toString(16).padStart(4, '0')}`));
+          pendingReplacement = { fontFamily, fontSize, fontType: detectedType, codePoints: codePointsToProcess };
+          showTofuDebug = true;
+          isProcessing = false; // Allow user to decide
+          return; // Wait for user confirmation
         }
       }
 
-      // Remove flow control handler
-      worker!.removeEventListener("message", flowControlHandler);
-
-      statusMessage = `Finishing font replacement...`;
-      progress = 95; // 95% - all characters sent, waiting for worker
-
-      // Step 5: Set up handler FIRST, then send finish signal and wait for results
-      let finishHandler: ((e: MessageEvent) => void) | null = null;
-
-      const resultPromise = new Promise<void>((resolve, reject) => {
-        finishHandler = (e: MessageEvent) => {
-          const { type, id, result, error } = e.data;
-
-          if (id === "replaceFontsStream") {
-            if (type === "progress") {
-              statusMessage = e.data.message;
-              // Progress bar stays at 95% during final processing
-              progress = 95;
-              return;
-            }
-
-            // Ignore queueReady messages - they're flow control, not final results
-            if (type === "queueReady") {
-              return;
-            }
-
-            // Remove this handler for any non-progress/queueReady message
-            worker!.removeEventListener("message", finishHandler!);
-            finishHandler = null;
-
-            if (type === "success") {
-              progress = 100; // Complete!
-
-              const data = result as {
-                successCount: number;
-                skippedCount: number;
-                errors: string[];
-                replacedCharacters: number[];
-                skippedCharacters: number[];
-                skippedReasons: Map<number, string>;
-                fontType: "SMALL" | "LARGE";
-              };
-
-              // Add replaced characters to the appropriate tracking set based on font type
-              const targetSet = data.fontType === "SMALL" ? replacedSmallFontCharacters : replacedLargeFontCharacters;
-              const mergedChars = new Set([...targetSet, ...data.replacedCharacters]);
-
-              if (data.fontType === "SMALL") {
-                replacedSmallFontCharacters = mergedChars;
-              } else {
-                replacedLargeFontCharacters = mergedChars;
-              }
-
-              // Update status message with completion info
-              statusMessage = `Font replacement completed: ${data.successCount} replaced, ${data.skippedCount} skipped`;
-
-              resolve();
-            } else {
-              // Log the full error details from worker
-              console.error(`[main] Worker returned error:`, {
-                type,
-                id,
-                error,
-                result,
-                fullData: e.data,
-              });
-              reject(new Error(error || "Unknown font replacement error"));
-            }
-          }
-        };
-
-        // Add handler BEFORE sending finish signal
-        worker!.addEventListener("message", finishHandler);
-
-        // Send finish signal
-        worker!.postMessage({
-          type: "replaceFontsStreamFinish",
-          id: "replaceFontsStream",
-          firmware: new Uint8Array(),
-        });
-      });
-
-      // 30 second timeout with proper cleanup
-      const timeoutPromise = new Promise<void>((_, reject) => {
-        const timeoutId = setTimeout(() => {
-          console.error(
-            `[main] TIMEOUT waiting for worker response after 30 seconds`,
-          );
-          // Clean up handler on timeout
-          if (finishHandler) {
-            worker!.removeEventListener("message", finishHandler);
-            finishHandler = null;
-          }
-          reject(
-            new Error(
-              "Font replacement timeout - worker did not respond within 30 seconds",
-            ),
-          );
-        }, 30000);
-
-        // Clear timeout if promise resolves
-        resultPromise.finally(() => clearTimeout(timeoutId));
-      });
-
-      await Promise.race([resultPromise, timeoutPromise]);
+      // Step 5: Proceed with actual replacement
+      await performFontReplacement(fontFamily, fontSize, detectedType, codePointsToProcess);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
 
@@ -1120,6 +995,268 @@
       isProcessing = false;
       loadingTitle = undefined;
     }
+  }
+
+  // Run tofu detection preview (first N characters)
+  async function runTofuDetectionPreview(
+    fontFamily: string,
+    fontSize: 12 | 16,
+    codePoints: number[]
+  ): Promise<void> {
+    // Clear any previous debug data
+    setTofuDebugMode(true); // Ensure debug mode is on for collection
+
+    console.log(`[Preview] Processing ${codePoints.length} code points`);
+    console.log(`[Preview] First 10:`, codePoints.slice(0, 10).map(cp => `U+${cp.toString(16).padStart(4, '0')}`));
+
+    let testCharsProcessed = 0;
+    for (let i = 0; i < codePoints.length; i++) {
+      const codePoint = codePoints[i];
+      const isTest = isTestChar(codePoint);
+      console.log(`[Preview] Processing ${i}/${codePoints.length}: U+${codePoint.toString(16).padStart(4, '0')} ${isTest ? '[TEST]' : ''}`);
+      await shouldSkipCharacter(codePoint, fontFamily, fontSize);
+      if (isTest) testCharsProcessed++;
+    }
+
+    console.log(`[Preview] Finished processing ${codePoints.length} code points (${testCharsProcessed} test chars)`);
+  }
+
+  // Perform the actual font replacement
+  async function performFontReplacement(
+    fontFamily: string,
+    fontSize: 12 | 16,
+    fontType: "SMALL" | "LARGE",
+    codePointsToProcess: number[]
+  ): Promise<void> {
+    // Re-enable tofu debug mode for actual replacement
+    setTofuDebugMode(debug);
+
+    // Streaming replacement - extract and send one character at a time
+    // Start the stream
+    worker!.postMessage({
+      type: "replaceFontsStreamStart",
+      id: "replaceFontsStream",
+      firmware: new Uint8Array(),
+      fontType: fontType,
+      totalCharacters: codePointsToProcess.length,
+    });
+
+    // Track queue depth for flow control
+    let queueDepth = 0;
+    const queueCapacity = 100; // Must match MAX_QUEUE_SIZE in worker
+    let resolveQueueReady: (() => void) | null = null;
+
+    // Listen for queue status updates during extraction
+    const flowControlHandler = (e: MessageEvent) => {
+      const { type, id, queueDepth: newDepth } = e.data;
+      if (id === "replaceFontsStream") {
+        if (type === "progress" && newDepth !== undefined) {
+          queueDepth = newDepth;
+        } else if (type === "queueReady" && resolveQueueReady) {
+          resolveQueueReady();
+          resolveQueueReady = null;
+        }
+      }
+    };
+
+    worker!.addEventListener("message", flowControlHandler);
+
+    // Extract and send characters one at a time
+    for (let i = 0; i < codePointsToProcess.length; i++) {
+      const codePoint = codePointsToProcess[i];
+
+      // Update progress periodically and yield to UI (less frequently to reduce flashing)
+      if (i % 500 === 0 || i === codePointsToProcess.length - 1) {
+        statusMessage = `Replacing fonts: ${Math.floor((i / codePointsToProcess.length) * 100)}% complete (${i + 1}/${codePointsToProcess.length} replaced)`;
+        // Update progress: 10% to 95% during extraction and processing
+        progress = 10 + Math.floor((i / codePointsToProcess.length) * 85);
+        // Yield to browser to allow UI update
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+
+      try {
+        const result = await extractCharacter(codePoint, {
+          fontFamily,
+          fontSize,
+          useTofuFallback: true,
+        });
+
+        // FLOW CONTROL: Wait for worker queue to have space
+        // If queue is at capacity, wait for worker to send queueReady signal
+        if (queueDepth >= queueCapacity - 10) {
+          await new Promise<void>((resolve) => {
+            resolveQueueReady = resolve;
+          });
+        }
+
+        // Send character to worker immediately
+        worker!.postMessage({
+          type: "replaceFontsStreamAdd",
+          id: "replaceFontsStream",
+          character: {
+            unicode: codePoint,
+            pixels: result.pixels,
+          },
+        });
+      } catch {
+        // Skip characters that fail extraction
+        // (these will be filtered out by tofu check in worker)
+      }
+    }
+
+    // Remove flow control handler
+    worker!.removeEventListener("message", flowControlHandler);
+
+    statusMessage = `Finishing font replacement...`;
+    progress = 95; // 95% - all characters sent, waiting for worker
+
+    // Set up handler FIRST, then send finish signal and wait for results
+    let finishHandler: ((e: MessageEvent) => void) | null = null;
+
+    const resultPromise = new Promise<void>((resolve, reject) => {
+      finishHandler = (e: MessageEvent) => {
+        const { type, id, result, error } = e.data;
+
+        if (id === "replaceFontsStream") {
+          if (type === "progress") {
+            statusMessage = e.data.message;
+            // Progress bar stays at 95% during final processing
+            progress = 95;
+            return;
+          }
+
+          // Ignore queueReady messages - they're flow control, not final results
+          if (type === "queueReady") {
+            return;
+          }
+
+          // Remove this handler for any non-progress/queueReady message
+          worker!.removeEventListener("message", finishHandler!);
+          finishHandler = null;
+
+          if (type === "success") {
+            progress = 100; // Complete!
+
+            const data = result as {
+              successCount: number;
+              skippedCount: number;
+              errors: string[];
+              replacedCharacters: number[];
+              skippedCharacters: number[];
+              skippedReasons: Map<number, string>;
+              fontType: "SMALL" | "LARGE";
+            };
+
+            // Add replaced characters to the appropriate tracking set based on font type
+            const targetSet = data.fontType === "SMALL" ? replacedSmallFontCharacters : replacedLargeFontCharacters;
+            const mergedChars = new Set([...targetSet, ...data.replacedCharacters]);
+
+            if (data.fontType === "SMALL") {
+              replacedSmallFontCharacters = mergedChars;
+            } else {
+              replacedLargeFontCharacters = mergedChars;
+            }
+
+            // Update status message with completion info
+            statusMessage = `Font replacement completed: ${data.successCount} replaced, ${data.skippedCount} skipped`;
+
+            // Show tofu debug window if debug mode is enabled
+            if (debug) {
+              const debugData = getTofuDebugData();
+              if (debugData.length > 0) {
+                tofuDebugData = debugData;
+                showTofuDebug = true;
+              }
+            }
+
+            resolve();
+          } else {
+            // Log the full error details from worker
+            console.error(`[main] Worker returned error:`, {
+              type,
+              id,
+              error,
+              result,
+              fullData: e.data,
+            });
+            reject(new Error(error || "Unknown font replacement error"));
+          }
+        }
+      };
+
+      // Add handler BEFORE sending finish signal
+      worker!.addEventListener("message", finishHandler);
+
+      // Send finish signal
+      worker!.postMessage({
+        type: "replaceFontsStreamFinish",
+        id: "replaceFontsStream",
+        firmware: new Uint8Array(),
+      });
+    });
+
+    // 30 second timeout with proper cleanup
+    const timeoutPromise = new Promise<void>((_, reject) => {
+      const timeoutId = setTimeout(() => {
+        console.error(
+          `[main] TIMEOUT waiting for worker response after 30 seconds`,
+        );
+        // Clean up handler on timeout
+        if (finishHandler) {
+          worker!.removeEventListener("message", finishHandler);
+          finishHandler = null;
+        }
+        reject(
+          new Error(
+            "Font replacement timeout - worker did not respond within 30 seconds",
+          ),
+        );
+      }, 30000);
+
+      // Clear timeout if promise resolves
+      resultPromise.finally(() => clearTimeout(timeoutId));
+    });
+
+    await Promise.race([resultPromise, timeoutPromise]);
+  }
+
+  // Confirm font replacement after preview
+  async function confirmFontReplacement(): Promise<void> {
+    if (!pendingReplacement) {
+      showTofuDebug = false;
+      return;
+    }
+
+    const { fontFamily, fontSize, fontType, codePoints } = pendingReplacement;
+    pendingReplacement = null;
+    showTofuDebug = false;
+
+    isProcessing = true;
+    statusMessage = "Proceeding with font replacement...";
+    progress = 5;
+
+    try {
+      await performFontReplacement(fontFamily, fontSize, fontType, codePoints);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      showWarningDialog(
+        "Font Replacement Error",
+        `Failed to replace font:\n${errorMessage}`,
+      );
+      statusMessage = `Font replacement failed: ${errorMessage}`;
+    } finally {
+      isProcessing = false;
+      loadingTitle = undefined;
+    }
+  }
+
+  // Cancel font replacement
+  function cancelFontReplacement(): void {
+    pendingReplacement = null;
+    showTofuDebug = false;
+    isProcessing = false;
+    loadingTitle = undefined;
+    statusMessage = "Font replacement cancelled";
   }
 
   // Handle keyboard shortcuts (Ctrl+S for export)
@@ -1605,6 +1742,16 @@
       message={fontDebugMessage}
       debugImages={fontDebugImages}
       onclose={() => (showFontDebug = false)}
+    />
+  {/if}
+
+  <!-- Tofu Debug Window -->
+  {#if showTofuDebug}
+    <TofuDebugWindow
+      debugData={tofuDebugData}
+      showConfirm={pendingReplacement !== null}
+      onclose={() => pendingReplacement ? cancelFontReplacement() : (showTofuDebug = false)}
+      onconfirm={() => confirmFontReplacement()}
     />
   {/if}
 </div>

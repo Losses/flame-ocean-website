@@ -127,37 +127,49 @@ function testFontSize(fontFamily: string, fontSize: number): {
 	antiAliasedCount: number;
 	debugImage: string | null;
 } {
-	// SCALE FACTOR WORKAROUND: Render at larger size and scale down
-	// This is needed because browser canvas API doesn't provide a direct way
-	// to disable font anti-aliasing. By rendering at a larger scale and then
-	// downscaling with imageSmoothingEnabled=false, we get pixelated rendering.
-	const SCALE_FACTOR = 10;
+	// Test multiple textBaseline and offsetY combinations to find optimal rendering
+	// This handles fonts where the metrics don't align with the nominal font size
+	const BASELINES: CanvasTextBaseline[] = ['top', 'middle', 'bottom', 'alphabetic', 'hanging'];
+	const OFFSET_RANGE = 5; // Try offsets from -5 to +5 pixels
 
-	// Create an offscreen canvas at scaled size
-	const scaledCanvas = document.createElement('canvas');
-	scaledCanvas.width = fontSize * TEST_CHARACTERS.length * SCALE_FACTOR;
-	scaledCanvas.height = fontSize * 2 * SCALE_FACTOR;
-	const scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true });
+	let bestResult: { isPixelPerfect: boolean; antiAliasedCount: number; debugImage: string | null } = {
+		isPixelPerfect: false,
+		antiAliasedCount: Infinity,
+		debugImage: null
+	};
 
-	if (!scaledCtx) {
-		return { isPixelPerfect: false, antiAliasedCount: 0, debugImage: null };
+	for (const textBaseline of BASELINES) {
+		for (let offsetY = -OFFSET_RANGE; offsetY <= OFFSET_RANGE; offsetY++) {
+			const result = testFontRendering(fontFamily, fontSize, textBaseline, offsetY);
+			if (result.antiAliasedCount < bestResult.antiAliasedCount) {
+				bestResult = result;
+				// If we found a perfectly pixel-perfect rendering, stop searching
+				if (result.antiAliasedCount === 0) {
+					return result;
+				}
+			}
+		}
 	}
 
-	// Clear canvas with white background
-	scaledCtx.fillStyle = '#ffffff';
-	scaledCtx.fillRect(0, 0, scaledCanvas.width, scaledCanvas.height);
+	return bestResult;
+}
 
-	// Configure font rendering at scaled size
-	scaledCtx.font = `${fontSize * SCALE_FACTOR}px "${fontFamily}", sans-serif`;
-	scaledCtx.textBaseline = 'middle';
-	scaledCtx.textAlign = 'left';
-	scaledCtx.imageSmoothingEnabled = false;
-
-	// Render test characters at scaled size
-	scaledCtx.fillStyle = '#000000';
-	scaledCtx.fillText(TEST_CHARACTERS, 0, (fontSize * SCALE_FACTOR) / 2);
-
-	// Create final canvas at target size
+/**
+ * Test font rendering with specific parameters
+ * @param fontFamily - Font family name
+ * @param fontSize - Font size in pixels
+ * @param textBaseline - Canvas textBaseline setting
+ * @param offsetY - Vertical offset in pixels
+ * @returns Test result
+ */
+function testFontRendering(
+	fontFamily: string,
+	fontSize: number,
+	textBaseline: CanvasTextBaseline,
+	offsetY: number
+): { isPixelPerfect: boolean; antiAliasedCount: number; debugImage: string | null } {
+	// Render at target size directly (no scaling)
+	// Check for anti-aliasing by looking for gray pixels
 	const canvas = document.createElement('canvas');
 	canvas.width = fontSize * TEST_CHARACTERS.length;
 	canvas.height = fontSize * 2;
@@ -167,30 +179,87 @@ function testFontSize(fontFamily: string, fontSize: number): {
 		return { isPixelPerfect: false, antiAliasedCount: 0, debugImage: null };
 	}
 
-	// Clear final canvas with white background
+	// Clear canvas with white background
 	ctx.fillStyle = '#ffffff';
 	ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-	// Scale down with NO smoothing to get pixel-perfect result
+	// Configure font rendering
+	ctx.font = `${fontSize}px "${fontFamily}", sans-serif`;
+	ctx.textBaseline = textBaseline;
+	ctx.textAlign = 'left';
 	ctx.imageSmoothingEnabled = false;
-	ctx.drawImage(scaledCanvas, 0, 0, canvas.width, canvas.height);
+	// Important: Use geometricPrecision to prevent anti-aliasing on pixel art fonts
+	(ctx as any).textRendering = 'geometricPrecision';
 
-	// Check for anti-aliasing by examining pixel data
-	const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+	// Use TextMetrics to find actual bounding box BEFORE rendering
+	// This tells us where the actual pixels will be
+	const metrics = ctx.measureText(TEST_CHARACTERS);
+
+	// Calculate Y position based on baseline
+	// We want to center the text vertically in the canvas, then apply offset
+	const canvasCenterY = canvas.height / 2;
+	let yPos = canvasCenterY + offsetY;
+
+	// Adjust for different baselines to keep text centered
+	if (textBaseline === 'top') {
+		// top baseline means the top of em box is at yPos, text extends below
+		// Move down by half font size to center
+		yPos += fontSize / 2;
+	} else if (textBaseline === 'middle') {
+		// middle baseline centers on the em box, yPos is already centered
+		// No adjustment needed
+	} else if (textBaseline === 'bottom') {
+		// bottom baseline means bottom of em box is at yPos, text extends above
+		// Move up by half font size to center
+		yPos -= fontSize / 2;
+	} else if (textBaseline === 'alphabetic') {
+		// alphabetic baseline is for normal text, approximate center
+		// Move up slightly to account for descenders
+		yPos -= fontSize / 4;
+	} else if (textBaseline === 'hanging') {
+		// hanging is for certain scripts (like Tibetan), treat like top
+		yPos += fontSize / 2;
+	}
+
+	// Render test characters with offset
+	ctx.fillStyle = '#000000';
+	ctx.fillText(TEST_CHARACTERS, 0, yPos);
+
+	// Use actual bounding box from TextMetrics if available
+	// TextMetrics.actualBoundingBoxAscent/Descent gives us real pixel bounds
+	const actualAscent = metrics.actualBoundingBoxAscent ?? 0;
+	const actualDescent = metrics.actualBoundingBoxDescent ?? 0;
+	const actualLeft = metrics.actualBoundingBoxLeft ?? 0;
+	const actualRight = metrics.actualBoundingBoxRight ?? TEST_CHARACTERS.length * fontSize;
+
+	// Convert to pixel coordinates
+	const renderTop = yPos - actualAscent;
+	const renderBottom = yPos + actualDescent;
+	const renderLeft = actualLeft;
+	const renderRight = actualRight;
+
+	// Get image data only for the actual rendered area
+	const dataX = Math.max(0, Math.floor(renderLeft));
+	const dataY = Math.max(0, Math.floor(renderTop));
+	const dataWidth = Math.min(canvas.width - dataX, Math.ceil(renderRight - renderLeft));
+	const dataHeight = Math.min(canvas.height - dataY, Math.ceil(renderBottom - renderTop));
+
+	if (dataWidth <= 0 || dataHeight <= 0) {
+		return { isPixelPerfect: false, antiAliasedCount: 1, debugImage: null };
+	}
+
+	const imageData = ctx.getImageData(dataX, dataY, dataWidth, dataHeight);
 	const pixels = imageData.data;
-	let antiAliasedCount = 0;
 
-	// Check each pixel for grayscale values (indicating anti-aliasing)
+	// Count anti-aliased pixels within actual bounding box
+	let antiAliasedCount = 0;
 	for (let i = 0; i < pixels.length; i += 4) {
 		const r = pixels[i];
 		const g = pixels[i + 1];
 		const b = pixels[i + 2];
-		// Ignore alpha (pixels[i + 3])
 
-		// Check if pixel is grayscale (all three channels equal) but not black or white
-		// This indicates anti-aliasing
+		// Check if pixel is grayscale but not black or white (anti-aliasing)
 		if (r === g && g === b) {
-			// Grayscale pixel - check if it's not black or white
 			if (r > 0 && r < 255) {
 				antiAliasedCount++;
 			}

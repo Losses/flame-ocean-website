@@ -60,6 +60,119 @@ export const TOFU_FONT_FAMILY = 'Adobe-NotDef';
 const DEFAULT_TOFU_TEST_CHAR = '\uFFFD'; // Replacement character
 
 /**
+ * Debug data for tofu detection comparison
+ */
+export interface TofuDebugData {
+	/** Unicode code point */
+	codePoint: number;
+	/** Character string */
+	char: string;
+	/** Font size */
+	fontSize: number;
+	/** Rendered pixels from user font */
+	renderedPixels: boolean[][];
+	/** Tofu signature pixels */
+	tofuPixels: boolean[][];
+	/** Whether they match (is tofu) */
+	match: boolean;
+	/** Match percentage */
+	matchPercentage: number;
+	/** Bounding box of rendered pixels */
+	boundingBox1: { x: number; y: number; width: number; height: number };
+	/** Bounding box of tofu signature */
+	boundingBox2: { x: number; y: number; width: number; height: number };
+}
+
+// Store debug data when debug mode is enabled
+let debugDataCollection: TofuDebugData[] = [];
+export let debugModeEnabled = false;
+
+/**
+ * Test characters used to verify tofu detection is working correctly
+ * These characters are very unlikely to exist in typical pixel fonts
+ */
+export const RARE_TEST_CHARS: number[] = [
+	// Latin Extended-B (rare African phonetics)
+	0x0180, 0x0190, 0x01A0, 0x01B0, 0x01C0,
+	// Mathematical Operators (unlikely in pixel fonts)
+	0x2200, 0x2211, 0x222B, 0x2248, 0x2264,
+	// Arrows (some might exist)
+	0x2190, 0x21D2, 0x21E0,
+	// Miscellaneous Technical
+	0x2300, 0x2320, 0x2340,
+	// Geometric Shapes
+	0x25A0, 0x25CB, 0x25CF,
+	// Miscellaneous Symbols
+	0x2600, 0x2654, 0x2660, 0x2665,
+	// Dingbats
+	0x2702, 0x2713,
+	// Box Drawing
+	0x2500, 0x2510, 0x2518,
+	// Block Elements
+	0x2580, 0x2588,
+	// Halfwidth and Fullwidth Forms (U+FF00)
+	0xFF01, // Fullwidth exclamation mark ！
+	0xFF02, // Fullwidth quotation mark "
+	0xFF03, // Fullwidth number sign #
+	0xFF04, // Fullwidth dollar sign $
+	0xFF05, // Fullwidth percent sign %
+	0xFF10, // Fullwidth zero ０
+	0xFF11, // Fullwidth one １
+	0xFF12, // Fullwidth two ２
+	0xFF21, // Fullwidth A Ａ
+	0xFF22, // Fullwidth B Ｂ
+	0xFF23, // Fullwidth C Ｃ
+	0xFF41, // Fullwidth a ａ
+	0xFF42, // Fullwidth b ｂ
+	0xFF43, // Fullwidth c ｃ
+	0xFF61, // Halfwidth ideographic full stop ｡
+	0xFF64, // Halfwidthideographic comma ､
+	0xFF70, // Halfwidth Katakana-Hiragana prolonged sound mark ｰ
+];
+
+/**
+ * Check if a code point is one of the rare test characters
+ */
+export function isTestChar(codePoint: number): boolean {
+	return RARE_TEST_CHARS.includes(codePoint);
+}
+
+/**
+ * Get the category of a test character
+ */
+export function getTestCharCategory(codePoint: number): string {
+	if (codePoint >= 0xFF00) return 'Fullwidth/Halfwidth';
+	if (codePoint >= 0x2600) return 'Symbols';
+	if (codePoint >= 0x2500) return 'Box/Block';
+	if (codePoint >= 0x2300) return 'Technical';
+	if (codePoint >= 0x2190) return 'Arrow/Math';
+	if (codePoint >= 0x0180) return 'Latin Extended';
+	return 'Other';
+}
+
+/**
+ * Enable/disable tofu debug collection
+ */
+export function setTofuDebugMode(enabled: boolean): void {
+	console.log(`[Tofu] setTofuDebugMode(${enabled}) - clearing collection`);
+	debugModeEnabled = enabled;
+	if (enabled) {
+		debugDataCollection = [];
+	}
+}
+
+/**
+ * Get collected debug data and clear the collection
+ */
+export function getTofuDebugData(): TofuDebugData[] {
+	const data = [...debugDataCollection];
+	console.log(`[Tofu] getTofuDebugData() returning ${data.length} items`);
+	console.log(`[Tofu] Code points in collection:`, data.map(d => `U+${d.codePoint.toString(16).padStart(4, '0')}`));
+	debugDataCollection = [];
+	return data;
+}
+
+/**
  * Initialize the tofu font system by loading Adobe NotDef
  * @returns Promise that resolves when initialized
  */
@@ -115,7 +228,7 @@ export async function generateTofuSignature(
 		throw new Error('Tofu font not loaded. Call loadTofuFont() first.');
 	}
 
-	// Create canvas for rendering - use same dimensions as extraction
+	// Create canvas for rendering at target size
 	const width = fontSize;
 	const height = fontSize;
 	const canvas = document.createElement('canvas');
@@ -136,6 +249,8 @@ export async function generateTofuSignature(
 	ctx.textBaseline = 'top';
 	ctx.textAlign = 'left';
 	ctx.imageSmoothingEnabled = false; // Keep pixel crisp
+	// Important: Use geometricPrecision for consistent rendering
+	(ctx as any).textRendering = 'geometricPrecision';
 
 	// Render the character (Adobe NotDef will render .notdef glyph for any character)
 	ctx.fillStyle = '#000000';
@@ -149,8 +264,8 @@ export async function generateTofuSignature(
 		fontSize,
 		char: testChar,
 		pixels,
-		width,
-		height
+		width: fontSize,
+		height: fontSize
 	};
 
 	// Cache the signature
@@ -342,33 +457,97 @@ function cropToBoundingBox(
 
 /**
  * Compare two pixel regions with tolerance for minor differences
+ * Uses a more robust approach that handles position offsets
  */
-function comparePixelRegions(pixels1: boolean[][], pixels2: boolean[][], tolerance = 0.1): boolean {
-	const size1 = pixels1.length * pixels1[0]?.length;
-	const size2 = pixels2.length * pixels2[0]?.length;
+function comparePixelRegions(
+	pixels1: boolean[][],
+	pixels2: boolean[][],
+	// Optional debug capture
+	codePoint?: number,
+	char?: string,
+	fontSize?: number
+): boolean {
+	// Find bounding boxes for both pixel grids
+	const bbox1 = findBoundingBox(pixels1);
+	const bbox2 = findBoundingBox(pixels2);
 
-	if (size1 === 0 || size2 === 0) {
-		return size1 === size2;
+	// Initialize match result and percentage
+	let isMatch = false;
+	let matchPercentage = 0;
+
+	// If either is empty, compare emptiness
+	if (bbox1.width === 0 || bbox1.height === 0) {
+		isMatch = bbox2.width === 0 || bbox2.height === 0;
+		matchPercentage = isMatch ? 1.0 : 0.0;
+
+		// Capture debug data for empty renders before returning
+		if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
+			const isTest = isTestChar(codePoint);
+			console.log(`[Tofu] Collecting debug data for EMPTY U+${codePoint.toString(16).padStart(4, '0')}${isTest ? ' [TEST]' : ''}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`);
+			debugDataCollection.push({
+				codePoint,
+				char,
+				fontSize,
+				renderedPixels: pixels1.map(row => [...row]),
+				tofuPixels: pixels2.map(row => [...row]),
+				match: isMatch,
+				matchPercentage,
+				boundingBox1: { ...bbox1 },
+				boundingBox2: { ...bbox2 }
+			});
+		}
+
+		return isMatch;
 	}
+	if (bbox2.width === 0 || bbox2.height === 0) {
+		isMatch = false;
+		matchPercentage = 0.0;
 
-	// For small differences in size, allow it
-	const maxSize = Math.max(size1, size2);
-	const minSize = Math.min(size1, size2);
-	if (maxSize - minSize > maxSize * tolerance) {
+		// Capture debug data for empty signature before returning
+		if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
+			const isTest = isTestChar(codePoint);
+			console.log(`[Tofu] Collecting debug data for EMPTY SIGNATURE U+${codePoint.toString(16).padStart(4, '0')}${isTest ? ' [TEST]' : ''}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`);
+			debugDataCollection.push({
+				codePoint,
+				char,
+				fontSize,
+				renderedPixels: pixels1.map(row => [...row]),
+				tofuPixels: pixels2.map(row => [...row]),
+				match: isMatch,
+				matchPercentage,
+				boundingBox1: { ...bbox1 },
+				boundingBox2: { ...bbox2 }
+			});
+		}
+
 		return false;
 	}
 
-	// Count matching pixels
+	// Crop to bounding boxes
+	const cropped1 = cropToBoundingBox(pixels1, bbox1);
+	const cropped2 = cropToBoundingBox(pixels2, bbox2);
+
+	// Check if sizes are wildly different (not the same character)
+	const size1 = cropped1.length * cropped1[0].length;
+	const size2 = cropped2.length * cropped2[0].length;
+	const maxSize = Math.max(size1, size2);
+
+	if (Math.abs(size1 - size2) > maxSize * 0.3) {
+		// More than 30% size difference = definitely not the same
+		return false;
+	}
+
+	// Count matching pixels within overlapping region
 	let matches = 0;
 	let total = 0;
 
-	const rows = Math.max(pixels1.length, pixels2.length);
-	const cols = Math.max(pixels1[0]?.length || 0, pixels2[0]?.length || 0);
+	const rows = Math.min(cropped1.length, cropped2.length);
+	const cols = Math.min(cropped1[0].length, cropped2[0].length);
 
 	for (let y = 0; y < rows; y++) {
 		for (let x = 0; x < cols; x++) {
-			const p1 = pixels1[y]?.[x] ?? false;
-			const p2 = pixels2[y]?.[x] ?? false;
+			const p1 = cropped1[y][x];
+			const p2 = cropped2[y][x];
 			if (p1 === p2) {
 				matches++;
 			}
@@ -376,8 +555,30 @@ function comparePixelRegions(pixels1: boolean[][], pixels2: boolean[][], toleran
 		}
 	}
 
-	// Require at least 90% match (allowing for some anti-aliasing differences)
-	return matches / total >= 0.90;
+	// Calculate match percentage
+	matchPercentage = total > 0 ? matches / total : 0;
+	isMatch = total > 0 && matchPercentage >= 0.95;
+
+	// Capture debug data if debug mode is enabled
+	if (debugModeEnabled && codePoint !== undefined && char && fontSize) {
+		const isTest = isTestChar(codePoint);
+		console.log(`[Tofu] Collecting debug data for U+${codePoint.toString(16).padStart(4, '0')}${isTest ? ' [TEST]' : ''}: match=${isMatch}, percentage=${(matchPercentage * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`);
+		debugDataCollection.push({
+			codePoint,
+			char,
+			fontSize,
+			renderedPixels: pixels1.map(row => [...row]),
+			tofuPixels: pixels2.map(row => [...row]),
+			match: isMatch,
+			matchPercentage,
+			boundingBox1: { ...bbox1 },
+			boundingBox2: { ...bbox2 }
+		});
+	}
+
+	// Require at least 95% match for tofu detection
+	// This is stricter than before to reduce false positives
+	return isMatch;
 }
 
 /**
@@ -394,8 +595,8 @@ export async function renderCharacterWithTofu(
 ): Promise<boolean[][]> {
 	// Create canvas
 	const canvas = document.createElement('canvas');
-	const width = fontSize === 12 ? 12 : 16;
-	const height = fontSize === 12 ? 12 : 16;
+	const width = fontSize;
+	const height = fontSize;
 	canvas.width = width;
 	canvas.height = height;
 
@@ -418,6 +619,8 @@ export async function renderCharacterWithTofu(
 	ctx.textBaseline = 'top';
 	ctx.textAlign = 'left';
 	ctx.imageSmoothingEnabled = false;
+	// Important: Use geometricPrecision for consistent rendering
+	(ctx as any).textRendering = 'geometricPrecision';
 
 	// Render the character
 	ctx.fillStyle = '#000000';
@@ -469,11 +672,14 @@ export async function shouldSkipCharacter(
 ): Promise<SkipCharacterResult> {
 	// Convert code point to string
 	const char = String.fromCodePoint(codePoint);
+	const isTest = isTestChar(codePoint);
+	console.log(`[shouldSkip] U+${codePoint.toString(16).padStart(4, '0')} (${char})${isTest ? ' [TEST]' : ''} existsInFirmware=${!!existsInFirmware}`);
 
 	// Check if character exists in firmware (if callback provided)
 	if (existsInFirmware) {
 		const exists = existsInFirmware(codePoint);
 		if (!exists) {
+			console.log(`[shouldSkip] U+${codePoint.toString(16).padStart(4, '0')} NOT in firmware, returning early`);
 			return {
 				shouldSkip: true,
 				codePoint,
@@ -497,15 +703,18 @@ export async function shouldSkipCharacter(
 		}
 
 		// Check if the render matches Adobe NotDef's .notdef glyph
-		const isTofu = comparePixelRegions(pixels, signature.pixels);
+		const isTofu = comparePixelRegions(pixels, signature.pixels, codePoint, char, fontSize);
 
-		// Log first few characters for debugging
-		if (codePoint < 0x20) {
+		// Log test characters and control characters for debugging
+		if (isTest) {
+			console.log(`[tofu] TEST CHAR U+${codePoint.toString(16).padStart(4, '0')}: isTofu=${isTofu}, shouldSkip=true`);
+		} else if (codePoint < 0x20) {
 			console.log(`[tofu] U+${codePoint.toString(16).padStart(4, '0')}: isTofu=${isTofu}, pixels=${pixels.length}x${pixels[0]?.length}`);
 			console.log(`[tofu] Signature: ${signature.width}x${signature.height}`);
 		}
 
 		if (isTofu) {
+			console.log(`[shouldSkip] U+${codePoint.toString(16).padStart(4, '0')}: TOFU DETECTED, shouldSkip=true`);
 			return {
 				shouldSkip: true,
 				codePoint,
@@ -513,8 +722,10 @@ export async function shouldSkipCharacter(
 				reason: 'missing_from_font'
 			};
 		}
+		console.log(`[shouldSkip] U+${codePoint.toString(16).padStart(4, '0')}: NOT tofu, shouldSkip=false`);
 	}
 
+	console.log(`[shouldSkip] U+${codePoint.toString(16).padStart(4, '0')}: tofu font not loaded, shouldSkip=false`);
 	return {
 		shouldSkip: false,
 		codePoint,
