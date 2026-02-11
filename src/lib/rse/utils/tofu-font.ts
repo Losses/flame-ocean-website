@@ -11,6 +11,7 @@
 
 import type { PixelData } from "../types/index.js";
 import {
+  imageDataToPixels,
   renderGlyphToPixels,
   buildFontStackString,
   pixelsToDataURL,
@@ -31,6 +32,8 @@ export interface TofuSignature {
   /** Canvas dimensions used */
   width: number;
   height: number;
+  /** Size of the 4x4 pattern extracted from signature */
+  patternSize?: number;
 }
 
 /**
@@ -67,6 +70,28 @@ export const TOFU_FONT_FAMILY = "Adobe-NotDef";
  * Using a character that won't exist in most pixel fonts
  */
 const DEFAULT_TOFU_TEST_CHAR = "\uFFFD"; // Replacement character
+
+/**
+ * Scale factor for tofu pattern extraction
+ * Tofu pattern is rendered at 4x the font size
+ */
+const TOFU_PATTERN_SCALE = 4;
+
+/**
+ * Padding pixels on each side for padded canvas
+ * Allows for font metric variations (ascent/descent differences)
+ */
+const PADDING_PIXELS = 10;
+
+/**
+ * Calculate padded canvas size for a given font size
+ * Canvas is (fontSize * TOFU_PATTERN_SCALE) + (PADDING_PIXELS * 2)
+ * @param fontSize - Font size in pixels (12 or 16)
+ * @returns Total canvas size including padding
+ */
+function getPaddedCanvasSize(fontSize: FontSize): number {
+  return fontSize * TOFU_PATTERN_SCALE + PADDING_PIXELS * 2;
+}
 
 /**
  * Debug data for tofu detection comparison
@@ -208,21 +233,30 @@ export async function generateTofuSignature(
     throw new Error("Tofu font not loaded. Call loadTofuFont() first.");
   }
 
-  // Use scaled rendering for pixel-perfect, consistent results
-  // Scaled rendering produces stable output without anti-aliasing variations
-  const pixels = await renderGlyphToPixels(testChar, {
-    fontFamily: buildFontStackString(TOFU_FONT_FAMILY),
-    fontSize: fontSize as FontSize,
-    brightnessThreshold: 128, // Standard threshold for binary output
-    useScaling: true, // Use scaled rendering for consistency
-  });
+  // Render in padded canvas and extract the 4x4 pattern from center
+  // This creates a canonical tofu signature that can be scanned across user renders
+  const paddedPixels = await renderInPaddedCanvas(testChar, TOFU_FONT_FAMILY, fontSize as FontSize);
+
+  // Extract the center 4x4 pattern (the actual tofu signature)
+  const patternSize = fontSize * TOFU_PATTERN_SCALE;
+  const padding = PADDING_PIXELS;
+  const pattern: boolean[][] = [];
+
+  for (let y = padding; y < padding + patternSize; y++) {
+    const row: boolean[] = [];
+    for (let x = padding; x < padding + patternSize; x++) {
+      row.push(paddedPixels[y][x] ?? false);
+    }
+    pattern.push(row);
+  }
 
   const signature: TofuSignature = {
     fontSize,
     char: testChar,
-    pixels,
-    width: fontSize,
-    height: fontSize,
+    pixels: pattern,
+    width: patternSize,
+    height: patternSize,
+    patternSize,
   };
 
   // Cache signature
@@ -257,6 +291,137 @@ export function getTofuFontFamily(): string {
 }
 
 /**
+ * Render character in padded canvas with font stack
+ * Uses larger canvas with padding to accommodate font metric variations
+ * @param char - Character to render
+ * @param fontFamily - Font family (or stack) to use
+ * @param fontSize - Font size in pixels (12 or 16)
+ * @returns Rendered pixel data in padded canvas
+ */
+async function renderInPaddedCanvas(
+  char: string,
+  fontFamily: string,
+  fontSize: FontSize,
+): Promise<boolean[][]> {
+  const canvasSize = getPaddedCanvasSize(fontSize);
+  const scaledFontSize = fontSize * 10; // Use same scale factor as glyph-renderer
+
+  const canvas = document.createElement('canvas');
+  canvas.width = canvasSize;
+  canvas.height = canvasSize;
+
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    throw new Error('Failed to get canvas context');
+  }
+
+  // Clear with background
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Configure font rendering at scaled size
+  ctx.font = `${scaledFontSize}px ${fontFamily}`;
+  ctx.textBaseline = 'top';
+  ctx.textAlign = 'left';
+  ctx.imageSmoothingEnabled = false;
+
+  // Render character centered vertically in the padded canvas
+  // This allows for ascent/descent variations
+  const yOffset = PADDING_PIXELS;
+  ctx.fillStyle = '#000000';
+  ctx.fillText(char, 0, yOffset);
+
+  // Extract pixel data
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const pixels = imageDataToPixels(imageData, 128);
+
+  // Clean up
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  canvas.width = 0;
+  canvas.height = 0;
+
+  return pixels;
+}
+
+/**
+ * Result of pattern scanning for tofu detection
+ */
+interface PatternScanResult {
+  /** Whether tofu pattern was found with sufficient confidence */
+  readonly isMatch: boolean;
+  /** Best match ratio found (0-1) */
+  readonly matchRatio: number;
+  /** Position where best match was found */
+  readonly matchPosition: { x: number; y: number } | null;
+}
+
+/**
+ * Scan for tofu pattern in rendered canvas
+ * Slides the 4x4 tofu pattern across the rendered canvas looking for best match
+ * @param rendered - Rendered pixel grid from user font
+ * @param pattern - 4x4 tofu pattern to scan for
+ * @param matchThreshold - Minimum match ratio to consider it tofu (default 0.98)
+ * @returns PatternScanResult with match status, ratio, and position
+ */
+function scanForTofuPattern(
+  rendered: boolean[][],
+  pattern: boolean[][],
+  matchThreshold = 0.98,
+): PatternScanResult {
+  const patternHeight = pattern.length;
+  const patternWidth = pattern[0]?.length || 4;
+  const renderedHeight = rendered.length;
+  const renderedWidth = rendered[0]?.length || 0;
+
+  // Try every position where pattern could fit
+  let bestMatchRatio = 0;
+  let bestMatchPosition: { x: number; y: number } | null = null;
+
+  for (let startY = 0; startY <= renderedHeight - patternHeight; startY++) {
+    for (let startX = 0; startX <= renderedWidth - patternWidth; startX++) {
+      let matches = 0;
+      let total = 0;
+
+      // Compare pattern at this position
+      for (let py = 0; py < patternHeight; py++) {
+        for (let px = 0; px < patternWidth; px++) {
+          const renderedY = startY + py;
+          const renderedX = startX + px;
+
+          // Check bounds
+          if (
+            renderedY >= 0 &&
+            renderedY < renderedHeight &&
+            renderedX >= 0 &&
+            renderedX < renderedWidth
+          ) {
+            const pRendered = rendered[renderedY]?.[renderedX] ?? false;
+            const pPattern = pattern[py]?.[px] ?? false;
+
+            if (pRendered === pPattern) {
+              matches++;
+            }
+            total++;
+          }
+        }
+      }
+
+      const matchRatio = total > 0 ? matches / total : 0;
+      if (matchRatio > bestMatchRatio) {
+        bestMatchRatio = matchRatio;
+        bestMatchPosition = { x: startX, y: startY };
+      }
+    }
+  }
+
+  return {
+    isMatch: bestMatchRatio >= matchThreshold,
+    matchRatio: bestMatchRatio,
+    matchPosition: bestMatchPosition,
+  };
+}
+
+/**
  * Unload tofu font and clean up resources
  */
 export function unloadTofuFont(): void {
@@ -277,7 +442,7 @@ export function unloadTofuFont(): void {
  * Used to detect if a rendered character matches system fallback
  *
  * NOTE: This is a legacy function kept for compatibility.
- * New code should use comparePixelRegions() for more robust comparison.
+ * New code uses scanForTofuPattern() for robust pattern-based comparison.
  */
 export function pixelsMatch(
   pixels1: boolean[][],
@@ -305,7 +470,8 @@ export function pixelsMatch(
 
 /**
  * Check if a rendered character matches system fallback signature
- * @param pixels - Rendered character pixels
+ * Uses pattern scanning to detect tofu in user's font render
+ * @param pixels - Rendered character pixels from user font
  * @param fontSize - Font size used for rendering
  * @returns True if character appears to use system fallback (missing from font)
  */
@@ -318,10 +484,11 @@ export function isTofuCharacter(pixels: PixelData, fontSize: number): boolean {
 
   // Convert readonly PixelData to mutable boolean[][] for internal processing
   const mutablePixels = pixels.map((row) => [...row]);
-  const mutableSigPixels = signature.pixels.map((row) => [...row]);
 
-  // Check if pixels match system fallback signature
-  return comparePixelRegions(mutablePixels, mutableSigPixels);
+  // Use pattern scanning to detect tofu
+  // Scan the 4x4 tofu pattern across the rendered canvas
+  const result = scanForTofuPattern(mutablePixels, signature.pixels);
+  return result.isMatch;
 }
 
 /**
@@ -595,28 +762,24 @@ function comparePixelRegions(
 
 /**
  * Render a single character using user font with Adobe NotDef fallback
+ * Now uses padded canvas rendering for robust tofu detection
  * @param char - Character to render
  * @param fontFamily - Primary font family name
  * @param fontSize - Font size in pixels (12 or 16)
- * @returns Rendered pixel data
+ * @returns Rendered pixel data in padded canvas
  */
 export async function renderCharacterWithTofu(
   char: string,
   fontFamily: string,
   fontSize: 12 | 16,
 ): Promise<boolean[][]> {
-  // Use scaled rendering for pixel-perfect, consistent results
-  // Scaled rendering eliminates anti-aliasing variations that cause unstable detection
+  // Build font stack with tofu fallback
   const fontStack = tofuState.loaded
     ? buildFontStackString(fontFamily, TOFU_FONT_FAMILY)
     : buildFontStackString(fontFamily);
 
-  return await renderGlyphToPixels(char, {
-    fontFamily: fontStack,
-    fontSize: fontSize,
-    brightnessThreshold: 128, // Standard threshold for binary output
-    useScaling: true, // Use scaled rendering for stability
-  });
+  // Render in padded canvas using the same approach as signature
+  return await renderInPaddedCanvas(char, fontStack, fontSize as FontSize);
 }
 
 /**
@@ -687,22 +850,41 @@ export async function shouldSkipCharacter(
       );
     }
 
-    // Render character (will use Adobe NotDef if missing)
+    // Render character in padded canvas (will use Adobe NotDef if missing)
     const pixels = await renderCharacterWithTofu(char, fontFamily, fontSize);
 
-    // Check if render matches Adobe NotDef's .notdef glyph
-    const isTofu = comparePixelRegions(
-      pixels,
-      signature.pixels,
-      codePoint,
-      char,
-      fontSize,
-    );
+    // Use pattern scanning to detect if tofu
+    // This handles font metric variations by scanning for the pattern
+    const result = scanForTofuPattern(pixels, signature.pixels);
+    const isTofu = result.isMatch;
+
+    // Collect debug data if debug mode is enabled
+    if (debugModeEnabled) {
+      const bbox1 = findBoundingBox(pixels);
+      const bbox2 = findBoundingBox(signature.pixels);
+
+      console.log(
+        `[Tofu] Collecting debug data for 0x${codePoint.toString(16).padStart(4, "0")}${isTest ? " [TEST]" : ""}: isMatch=${isTofu}, matchRatio=${(result.matchRatio * 100).toFixed(1)}%, collection size now: ${debugDataCollection.length + 1}`,
+      );
+
+      // Store the rendered pixels (padded canvas) and signature pattern (4x4)
+      debugDataCollection.push({
+        codePoint,
+        char,
+        fontSize,
+        renderedPixels: pixels.map((row) => [...row]),
+        tofuPixels: signature.pixels.map((row) => [...row]),
+        match: isTofu,
+        matchPercentage: result.matchRatio,
+        boundingBox1: { ...bbox1 },
+        boundingBox2: { ...bbox2 },
+      });
+    }
 
     // Log test characters and control characters for debugging
     if (isTest) {
       console.log(
-        `[tofu] TEST CHAR 0x${codePoint.toString(16).padStart(4, "0")}: isTofu=${isTofu}, shouldSkip=true`,
+        `[tofu] TEST CHAR 0x${codePoint.toString(16).padStart(4, "0")}: isTofu=${isTofu}, matchRatio=${(result.matchRatio * 100).toFixed(1)}%, shouldSkip=true`,
       );
     } else if (codePoint < 0x20) {
       console.log(
