@@ -1721,13 +1721,11 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           fontFamily,
           fontSize = 12,
           codePoints = [],
-          tofuSignature = null
         } = e.data as WorkerRequest & {
           fontData?: ArrayBuffer;
           fontFamily?: string;
           fontSize?: 12 | 16;
           codePoints?: number[];
-          tofuSignature?: number[][] | null;
         };
 
         if (!fontData || !fontFamily || codePoints.length === 0) {
@@ -1749,36 +1747,26 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           self.fonts.add(userFontFace);
           console.log("[analyzeFonts] User font loaded:", fontFamily);
 
-          // Use passed tofu signature from main thread (Firefox workaround)
-          // If not provided, try to load tofu font for detection
-          let tofuSigForWorker: boolean[][] | null = null;
+          // ALWAYS load tofu font for fallback rendering (needed when user font has missing glyphs)
+          // Fetch tofu font from server
           // @ts-ignore - fonts API exists in workers
           let tofuFontFace: FontFace | null = null;
 
-          if (tofuSignature) {
-            tofuSigForWorker = tofuSignature.map((row) => row.map((p: unknown) => p === 1));
-            console.log("[analyzeFonts] Using passed tofu signature, pixel count:", tofuSigForWorker.flat().filter(Boolean).length);
-          } else {
-            // Fallback: try to load tofu font (may not work in Firefox)
-            console.log("[analyzeFonts] No tofu signature passed, fetching...");
-            const tofuResponse = await fetch("/AND-Regular.ttf");
-            if (!tofuResponse.ok) {
-              throw new Error(`Failed to fetch tofu font: ${tofuResponse.statusText}`);
-            }
-            const tofuBuffer = await tofuResponse.arrayBuffer();
-            tofuFontFace = new FontFace("Adobe-NotDef", tofuBuffer);
-            await tofuFontFace.load();
-            // @ts-ignore - fonts API exists in workers
-            self.fonts.add(tofuFontFace);
-
-            // IMPORTANT: Wait for fonts to be fully ready
-            // @ts-ignore - fonts API exists in workers
-            await self.fonts.ready;
-
-            // Generate tofu signature
-            const tofuSigGenerated = await getTofuSignature();
-            tofuSigForWorker = tofuSigGenerated;
+          const tofuResponse = await fetch("/AND-Regular.ttf");
+          if (!tofuResponse.ok) {
+            throw new Error(`Failed to fetch tofu font: ${tofuResponse.statusText}`);
           }
+          const tofuBuffer = await tofuResponse.arrayBuffer();
+          tofuFontFace = new FontFace("Adobe-NotDef", tofuBuffer);
+          await tofuFontFace.load();
+          // @ts-ignore - fonts API exists in workers
+          self.fonts.add(tofuFontFace);
+
+          // IMPORTANT: Wait for ALL fonts to be fully ready before rendering
+          // Without this, Firefox worker may not render fonts properly
+          // @ts-ignore - fonts API exists in workers
+          await self.fonts.ready;
+          console.log("[analyzeFonts] All fonts ready");
 
           // Constants
           const TOFU_SCALE = 4;
@@ -1796,8 +1784,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 
           console.log("[analyzeFonts] Canvas created");
 
-          // Helper: Get tofu signature for this font size (fallback only)
+          // Helper: Get tofu signature for this font size
           async function getTofuSignature(): Promise<boolean[][]> {
+            console.log("[analyzeFonts] Generating tofu signature for size:", fontSize);
             ctx!.fillStyle = "#ffffff";
             ctx!.fillRect(0, 0, canvas.width, canvas.height);
             ctx!.font = `${fontSize * TOFU_SCALE}px Adobe-NotDef`;
@@ -1805,6 +1794,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
             ctx!.textRendering = "geometricPrecision";
+            ctx!.fillStyle = "#000000"; // Ensure black text
             ctx!.fillText("\uFFFD", TOFU_PADDING, TOFU_PADDING);
 
             const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
@@ -1812,15 +1802,22 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 
             const patternSize = fontSize * TOFU_SCALE;
             const pattern: boolean[][] = [];
+            let blackPixels = 0;
             for (let y = TOFU_PADDING; y < TOFU_PADDING + patternSize; y++) {
               const row: boolean[] = [];
               for (let x = TOFU_PADDING; x < TOFU_PADDING + patternSize; x++) {
-                row.push(pixels[y]?.[x] ?? false);
+                const p = pixels[y]?.[x] ?? false;
+                if (p) blackPixels++;
+                row.push(p);
               }
               pattern.push(row);
             }
+            console.log("[analyzeFonts] Tofu signature generated, black pixels:", blackPixels);
             return pattern;
           }
+
+          // Generate tofu signature internally
+          const tofuSigForWorker = await getTofuSignature();
 
           // Helper: Analyze a single character and return TofuDebugData-compatible format
           async function analyzeCharacter(char: string, codePoint: number): Promise<{
@@ -1844,13 +1841,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
             ctx!.textRendering = "geometricPrecision";
+            ctx!.fillStyle = "#000000"; // Ensure black text
             ctx!.fillText(char, TOFU_PADDING, TOFU_PADDING);
 
             const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
             const pixels = imageDataToPixels(imageData, 128);
 
-            // Get tofu signature (from passed data or fallback)
-            const tofuPattern = tofuSigForWorker || await getTofuSignature();
+            // Get tofu signature
+            const tofuPattern = tofuSigForWorker;
 
             // Pattern matching - find best match position and ratio
             const patternSize = fontSize * TOFU_SCALE;
@@ -2116,6 +2114,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
             ctx!.textRendering = "geometricPrecision";
+            ctx!.fillStyle = "#000000"; // Ensure black text
             ctx!.fillText("\uFFFD", TOFU_PADDING, TOFU_PADDING);
 
             const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
@@ -2175,6 +2174,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
             ctx!.textRendering = "geometricPrecision";
+            ctx!.fillStyle = "#000000"; // Ensure black text
             ctx!.fillText(char, TOFU_PADDING, TOFU_PADDING);
 
             const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
