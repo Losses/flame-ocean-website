@@ -32,3 +32,5 @@ Read me.txt
 references/firmwares/
 references/extracted_bitmaps_smart/
 .chief/
+
+*.pyc

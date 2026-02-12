@@ -26,6 +26,8 @@ Font Format:
 
 import struct
 import os
+import sys
+import json
 import argparse
 
 
@@ -890,6 +892,103 @@ class FontExtractor:
         print(f"  {font_type} {range_prefix}: {count} extracted")
         return count
 
+    def extract_font_range_json(self, start, end, font_type):
+        """Extract fonts for a Unicode range and return as JSON (stdout-compatible).
+
+        Args:
+            start: Start of Unicode range
+            end: End of Unicode range
+            font_type: Either "SMALL" or "LARGE"
+
+        Returns:
+            Dictionary with glyph data suitable for JSON output
+        """
+        stride = self.SMALL_STRIDE if font_type == "SMALL" else self.LARGE_STRIDE
+        addr_func = self.unicode_to_small_addr if font_type == "SMALL" else self.unicode_to_large_addr
+
+        glyphs = []
+        errors = []
+        extracted_count = 0
+
+        for uni in range(start, end + 1):
+            addr = addr_func(uni)
+
+            if addr < 0 or addr + stride > len(self.firmware):
+                errors.append({
+                    "code_point": uni,
+                    "error": "address_out_of_bounds",
+                    "address": hex(addr)
+                })
+                continue
+
+            chunk = self.firmware[addr:addr + stride]
+
+            if all(b == 0 for b in chunk) or all(b == 0xFF for b in chunk):
+                # Empty glyph - include as valid but with empty pixels
+                glyphs.append({
+                    "code_point": uni,
+                    "character": chr(uni) if uni < 0x110000 else "",
+                    "address": hex(addr),
+                    "header": hex(chunk[-1]) if len(chunk) > 0 else "0x00",
+                    "pixels": [],
+                    "empty": True
+                })
+                continue
+
+            try:
+                lookup_val = self.get_lookup(uni)
+                pixels = self.decode_v8(chunk, lookup_val)
+
+                if not pixels or len(pixels) != 16:
+                    errors.append({
+                        "code_point": uni,
+                        "error": "invalid_pixel_data",
+                        "reason": "wrong_row_count"
+                    })
+                    continue
+
+                if not self.is_valid_font_data(pixels, font_type):
+                    errors.append({
+                        "code_point": uni,
+                        "error": "invalid_font_data",
+                        "reason": "fill_ratio_out_of_range"
+                    })
+                    continue
+
+                # For SMALL fonts, only return top-left SMALL_FONT_SIZE x SMALL_FONT_SIZE pixels
+                small_font_size = 12  # SMALL_FONT_SIZE constant
+                if font_type == "SMALL":
+                    pixels = [row[:small_font_size] for row in pixels[:small_font_size]]
+
+                header = lookup_val & 0xFF
+
+                glyphs.append({
+                    "code_point": uni,
+                    "character": chr(uni) if uni < 0x110000 else "",
+                    "address": hex(addr),
+                    "header": hex(header),
+                    "pixels": [[1 if pixel else 0 for pixel in row] for row in pixels],
+                    "empty": False
+                })
+                extracted_count += 1
+
+            except Exception as e:
+                errors.append({
+                    "code_point": uni,
+                    "error": "extraction_failed",
+                    "reason": str(e)
+                })
+
+        return {
+            "font_type": font_type,
+            "range_start": hex(start),
+            "range_end": hex(end),
+            "total_glyphs": end - start + 1,
+            "extracted_count": extracted_count,
+            "glyphs": glyphs,
+            "errors": errors
+        }
+
     def extract_all(self, output_dir):
         """Extract all fonts for configured Unicode ranges.
 
@@ -944,8 +1043,52 @@ def main():
     parser.add_argument('--verify-only', action='store_true')
     parser.add_argument('--range', action='append', dest='ranges',
                        help='Unicode range in format "name:start:end" (can be used multiple times)')
+    parser.add_argument('--bun-mode', action='store_true',
+                       help='Output JSON to stdout for bun integration')
+    parser.add_argument('--size', choices=['SMALL', 'LARGE'], dest='font_size',
+                       help='Font size for bun mode (SMALL or LARGE)')
+    parser.add_argument('--start', dest='range_start',
+                       help='Start of Unicode range for bun mode (hex, e.g., 0x4E00)')
+    parser.add_argument('--end', dest='range_end',
+                       help='End of Unicode range for bun mode (hex, e.g., 0x9FFF)')
 
     args = parser.parse_args()
+
+    # Bun mode: requires font_size, range_start, and range_end
+    if args.bun_mode:
+        if not args.font_size or not args.range_start or not args.range_end:
+            print("Error: --bun-mode requires --size, --start, and --end arguments", file=sys.stderr)
+            sys.exit(1)
+
+        if not os.path.isfile(args.firmware):
+            print(json.dumps({"error": "firmware_not_found", "path": args.firmware}))
+            sys.exit(1)
+
+        try:
+            start = int(args.range_start, 16)
+            end = int(args.range_end, 16)
+        except ValueError as e:
+            print(json.dumps({"error": "invalid_range", "message": str(e)}))
+            sys.exit(1)
+
+        try:
+            analyzer = FirmwareAnalyzer(args.firmware)
+            addresses = analyzer.detect_addresses()
+
+            if addresses is None:
+                print(json.dumps({"error": "address_detection_failed"}))
+                sys.exit(1)
+
+            extractor = FontExtractor(analyzer.firmware, addresses)
+            result = extractor.extract_font_range_json(start, end, args.font_size)
+
+            # Output JSON to stdout
+            print(json.dumps(result, indent=2))
+            sys.exit(0)
+
+        except Exception as e:
+            print(json.dumps({"error": "extraction_failed", "message": str(e)}))
+            sys.exit(1)
 
     unicode_ranges = None
     if args.ranges:
@@ -964,7 +1107,6 @@ def main():
         print(f"Error: Firmware file not found: {args.firmware}")
         sys.exit(1)
 
-    import sys
     print("=" * 80)
     print("Universal Font Extractor - Heuristic Offset Table Search")
     print("=" * 80)
