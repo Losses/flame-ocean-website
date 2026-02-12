@@ -6,6 +6,7 @@
  */
 
 import type { DetectedFontType, FontDebugImage } from './font-detection.js';
+import { getFontsContainer, getFontsReady } from './worker-utils.js';
 
 /**
  * Result of loading and validating a font file
@@ -83,7 +84,7 @@ export function isFontFile(file: File): boolean {
  * Load and validate a font file
  *
  * Reads the font file as ArrayBuffer, creates a FontFace object, adds it to
- * document.fonts, and performs initial validation.
+ * the fonts container, and performs initial validation.
  *
  * @param file - The font file to load
  * @param fontName - Optional custom font name (defaults to file name without extension)
@@ -158,12 +159,12 @@ export async function loadAndValidateFontFile(
 		);
 	}
 
-	// Add to document.fonts for rendering
+	// Add to fonts container for rendering (works in both worker and main thread)
 	try {
-		document.fonts.add(fontFace);
+		getFontsContainer().add(fontFace);
 		// Wait for browser to finish processing font addition
 		// Without this, canvas rendering may not recognize the new font immediately
-		await document.fonts.ready;
+		await getFontsReady();
 	} catch (error) {
 		throw new FontLoadingError(
 			`Failed to register font with document.`,
@@ -182,7 +183,7 @@ export async function loadAndValidateFontFile(
 	} catch (error) {
 		// Clean up font on detection failure
 		try {
-			document.fonts.delete(fontFace);
+			getFontsContainer().delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}
@@ -197,7 +198,7 @@ export async function loadAndValidateFontFile(
 	if (!detectionResult.isPixelPerfect) {
 		// Clean up font if validation fails
 		try {
-			document.fonts.delete(fontFace);
+			getFontsContainer().delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}
@@ -221,7 +222,7 @@ export async function loadAndValidateFontFile(
 }
 
 /**
- * Unload a font file from document.fonts
+ * Unload a font file from the fonts container
  *
  * Call this when the font is no longer needed to free up resources.
  *
@@ -239,7 +240,7 @@ export async function loadAndValidateFontFile(
  */
 export function unloadFontFile(fontFace: FontFace, fontFamily: string): void {
 	try {
-		document.fonts.delete(fontFace);
+		getFontsContainer().delete(fontFace);
 	} catch (error) {
 		// Log but don't throw - cleanup failures are non-critical
 		console.warn(`Failed to unload font ${fontFamily}:`, error);
@@ -289,12 +290,12 @@ export async function loadAndValidateFontFromArrayBuffer(
 		);
 	}
 
-	// Add to document.fonts for rendering
+	// Add to fonts container for rendering (works in both worker and main thread)
 	try {
-		document.fonts.add(fontFace);
+		getFontsContainer().add(fontFace);
 		// Wait for browser to finish processing font addition
 		// Without this, canvas rendering may not recognize the new font immediately
-		await document.fonts.ready;
+		await getFontsReady();
 	} catch (error) {
 		throw new FontLoadingError(
 			`Failed to register font with document.`,
@@ -313,7 +314,7 @@ export async function loadAndValidateFontFromArrayBuffer(
 	} catch (error) {
 		// Clean up font on detection failure
 		try {
-			document.fonts.delete(fontFace);
+			getFontsContainer().delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}
@@ -328,7 +329,7 @@ export async function loadAndValidateFontFromArrayBuffer(
 	if (!detectionResult.isPixelPerfect) {
 		// Clean up font if validation fails
 		try {
-			document.fonts.delete(fontFace);
+			getFontsContainer().delete(fontFace);
 		} catch {
 			// Ignore cleanup errors
 		}

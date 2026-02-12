@@ -8,6 +8,8 @@
  * 3. Binarize ImageData to boolean pixel grid
  */
 
+import { createOffscreenCanvas, get2dContext } from './worker-utils.js';
+
 /**
  * Font size in pixels for firmware fonts
  */
@@ -189,14 +191,8 @@ export async function renderGlyphToPixels(
 		const scaleFactor = opts.scaleFactor || 10;
 
 		// Create offscreen canvas at scaled size
-		const scaledCanvas = document.createElement('canvas');
-		scaledCanvas.width = width * scaleFactor;
-		scaledCanvas.height = height * scaleFactor;
-
-		const scaledCtx = scaledCanvas.getContext('2d', { willReadFrequently: true });
-		if (!scaledCtx) {
-			throw new Error('Failed to get scaled canvas context');
-		}
+		const scaledCanvas = createOffscreenCanvas(width * scaleFactor, height * scaleFactor);
+		const scaledCtx = get2dContext(scaledCanvas);
 
 		// Clear with background color
 		scaledCtx.fillStyle = opts.bgColor;
@@ -218,14 +214,8 @@ export async function renderGlyphToPixels(
 		scaledCtx.fillText(char, 0, 0);
 
 		// Create final canvas at target size
-		const canvas = document.createElement('canvas');
-		canvas.width = width;
-		canvas.height = height;
-
-		const ctx = canvas.getContext('2d', { willReadFrequently: true });
-		if (!ctx) {
-			throw new Error('Failed to get canvas context');
-		}
+		const canvas = createOffscreenCanvas(width, height);
+		const ctx = get2dContext(canvas);
 
 		// Clear with background color
 		ctx.fillStyle = opts.bgColor;
@@ -233,7 +223,12 @@ export async function renderGlyphToPixels(
 
 		// Scale down with NO smoothing to get pixel-perfect result
 		ctx.imageSmoothingEnabled = false;
-		ctx.drawImage(scaledCanvas, 0, 0, width, height);
+		// Use transferToImageBitmap for OffscreenCanvas
+		if ('transferToImageBitmap' in scaledCanvas) {
+			ctx.drawImage((scaledCanvas as unknown as { transferToImageBitmap(): ImageBitmap }).transferToImageBitmap(), 0, 0, width, height);
+		} else {
+			ctx.drawImage(scaledCanvas as unknown as CanvasImageSource, 0, 0, width, height);
+		}
 
 		// Extract pixel data
 		const imageData = ctx.getImageData(0, 0, width, height);
@@ -249,14 +244,8 @@ export async function renderGlyphToPixels(
 	} else {
 		// DIRECT RENDERING: Render directly at target size
 		// Faster but may have minor anti-aliasing artifacts
-		const canvas = document.createElement('canvas');
-		canvas.width = width;
-		canvas.height = height;
-
-		const ctx = canvas.getContext('2d', { willReadFrequently: true });
-		if (!ctx) {
-			throw new Error('Failed to get canvas context');
-		}
+		const canvas = createOffscreenCanvas(width, height);
+		const ctx = get2dContext(canvas);
 
 		// Clear with background color
 		ctx.fillStyle = opts.bgColor;
@@ -413,15 +402,9 @@ export async function renderWithTofuPipeline(
 	const padding = TOFU_PADDING;
 	const canvasSize = fontSize * scale + padding * 2;
 
-	// Create offscreen canvas at padded size
-	const canvas = document.createElement('canvas');
-	canvas.width = canvasSize;
-	canvas.height = canvasSize;
-
-	const ctx = canvas.getContext('2d', { willReadFrequently: true });
-	if (!ctx) {
-		throw new Error('Failed to get canvas context');
-	}
+	// Create offscreen canvas at padded size - works in both worker and main thread
+	const canvas = createOffscreenCanvas(canvasSize, canvasSize);
+	const ctx = get2dContext(canvas);
 
 	// Clear with background
 	ctx.fillStyle = options.bgColor ?? '#ffffff';
