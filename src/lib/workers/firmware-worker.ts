@@ -1835,8 +1835,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             ctx!.fillStyle = "#ffffff";
             ctx!.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Render user font
-            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}`;
+            // Render user font with tofu fallback
+            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}, Adobe-NotDef`;
             ctx!.textBaseline = "top";
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
@@ -2168,8 +2168,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             ctx!.fillStyle = "#ffffff";
             ctx!.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Render user font
-            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}`;
+            // Render user font with tofu fallback
+            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}, Adobe-NotDef`;
             ctx!.textBaseline = "top";
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
