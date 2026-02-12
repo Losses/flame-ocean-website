@@ -509,7 +509,7 @@ export class FontExtractor {
 
     // Encode pixels to font data
     try {
-      const data = encodeV8(pixelsToEncode as PixelData, lookupVal);
+      const data = encodeV8(pixelsToEncode as PixelData, lookupVal, fontType);
       return this.replaceFont(unicode, fontType, data);
     } catch {
       return false;

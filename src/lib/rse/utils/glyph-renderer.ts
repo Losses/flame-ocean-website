@@ -451,30 +451,23 @@ export async function renderWithTofuPipeline(
 		return pixels;
 	}
 
-	// Extract the center pattern (same as tofu signature extraction)
+	// Extract and downsample in one step for firmware storage
+	// The glyph is rendered at canvas offset (padding, padding), so we:
+	// 1. Sample from canvas coordinate (padding + y, padding + x) for each glyph pixel
+	// 2. Downsample by taking every scale-th pixel
 	const patternSize = fontSize * scale;
-	const pattern: boolean[][] = [];
+	const extracted: boolean[][] = [];
 
-	for (let y = padding; y < padding + patternSize; y++) {
+	for (let y = 0; y < patternSize; y += scale) {
 		const row: boolean[] = [];
-		for (let x = padding; x < padding + patternSize; x++) {
-			row.push(pixels[y][x] ?? false);
+		for (let x = 0; x < patternSize; x += scale) {
+			// Extract from canvas coordinate (padding + y, padding + x)
+			// This correctly samples the rendered glyph at the correct offset
+			// while downsampling in a single pass
+			row.push(pixels[padding + y]?.[padding + x] ?? false);
 		}
-		pattern.push(row);
+		extracted.push(row);
 	}
 
-	// Downsample to target font size (e.g., 12x12 or 16x16)
-	// This uses simple nearest-neighbor by taking every nth pixel
-	const downsampled: boolean[][] = [];
-	const downsampleFactor = scale; // 4x down to 1x
-
-	for (let y = 0; y < patternSize; y += downsampleFactor) {
-		const row: boolean[] = [];
-		for (let x = 0; x < patternSize; x += downsampleFactor) {
-			row.push(pattern[y][x]);
-		}
-		downsampled.push(row);
-	}
-
-	return downsampled;
+	return extracted;
 }

@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { FontExtractor } from '../extractors/font-extractor.js';
 import { ResourceExtractor } from '../extractors/resource-extractor.js';
-import { createMonoBmp, parseMonoBmp } from '../utils/bitmap.js';
+import { createMonoBmp, parseMonoBmp, isValidFontData } from '../utils/bitmap.js';
 import { encodeV8, validateFontData, validateBitmapData } from '../utils/font-encoder.js';
 import type { PixelData } from '../types/index.js';
 
@@ -185,8 +185,8 @@ describe('FontExtractor Overwrite Tests', () => {
 		it('should read and decode font data to pixels', () => {
 			const pixels = extractor.readFontAsPixels(0x0041, 'SMALL');
 			expect(pixels).not.toBeNull();
-			expect(pixels?.length).toBe(16);
-			expect(pixels?.[0].length).toBe(16);
+			expect(pixels?.length).toBe(12); // SMALL fonts are 12x12
+			expect(pixels?.[0].length).toBe(12);
 		});
 
 		it('should return null for invalid character', () => {
@@ -235,8 +235,8 @@ describe('FontExtractor Overwrite Tests', () => {
 			const originalPixels = extractor.readFontAsPixels(0x0041, 'SMALL');
 			expect(originalPixels).not.toBeNull();
 
-			// Convert to BMP
-			const bmpData = createMonoBmp(originalPixels!, 16, 16);
+			// Convert to BMP (SMALL fonts are 12x12)
+			const bmpData = createMonoBmp(originalPixels!, 12, 12);
 			expect(bmpData).not.toBeNull();
 
 			// Write from BMP
@@ -309,9 +309,9 @@ describe('FontExtractor Overwrite Tests', () => {
 			let pixels = extractor.readFontAsPixels(0x0041, 'SMALL');
 			expect(pixels).not.toBeNull();
 
-			// First modification: set to checkerboard pattern
-			let modifiedPixels: PixelData = Array.from({ length: 16 }, (_, y) =>
-				Array.from({ length: 16 }, (_, x) => (x + y) % 2 === 0)
+			// First modification: set to checkerboard pattern (SMALL fonts are 12x12)
+			let modifiedPixels: PixelData = Array.from({ length: 12 }, (_, y) =>
+				Array.from({ length: 12 }, (_, x) => (x + y) % 2 === 0)
 			);
 			let result = extractor.replaceFontFromPixels(0x0041, 'SMALL', modifiedPixels);
 			expect(result).toBe(true);
@@ -319,8 +319,8 @@ describe('FontExtractor Overwrite Tests', () => {
 			pixels = extractor.readFontAsPixels(0x0041, 'SMALL');
 			expect(pixels).toEqual(modifiedPixels);
 
-			// Second modification: set to X pattern
-			modifiedPixels = createSimpleFontPattern();
+			// Second modification: set to X pattern (12x12 for SMALL)
+			modifiedPixels = createSimpleFontPattern().slice(0, 12).map(row => row.slice(0, 12));
 			result = extractor.replaceFontFromPixels(0x0041, 'SMALL', modifiedPixels);
 			expect(result).toBe(true);
 
@@ -351,9 +351,9 @@ describe('FontExtractor Overwrite Tests', () => {
 		it('should reject invalid pixel dimensions', () => {
 			const invalidPixels: PixelData = [];
 			for (let y = 0; y < 10; y++) {
-				// Wrong: 10 rows instead of 16
+				// Wrong: 10 rows instead of 12 for SMALL fonts
 				const row: boolean[] = [];
-				for (let x = 0; x < 16; x++) {
+				for (let x = 0; x < 12; x++) {
 					row.push(false);
 				}
 				invalidPixels.push(row);
@@ -379,8 +379,9 @@ describe('FontExtractor Overwrite Tests', () => {
 			beforeWrite.set(originalData.slice(fontOffset, fontOffset + 32));
 
 			// Modify font with a clearly different pattern (all false in center, true on edges)
-			const modifiedPixels: PixelData = Array.from({ length: 16 }, (_, y) =>
-				Array.from({ length: 16 }, (_, x) => x < 2 || x > 12 || y < 2 || y > 13)
+			// SMALL fonts are 12x12
+			const modifiedPixels: PixelData = Array.from({ length: 12 }, (_, y) =>
+				Array.from({ length: 12 }, (_, x) => x < 2 || x > 9 || y < 2 || y > 9)
 			);
 
 			const success = extractor.replaceFontFromPixels(0x0041, 'SMALL', modifiedPixels);
@@ -575,8 +576,11 @@ describe('ResourceExtractor Overwrite Tests', () => {
 describe('FontEncoder Tests', () => {
 	describe('encodeV8 round-trip with decodeV8', () => {
 		it('should encode and decode back to same pixels', () => {
-			// Use the pattern from the test firmware
-			const originalPixels = createSimpleFontPattern();
+			// Use the pattern from the test firmware (16x16)
+			const originalPixels16 = createSimpleFontPattern();
+
+			// Slice to 12x12 for SMALL fonts comparison
+			const originalPixels = originalPixels16.slice(0, 12).map(row => row.slice(0, 12));
 
 			// Encode
 			const encoded = encodeV8(originalPixels, 0x00);
@@ -606,18 +610,19 @@ describe('FontEncoder Tests', () => {
 		});
 
 		it('should handle various patterns', () => {
+			// Use 12x12 patterns for SMALL fonts (readFontAsPixels returns 12x12)
 			const patterns: PixelData[] = [
 				// Checkerboard pattern
-				Array.from({ length: 16 }, (_, y) =>
-					Array.from({ length: 16 }, (_, x) => (x + y) % 2 === 0)
+				Array.from({ length: 12 }, (_, y) =>
+					Array.from({ length: 12 }, (_, x) => (x + y) % 2 === 0)
 				),
 				// Vertical stripes
-				Array.from({ length: 16 }, (_, y) =>
-					Array.from({ length: 16 }, (_, x) => x % 3 === 0)
+				Array.from({ length: 12 }, (_, y) =>
+					Array.from({ length: 12 }, (_, x) => x % 3 === 0)
 				),
 				// Horizontal stripes
-				Array.from({ length: 16 }, (_, y) =>
-					Array.from({ length: 16 }, (_, x) => y % 3 === 0)
+				Array.from({ length: 12 }, (_, y) =>
+					Array.from({ length: 12 }, (_, x) => y % 3 === 0)
 				)
 			];
 
@@ -652,8 +657,9 @@ describe('FontEncoder Tests', () => {
 	 * This ensures encodeV8 correctly inverts decodeV8 for all configurations
 	 */
 	describe('encodeV8 with all lookup configurations', () => {
-		const testPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
-			Array.from({ length: 16 }, (_, x) => (x + y) % 2 === 0)
+		// Use 12x12 pattern for SMALL fonts
+		const testPattern: PixelData = Array.from({ length: 12 }, (_, y) =>
+			Array.from({ length: 12 }, (_, x) => (x + y) % 2 === 0)
 		);
 
 		// Test all 8 combinations of swMcuBits, swMcuHwSwap, swMcuByteSwap
@@ -705,9 +711,9 @@ describe('FontEncoder Tests', () => {
 	 */
 	describe('encodeV8 bit-level accuracy', () => {
 		it('should preserve all pixel values in round-trip for known good configurations', () => {
-			// Create a pattern that tests all bit positions
-			const specificPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
-				Array.from({ length: 16 }, (_, x) => {
+			// Create a pattern that tests all bit positions (12x12 for SMALL fonts)
+			const specificPattern: PixelData = Array.from({ length: 12 }, (_, y) =>
+				Array.from({ length: 12 }, (_, x) => {
 					// Each position has a unique pattern (checkerboard-like, ~50% filled)
 					return (x + y) % 2 === 0;
 				})
@@ -738,9 +744,9 @@ describe('FontEncoder Tests', () => {
 			// Verify decode succeeded
 			expect(decodedPixels).not.toBeNull();
 
-			// Every single pixel must match
-			for (let y = 0; y < 16; y++) {
-				for (let x = 0; x < 16; x++) {
+			// Every single pixel must match (12x12 for SMALL fonts)
+			for (let y = 0; y < 12; y++) {
+				for (let x = 0; x < 12; x++) {
 					expect(decodedPixels![y][x]).toBe(specificPattern[y][x]);
 				}
 			}
@@ -871,9 +877,9 @@ describe('Validation Tests', () => {
 				const data = extractor.readFont(unicode, 'SMALL');
 				expect(data).not.toBeNull();
 
-				// Write should work
-				const testPixels: PixelData = Array.from({ length: 16 }, (_, y) =>
-					Array.from({ length: 16 }, (_, x) => (x + y + unicode) % 2 === 0)
+				// Write should work (12x12 for SMALL fonts)
+				const testPixels: PixelData = Array.from({ length: 12 }, (_, y) =>
+					Array.from({ length: 12 }, (_, x) => (x + y + unicode) % 2 === 0)
 				);
 
 				const result = extractor.replaceFontFromPixels(unicode, 'SMALL', testPixels);
@@ -891,9 +897,9 @@ describe('Validation Tests', () => {
 			// Set up lookup table
 			firmware[0x080000] = 0x00;
 
-			// Create a pattern that's ~50% filled (valid)
-			const validPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
-				Array.from({ length: 16 }, (_, x) => (x + y) % 2 === 0)
+			// Create a pattern that's ~50% filled (valid) - 12x12 for SMALL fonts
+			const validPattern: PixelData = Array.from({ length: 12 }, (_, y) =>
+				Array.from({ length: 12 }, (_, x) => (x + y) % 2 === 0)
 			);
 
 			// Encode and place in firmware
@@ -916,9 +922,9 @@ describe('Validation Tests', () => {
 			expect(pixels).not.toBeNull();
 			expect(pixels).toEqual(validPattern);
 
-			// All-zero pattern should be rejected (validation)
-			const allZero: PixelData = Array.from({ length: 16 }, () =>
-				Array.from({ length: 16 }, () => false)
+			// All-zero pattern should be rejected (validation) - 12x12 for SMALL fonts
+			const allZero: PixelData = Array.from({ length: 12 }, () =>
+				Array.from({ length: 12 }, () => false)
 			);
 
 			// Try to replace with all-zero (should be rejected by validation)
@@ -946,8 +952,9 @@ describe('Validation Tests', () => {
 			// Unicode 0xFFFFF would calculate to: 0x100000 + 0xFFFFF * 32 = huge offset
 			const hugeUnicode = 0xFFFFF;
 
-			const testPixels: PixelData = Array.from({ length: 16 }, (_, y) =>
-				Array.from({ length: 16 }, (_, x) => (x + y) % 2 === 0)
+			// 12x12 for SMALL fonts
+			const testPixels: PixelData = Array.from({ length: 12 }, (_, y) =>
+				Array.from({ length: 12 }, (_, x) => (x + y) % 2 === 0)
 			);
 
 			// Should fail (address out of bounds)
@@ -979,8 +986,9 @@ describe('Validation Tests', () => {
 
 			for (let i = 0; i < unicodes.length; i++) {
 				const unicode = unicodes[i];
-				const pattern: PixelData = Array.from({ length: 16 }, (_, y) =>
-					Array.from({ length: 16 }, (_, x) => ((x + y + i) % 3) === 0)
+				// 12x12 for SMALL fonts
+				const pattern: PixelData = Array.from({ length: 12 }, (_, y) =>
+					Array.from({ length: 12 }, (_, x) => ((x + y + i) % 3) === 0)
 				);
 
 				extractor.replaceFontFromPixels(unicode, 'SMALL', pattern);
@@ -992,13 +1000,111 @@ describe('Validation Tests', () => {
 			// Verify all are still correct after multiple writes
 			for (let i = 0; i < unicodes.length; i++) {
 				const unicode = unicodes[i];
-				const expectedPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
-					Array.from({ length: 16 }, (_, x) => ((x + y + i) % 3) === 0)
+				// 12x12 for SMALL fonts
+				const expectedPattern: PixelData = Array.from({ length: 12 }, (_, y) =>
+					Array.from({ length: 12 }, (_, x) => ((x + y + i) % 3) === 0)
 				);
 
 				const readBack = extractor.readFontAsPixels(unicode, 'SMALL');
 				expect(readBack).toEqual(expectedPattern);
 			}
+		});
+	});
+});
+
+describe('LARGE Font Tests (16x16)', () => {
+	// Helper to create a 16x16 pattern
+	function createLargePattern(
+		generator: (x: number, y: number) => boolean
+	): PixelData {
+		return Array.from({ length: 16 }, (_, y) =>
+			Array.from({ length: 16 }, (_, x) => generator(x, y))
+		);
+	}
+
+	describe('LARGE font write validation', () => {
+		it('should accept valid 16x16 checkerboard pattern', () => {
+			// Create firmware with pre-encoded valid LARGE font data
+			const firmware = new Uint8Array(0x500000);
+
+			// Create a valid pattern that passes isValidFontData for LARGE
+			// Checkerboard has ~50% fill, which is between 0.01 and 0.97
+			const testPattern: PixelData = Array.from({ length: 16 }, (_, y) =>
+				Array.from({ length: 16 }, (_, x) => (x + y) % 2 === 0)
+			);
+
+			// Verify the pattern passes validation
+			expect(isValidFontData(testPattern, 'LARGE')).toBe(true);
+
+			// Create extractor and write directly
+			const extractor = new FontExtractor(firmware, {
+				SMALL_BASE: 0x100000,
+				LARGE_BASE: 0x200000,
+				LOOKUP_TABLE: 0x080000,
+				confidence: {
+					smallFontValid: 0,
+					largeFontValid: 1,
+					movw0042Count: 0
+				}
+			});
+
+			// Set lookup value at LOOKUP_TABLE + (unicode >> 3)
+			const unicode = 0x4e00;
+			const lookupAddr = 0x080000 + (unicode >> 3);
+			firmware[lookupAddr] = 0x00;
+
+			// Write using the write function directly
+			const writeResult = extractor.replaceFontFromPixels(unicode, 'LARGE', testPattern);
+			expect(writeResult).toBe(true);
+
+			// Read back using the read function
+			const readBack = extractor.readFontAsPixels(unicode, 'LARGE');
+			expect(readBack).not.toBeNull();
+			expect(readBack!.length).toBe(16);
+			expect(readBack).toEqual(testPattern);
+		});
+
+		it('should reject wrong size data for LARGE fonts', () => {
+			const firmware = new Uint8Array(0x500000);
+			const extractor = new FontExtractor(firmware, {
+				SMALL_BASE: 0x100000,
+				LARGE_BASE: 0x200000,
+				LOOKUP_TABLE: 0x080000,
+				confidence: {
+					smallFontValid: 0,
+					largeFontValid: 1,
+					movw0042Count: 0
+				}
+			});
+
+			// Wrong: 12x12 for LARGE (should be 16x16)
+			const wrongPixels = Array.from({ length: 12 }, (_, y) =>
+				Array.from({ length: 12 }, () => true)
+			);
+
+			const result = extractor.replaceFontFromPixels(0x4e00, 'LARGE', wrongPixels);
+			expect(result).toBe(false);
+		});
+
+		it('should reject all-zero pixel data for LARGE fonts', () => {
+			const firmware = new Uint8Array(0x500000);
+			const extractor = new FontExtractor(firmware, {
+				SMALL_BASE: 0x100000,
+				LARGE_BASE: 0x200000,
+				LOOKUP_TABLE: 0x080000,
+				confidence: {
+					smallFontValid: 0,
+					largeFontValid: 1,
+					movw0042Count: 0
+				}
+			});
+
+			// All-zero pattern should be rejected (ratio 0 < 0.01)
+			const allZero: PixelData = Array.from({ length: 16 }, () =>
+				Array.from({ length: 16 }, () => false)
+			);
+			const result = extractor.replaceFontFromPixels(0x4e00, 'LARGE', allZero);
+			expect(result).toBe(false);
 		});
 	});
 });

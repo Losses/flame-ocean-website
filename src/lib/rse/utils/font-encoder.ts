@@ -35,10 +35,15 @@ export function parseLookupConfig(lookupVal: number): FontEncodingConfig {
  * Encode pixel data to font chunk using v8 algorithm (inverse of decodeV8)
  * @param pixels - 2D pixel array (12 or 16 rows, each with 12 or 16 bits)
  * @param lookupVal - Lookup table value for encoding configuration
- * @returns Encoded font data chunk (24 bytes for 12x12 SMALL, 32 bytes for 16x16 SMALL, 33 bytes for LARGE)
+ * @param fontType - Font type to determine output size ("SMALL" or "LARGE")
+ * @returns Encoded font data chunk (32 bytes for SMALL, 33 bytes for LARGE)
  * @throws Error if pixel data is invalid
  */
-export function encodeV8(pixels: PixelData, lookupVal: number): Uint8Array {
+export function encodeV8(
+	pixels: PixelData,
+	lookupVal: number,
+	fontType: "SMALL" | "LARGE" = "SMALL",
+): Uint8Array {
 	// Determine font size from pixel dimensions
 	const height = pixels.length;
 	const width = pixels[0]?.length || 0;
@@ -54,8 +59,10 @@ export function encodeV8(pixels: PixelData, lookupVal: number): Uint8Array {
 		}
 	}
 
-	// Calculate stride based on height (24 bytes for 12x12, 32 bytes for 16x16)
-	const stride = height === 12 ? 24 : 32;
+	// Calculate stride based on font type
+	// SMALL: 32 bytes (16 rows × 2 bytes)
+	// LARGE: 33 bytes (16 rows × 2 bytes + 1 padding byte)
+	const stride = fontType === "SMALL" ? 32 : 33;
 
 	const config = parseLookupConfig(lookupVal);
 	const { swMcuBits, swMcuHwSwap, swMcuByteSwap } = config;

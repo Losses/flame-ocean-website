@@ -16,7 +16,7 @@ import { type PixelData } from "../rse/types";
 import { validateBitmapData, encodeV8 } from "../rse/utils/font-encoder";
 import { buildBitmapListFromMetadata } from "../rse/utils/metadata";
 import { convertToBmp, isValidFontData } from "../rse/utils/bitmap";
-import { imageDataToPixels } from "../rse/utils/glyph-renderer";
+import { renderWithTofuPipeline, TOFU_SCALE, TOFU_PADDING, imageDataToPixels } from "../rse/utils/glyph-renderer";
 
 // Constants
 const SMALL_STRIDE = 32;
@@ -2164,23 +2164,15 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
 
           // Helper: Render char and extract pixels
           async function renderAndExtract(char: string, unicode: number): Promise<boolean[][] | null> {
-            // Clear canvas
-            ctx!.fillStyle = "#ffffff";
-            ctx!.fillRect(0, 0, canvas.width, canvas.height);
+            // Use the shared tofu pipeline to render and get full canvas for tofu detection
+            const pixels = await renderWithTofuPipeline(
+              char,
+              `${fontFamily}, "Adobe-NotDef"`,
+              fontSize,
+              { returnType: "full" }
+            );
 
-            // Render user font with tofu fallback
-            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}, "Adobe-NotDef"`;
-            ctx!.textBaseline = "top";
-            ctx!.textAlign = "left";
-            ctx!.imageSmoothingEnabled = false;
-            ctx!.textRendering = "geometricPrecision";
-            ctx!.fillStyle = "#000000"; // Ensure black text
-            ctx!.fillText(char, TOFU_PADDING, TOFU_PADDING);
-
-            const imageData = ctx!.getImageData(0, 0, canvas.width, canvas.height);
-            const pixels = imageDataToPixels(imageData, 128);
-
-            // Tofu detection - scan for signature
+            // Tofu detection - scan for signature using the full canvas
             let bestMatchRatio = 0;
             let bestMatchPos = { x: 0, y: 0 };
             const patternSize = fontSize * TOFU_SCALE;
@@ -2243,46 +2235,21 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
               return null;
             }
 
-            // Extract and downsample
-            const pattern: boolean[][] = [];
-            for (let y = TOFU_PADDING; y < TOFU_PADDING + patternSize; y++) {
-              const row: boolean[] = [];
-              for (let x = TOFU_PADDING; x < TOFU_PADDING + patternSize; x++) {
-                row.push(pixels[y]?.[x] ?? false);
-              }
-              pattern.push(row);
-            }
-
-            // Downsample to target size
-            const downsampled: boolean[][] = [];
+            // Extract glyph pixels from the standard rendering position (TOFU_PADDING)
+            // This is where we render the character, so this is the correct extraction point
+            const extracted: boolean[][] = [];
             for (let y = 0; y < patternSize; y += TOFU_SCALE) {
               const row: boolean[] = [];
               for (let x = 0; x < patternSize; x += TOFU_SCALE) {
-                row.push(pattern[y]?.[x] ?? false);
+                // Extract from the standard rendering position (TOFU_PADDING)
+                const canvasY = TOFU_PADDING + y;
+                const canvasX = TOFU_PADDING + x;
+                row.push(pixels[canvasY]?.[canvasX] ?? false);
               }
-              downsampled.push(row);
+              extracted.push(row);
             }
 
-            return downsampled;
-          }
-
-          // Helper: Convert ImageData to boolean pixels
-          function imageDataToPixels(imageData: globalThis.ImageData, threshold: number): boolean[][] {
-            const data = imageData.data;
-            const pixels: boolean[][] = [];
-            const width = imageData.width;
-            const height = imageData.height;
-
-            for (let y = 0; y < height; y++) {
-              const row: boolean[] = [];
-              for (let x = 0; x < width; x++) {
-                const i = (y * width + x) * 4;
-                const brightness = (data[i] + data[i + 1] + data[i + 2]) / 3;
-                row.push(brightness < threshold);
-              }
-              pixels.push(row);
-            }
-            return pixels;
+            return extracted;
           }
 
           // Process all characters
