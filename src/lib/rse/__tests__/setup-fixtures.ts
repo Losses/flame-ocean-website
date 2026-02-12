@@ -56,8 +56,20 @@ function downloadFile(url: string, destPath: string): void {
 function extractZip(zipPath: string, destDir: string): void {
 	console.log(`  Extracting: ${zipPath}`);
 	try {
-		execSync(`unzip -q -o "${zipPath}" -d "${destDir}"`);
-		console.log(`  Extracted to: ${destDir}`);
+		// Use Python's zipfile module (more reliable than unzip command)
+		execSync(`python3 -c "
+import zipfile
+import sys
+zip_path = '${zipPath}'
+dest_dir = '${destDir}'
+try:
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(dest_dir)
+    print(f'Extracted to {dest_dir}')
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+"`);
 	} catch (error) {
 		throw new Error(`Failed to extract: ${zipPath}\n${error}`);
 	}
@@ -75,23 +87,47 @@ function downloadAllFirmwares() {
 	for (const { version, url } of FIRMWARE_URLS) {
 		const versionDir = join(BASE_DOWNLOAD_DIR, `ECHO MINI ${version}`);
 		const zipPath = join(BASE_DOWNLOAD_DIR, `ECHO MINI ${version}.zip`);
-		const firmwarePath = join(versionDir, 'HIFIEC80.IMG');
 
-		// Skip if firmware already exists
-		if (existsSync(firmwarePath)) {
-			console.log(`✓ ECHO MINI ${version} - already exists`);
-			continue;
-		}
-
-		// Download and extract
-		console.log(`\n→ ECHO MINI ${version}`);
-		ensureDir(versionDir);
-
-		if (!existsSync(zipPath)) {
+		// Skip if zip already exists
+		if (existsSync(zipPath)) {
+			console.log(`✓ ECHO MINI ${version} - zip already downloaded`);
+		} else {
+			// Download
+			console.log(`\n→ ECHO MINI ${version}`);
 			downloadFile(url, zipPath);
 		}
 
+		// Try to find the firmware file inside the zip
+		let firmwareFilename: string;
+		try {
+			firmwareFilename = execSync(
+				`python3 -c "import zipfile; z=zipfile.ZipFile('${zipPath.replace(/'/g, "\\'")}', 'r'); imgs=[n for n in z.namelist() if n.endswith('.IMG')]; print(imgs[0] if imgs else '')"`,
+				{ encoding: 'utf-8' }
+			).trim();
+		} catch {
+			console.log(`  ⚠️  Invalid zip file, skipping`);
+			rmSync(zipPath);
+			continue;
+		}
+
+		if (!firmwareFilename) {
+			console.log(`  ⚠️  No .IMG file found in zip, skipping`);
+			rmSync(zipPath);
+			continue;
+		}
+
+		const firmwarePath = join(versionDir, firmwareFilename);
+
+		// Skip if firmware already extracted
+		if (existsSync(firmwarePath)) {
+			console.log(`✓ ECHO MINI ${version} - already extracted`);
+			// Clean up zip
+			rmSync(zipPath);
+			continue;
+		}
+
 		// Extract
+		ensureDir(versionDir);
 		extractZip(zipPath, versionDir);
 
 		// Clean up zip file
@@ -99,7 +135,8 @@ function downloadAllFirmwares() {
 
 		// Verify
 		if (!existsSync(firmwarePath)) {
-			throw new Error(`Firmware not found after extraction: ${firmwarePath}`);
+			console.log(`  ⚠️  Firmware not found after extraction: ${firmwarePath}`);
+			continue;
 		}
 
 		console.log(`✓ ECHO MINI ${version} - complete`);

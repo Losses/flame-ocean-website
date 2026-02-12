@@ -26,7 +26,7 @@ import type { FirmwareAddresses, PixelData } from '../types/index.js';
 // Configuration
 const BASE_DOWNLOAD_DIR = '/tmp/echo-mini-firmwares';
 const TEST_VERSION = 'ECHO MINI V3.1.0';
-const FIRMWARE_PATH = join(BASE_DOWNLOAD_DIR, TEST_VERSION, 'HIFIEC80.IMG');
+const FIRMWARE_PATH = join(BASE_DOWNLOAD_DIR, TEST_VERSION, TEST_VERSION, 'HIFIEC10.IMG');
 const PYTHON_SCRIPT = join(process.cwd(), 'references', 'extract_font_universal.py');
 
 // Test state
