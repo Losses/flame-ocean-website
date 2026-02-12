@@ -1789,7 +1789,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             console.log("[analyzeFonts] Generating tofu signature for size:", fontSize);
             ctx!.fillStyle = "#ffffff";
             ctx!.fillRect(0, 0, canvas.width, canvas.height);
-            ctx!.font = `${fontSize * TOFU_SCALE}px Adobe-NotDef`;
+            ctx!.font = `${fontSize * TOFU_SCALE}px "Adobe-NotDef"`;
             ctx!.textBaseline = "top";
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
@@ -1836,7 +1836,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             ctx!.fillRect(0, 0, canvas.width, canvas.height);
 
             // Render user font with tofu fallback
-            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}, Adobe-NotDef`;
+            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}, "Adobe-NotDef"`;
             ctx!.textBaseline = "top";
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
@@ -2108,8 +2108,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             // Render tofu char
             ctx!.fillStyle = "#ffffff";
             ctx!.fillRect(0, 0, canvas.width, canvas.height);
-            console.log("[replaceFontsWorker] Rendering tofu char with font:", `${fontSize * TOFU_SCALE}px Adobe-NotDef`);
-            ctx!.font = `${fontSize * TOFU_SCALE}px Adobe-NotDef`;
+            console.log("[replaceFontsWorker] Rendering tofu char with font:", `${fontSize * TOFU_SCALE}px "Adobe-NotDef"`);
+            ctx!.font = `${fontSize * TOFU_SCALE}px "Adobe-NotDef"`;
             ctx!.textBaseline = "top";
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
@@ -2169,7 +2169,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             ctx!.fillRect(0, 0, canvas.width, canvas.height);
 
             // Render user font with tofu fallback
-            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}, Adobe-NotDef`;
+            ctx!.font = `${fontSize * TOFU_SCALE}px ${fontFamily}, "Adobe-NotDef"`;
             ctx!.textBaseline = "top";
             ctx!.textAlign = "left";
             ctx!.imageSmoothingEnabled = false;
