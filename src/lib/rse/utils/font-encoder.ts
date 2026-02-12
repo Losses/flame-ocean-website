@@ -33,34 +33,41 @@ export function parseLookupConfig(lookupVal: number): FontEncodingConfig {
 
 /**
  * Encode pixel data to font chunk using v8 algorithm (inverse of decodeV8)
- * @param pixels - 2D pixel array (16 rows, each with 16 bits)
+ * @param pixels - 2D pixel array (12 or 16 rows, each with 12 or 16 bits)
  * @param lookupVal - Lookup table value for encoding configuration
- * @returns Encoded font data chunk (32 bytes for SMALL, 33 bytes for LARGE)
+ * @returns Encoded font data chunk (24 bytes for 12x12 SMALL, 32 bytes for 16x16 SMALL, 33 bytes for LARGE)
  * @throws Error if pixel data is invalid
  */
 export function encodeV8(pixels: PixelData, lookupVal: number): Uint8Array {
-	// Validate pixel data
-	if (pixels.length !== 16) {
-		throw new Error(`Invalid pixel data: expected 16 rows, got ${pixels.length}`);
+	// Determine font size from pixel dimensions
+	const height = pixels.length;
+	const width = pixels[0]?.length || 0;
+
+	// Validate pixel data - support both 12x12 and 16x16
+	if (height !== 12 && height !== 16) {
+		throw new Error(`Invalid pixel data: expected 12 or 16 rows, got ${height}`);
 	}
 
 	for (let i = 0; i < pixels.length; i++) {
-		if (pixels[i].length !== 16) {
-			throw new Error(`Invalid pixel data: expected 16 pixels per row, got ${pixels[i].length} in row ${i}`);
+		if (pixels[i].length !== width) {
+			throw new Error(`Invalid pixel data: expected ${width} pixels per row, got ${pixels[i].length} in row ${i}`);
 		}
 	}
+
+	// Calculate stride based on height (24 bytes for 12x12, 32 bytes for 16x16)
+	const stride = height === 12 ? 24 : 32;
 
 	const config = parseLookupConfig(lookupVal);
 	const { swMcuBits, swMcuHwSwap, swMcuByteSwap } = config;
 
 	// Encode each row to 2 bytes (16 bits)
-	const chunk = new Uint8Array(32);
+	const chunk = new Uint8Array(stride);
 
-	for (let row = 0; row < 16; row++) {
-		// Convert 16 pixels to a 16-bit value (bits 15-0)
+	for (let row = 0; row < height; row++) {
+		// Convert pixels to a 16-bit value (bits 15-0)
 		// decodeV8 extracts bits 15-0, so we put our data there
 		let pixelValue = 0;
-		for (let bit = 0; bit < 16; bit++) {
+		for (let bit = 0; bit < width; bit++) {
 			if (pixels[row][bit]) {
 				pixelValue |= (1 << (15 - bit));
 			}

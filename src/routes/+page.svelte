@@ -27,13 +27,13 @@
   import { fileIO } from "$lib/rse/utils/file-io";
   import {
     loadTofuFont,
+    isTofuFontLoaded,
     setTofuDebugMode,
     getTofuDebugData,
-    shouldSkipCharacter,
     RARE_TEST_CHARS,
-    isTestChar,
     type TofuDebugData,
   } from "$lib/rse/utils/tofu-font";
+  import { detectTofu } from "$lib/rse/utils/tofu-detector";
   import { imageToRgb565 } from "$lib/rse/utils/bitmap";
   import { UNICODE_RANGES } from "$lib/rse/utils/unicode-ranges";
   import { extractCharacter } from "$lib/rse/utils/font-extraction";
@@ -952,6 +952,9 @@
       statusMessage = `Replacing ${codePointsToProcess.length} font characters...`;
       progress = 10; // Start at 10%
 
+      // Store font result so it can be used for preview
+      previewFontResult = fontResult;
+
       // Step 4: PREVIEW MODE - Run tofu detection first to show debug window
       if (debug) {
         statusMessage = "Running tofu detection preview...";
@@ -962,19 +965,20 @@
           ...RARE_TEST_CHARS,
         ];
 
-        await runTofuDetectionPreview(fontFamily, fontSize, previewCodePoints);
+        await runTofuDetectionPreview(fontFamily, fontSize, previewCodePoints, fontResult.fontData);
 
-        const previewData = getTofuDebugData();
-        if (previewData.length > 0) {
-          tofuDebugData = previewData;
+        console.log("[handleFileLoad] After preview:", {
+          tofuDebugDataLength: tofuDebugData.length,
+          showTofuDebugBefore: showTofuDebug,
+        });
+
+        if (tofuDebugData.length > 0) {
           pendingReplacement = {
             fontFamily,
             fontSize,
             fontType: detectedType,
             codePoints: codePointsToProcess,
           };
-          // Store font result so it can be used/unloaded after confirmation
-          previewFontResult = fontResult;
           showTofuDebug = true;
           isProcessing = false; // Allow user to decide
           return; // Wait for user confirmation
@@ -1022,22 +1026,54 @@
     }
   }
 
-  // Run tofu detection preview (first N characters)
+  // Run tofu detection preview - uses dedicated tofu-detector module
   async function runTofuDetectionPreview(
     fontFamily: string,
     fontSize: 12 | 16,
     codePoints: number[],
+    fontData: ArrayBuffer,
   ): Promise<void> {
-    // Clear any previous debug data
-    setTofuDebugMode(true); // Ensure debug mode is on for collection
+    console.log("[runTofuDetectionPreview] Starting tofu detection preview...", {
+      fontFamily,
+      fontSize,
+      codePointCount: codePoints.length,
+      hasWorker: !!worker,
+      hasFontData: !!fontData,
+    });
 
-    let testCharsProcessed = 0;
-    for (let i = 0; i < codePoints.length; i++) {
-      const codePoint = codePoints[i];
-      const isTest = isTestChar(codePoint);
-      await shouldSkipCharacter(codePoint, fontFamily, fontSize);
-      if (isTest) testCharsProcessed++;
+    // Run tofu detection with detailed debug output
+    const result = await detectTofu(worker!, {
+      fontFamily,
+      fontSize,
+      codePoints,
+      fontData,
+    });
+
+    if (!result.success) {
+      console.error("[runTofuDetectionPreview] Failed:", result.error);
+      tofuDebugData = [];
+      // Throw error to signal caller that tofu detection failed
+      throw new Error(`Tofu detection failed: ${result.error || 'Unknown error'}`);
     }
+
+    console.log("[runTofuDetectionPreview] Detection complete:", {
+      total: result.debugData.length,
+      tofu: result.debugData.filter((d) => d.match).length,
+    });
+
+    // Log the structure of the first item to debug
+    if (result.debugData.length > 0) {
+      const first = result.debugData[0];
+      console.log("[runTofuDetectionPreview] First item keys:", Object.keys(first));
+      console.log("[runTofuDetectionPreview] First item has boundingBox1:", 'boundingBox1' in first);
+      console.log("[runTofuDetectionPreview] First item boundingBox1:", first.boundingBox1);
+    }
+
+    tofuDebugData = result.debugData;
+    console.log("[runTofuDetectionPreview] tofuDebugData assigned:", {
+      length: tofuDebugData.length,
+      firstItemHasBB1: tofuDebugData[0]?.boundingBox1,
+    });
   }
 
   // Perform the font replacement entirely in worker (no data shuttling)
@@ -1109,16 +1145,31 @@
 
     // Send complete font replacement request to worker
     // Worker handles: loading fonts, tofu detection, extraction, encoding, firmware writing
-    worker!.postMessage({
+    // Note: firmwareData must be cloned to avoid proxy cloning issues
+    const messageData = {
       type: "replaceFontsWorker",
       id: "replaceFontsWorker",
       fontData,
       fontFamily,
       fontSize,
       fontType,
-      firmware: firmwareData,
+      firmware: firmwareData ? new Uint8Array(firmwareData) : null,
       codePoints: codePointsToProcess,
+    };
+    console.log("[performFontReplacement] Sending to worker:", {
+      fontFamily,
+      fontSize,
+      fontType,
+      codePointsCount: codePointsToProcess.length,
+      firmwareLength: firmwareData?.length,
+      fontDataSize: fontData?.byteLength,
     });
+    try {
+      worker!.postMessage(messageData);
+    } catch (err) {
+      console.error("[performFontReplacement] postMessage error:", err);
+      throw err;
+    }
 
     await resultPromise;
   }
