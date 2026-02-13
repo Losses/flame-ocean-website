@@ -64,6 +64,7 @@ export class FontExtractor {
 
   /**
    * Convert Unicode value to large font address
+   * LARGE fonts cover CJK range 0x4E00-0x9FFF
    */
   unicodeToLargeAddr(unicodeVal: number): number {
     return this.LARGE_BASE + (unicodeVal - 0x4e00) * this.LARGE_STRIDE;

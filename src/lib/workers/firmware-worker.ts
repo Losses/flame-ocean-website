@@ -24,6 +24,72 @@ const LARGE_STRIDE = 33;
 const INVALID_VALUES = new Set([0x00, 0xff]);
 const FOOTER_SIGNATURES = new Set([0x90, 0x8f, 0x89, 0x8b, 0x8d, 0x8e, 0x8c]);
 
+/**
+ * Result of font address calculation
+ */
+interface FontAddressInfo {
+  /** Firmware address for font data */
+  addr: number;
+  /** Stride size (32 for SMALL, 33 for LARGE) */
+  stride: number;
+  /** Whether the code point is valid for the font type */
+  valid: boolean;
+  /** Reason for invalidity if not valid */
+  invalidReason?: string;
+}
+
+/**
+ * Calculate firmware address for a font glyph
+ * Uses global detected addresses (SMALL_BASE, LARGE_BASE, LOOKUP_TABLE)
+ * Shared helper used by replaceFonts and replaceFontsWorker handlers
+ *
+ * @param unicode - Unicode code point
+ * @param fontType - "SMALL" or "LARGE"
+ * @param SMALL_BASE - Detected SMALL font base address (global)
+ * @param LARGE_BASE - Detected LARGE font base address (global)
+ * @returns FontAddressInfo with address, stride, and validity
+ */
+function getFontAddress(
+  unicode: number,
+  fontType: "SMALL" | "LARGE",
+  SMALL_BASE: number,
+  LARGE_BASE: number,
+): FontAddressInfo {
+  if (fontType === "SMALL") {
+    if (unicode > 0xffff) {
+      return { addr: 0, stride: SMALL_STRIDE, valid: false, invalidReason: "unicode_out_of_range" };
+    }
+    return {
+      addr: SMALL_BASE + unicode * SMALL_STRIDE,
+      stride: SMALL_STRIDE,
+      valid: true,
+    };
+  } else {
+    // LARGE fonts cover CJK range 0x4E00-0x9FFF
+    if (unicode > 0xffff) {
+      return { addr: 0, stride: LARGE_STRIDE, valid: false, invalidReason: "not_in_cjk_range" };
+    }
+    return {
+      addr: LARGE_BASE + (unicode - 0x4e00) * LARGE_STRIDE,
+      stride: LARGE_STRIDE,
+      valid: true,
+    };
+  }
+}
+
+/**
+ * Get lookup table value for a Unicode code point
+ * Uses global detected LOOKUP_TABLE address
+ *
+ * @param unicode - Unicode code point
+ * @param firmwareData - Firmware data array
+ * @param LOOKUP_TABLE - Detected lookup table address (global)
+ * @returns Lookup value byte
+ */
+function getLookupValue(unicode: number, firmwareData: Uint8Array, LOOKUP_TABLE: number): number {
+  return firmwareData[LOOKUP_TABLE + (unicode >> 3)];
+}
+
 // Worker message types
 interface WorkerRequest {
   type:
@@ -1440,39 +1506,23 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             }
           }
 
-          // Calculate firmware address based on font type
-          let addr: number;
-          let chunkSize: number;
-
-          if (fontType === "SMALL") {
-            // SMALL fonts use direct addressing from SMALL_BASE
-            if (unicode > 0xffff) {
-              skippedCharacters.push(unicode);
-              skippedReasons.set(unicode, "not_in_firmware");
-              continue;
-            }
-            addr = SMALL_BASE + unicode * SMALL_STRIDE;
-            chunkSize = SMALL_STRIDE;
-          } else {
-            // LARGE fonts use offset addressing from LARGE_BASE (CJK range 0x4e00-0x9fff)
-            if (unicode < 0x4e00 || unicode > 0x9fff) {
-              skippedCharacters.push(unicode);
-              skippedReasons.set(unicode, "not_in_firmware");
-              continue;
-            }
-            addr = LARGE_BASE + (unicode - 0x4e00) * LARGE_STRIDE;
-            chunkSize = LARGE_STRIDE;
+          // Calculate firmware address using shared helper
+          const addrInfo = getFontAddress(unicode, fontType, SMALL_BASE, LARGE_BASE);
+          if (!addrInfo.valid) {
+            skippedCharacters.push(unicode);
+            skippedReasons.set(unicode, addrInfo.invalidReason || "invalid_address");
+            continue;
           }
 
           // Check if address is valid
-          if (addr + chunkSize > firmwareData.length) {
+          if (addrInfo.addr + addrInfo.stride > firmwareData.length) {
             skippedCharacters.push(unicode);
             skippedReasons.set(unicode, "not_in_firmware");
             continue;
           }
 
-          // Get lookup value for encoding
-          const lookupVal = firmwareData[LOOKUP_TABLE + (unicode >> 3)];
+          // Get lookup value for encoding using shared helper
+          const lookupVal = getLookupValue(unicode, firmwareData, LOOKUP_TABLE);
 
           // Prepare pixel data for encoding
           let pixelsToEncode: PixelData;
@@ -1498,20 +1548,20 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
             if (fontType === "LARGE") {
               // Copy existing footer byte from original data
               const originalData = firmwareData.slice(
-                addr,
-                addr + LARGE_STRIDE,
+                addrInfo.addr,
+                addrInfo.addr + addrInfo.stride,
               );
-              chunkToWrite[LARGE_STRIDE - 1] = originalData[LARGE_STRIDE - 1];
+              chunkToWrite[addrInfo.stride - 1] = originalData[addrInfo.stride - 1];
             }
 
             // Write encoded data to firmware
-            firmwareData.set(chunkToWrite, addr);
+            firmwareData.set(chunkToWrite, addrInfo.addr);
 
             // Verify by reading back
-            const writtenData = firmwareData.slice(addr, addr + chunkSize);
+            const writtenData = firmwareData.slice(addrInfo.addr, addrInfo.addr + addrInfo.stride);
             let verified = true;
 
-            for (let j = 0; j < chunkSize; j++) {
+            for (let j = 0; j < addrInfo.stride; j++) {
               if (writtenData[j] !== chunkToWrite[j]) {
                 verified = false;
                 break;
@@ -2277,46 +2327,33 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
               continue;
             }
 
-            // Write to firmware
-            let addr: number;
-            let chunkSize: number;
-
-            if (fontType === "SMALL") {
-              if (unicode > 0xffff) {
-                results.skippedCharacters.push(unicode);
-                continue;
-              }
-              addr = SMALL_BASE + unicode * SMALL_STRIDE;
-              chunkSize = SMALL_STRIDE;
-            } else {
-              if (unicode < 0x4e00 || unicode > 0x9fff) {
-                results.skippedCharacters.push(unicode);
-                continue;
-              }
-              addr = LARGE_BASE + (unicode - 0x4e00) * LARGE_STRIDE;
-              chunkSize = LARGE_STRIDE;
-            }
-
-            if (addr + chunkSize > firmwareData!.length) {
+            // Write to firmware using shared helper
+            const addrInfo = getFontAddress(unicode, fontType, SMALL_BASE, LARGE_BASE);
+            if (!addrInfo.valid) {
               results.skippedCharacters.push(unicode);
               continue;
             }
 
-            // Encode and write
-            const lookupVal = firmwareData![LOOKUP_TABLE + (unicode >> 3)];
+            if (addrInfo.addr + addrInfo.stride > firmwareData!.length) {
+              results.skippedCharacters.push(unicode);
+              continue;
+            }
+
+            // Encode and write using shared helper for lookup value
+            const lookupVal = getLookupValue(unicode, firmwareData!, LOOKUP_TABLE);
             const encoded = encodeV8(pixels, lookupVal);
 
             if (fontType === "LARGE") {
-              const footer = firmwareData![addr + LARGE_STRIDE - 1];
-              encoded[LARGE_STRIDE - 1] = footer;
+              const footer = firmwareData![addrInfo.addr + addrInfo.stride - 1];
+              encoded[addrInfo.stride - 1] = footer;
             }
 
-            firmwareData!.set(encoded, addr);
+            firmwareData!.set(encoded, addrInfo.addr);
 
             // Verify
-            const written = firmwareData!.slice(addr, addr + chunkSize);
+            const written = firmwareData!.slice(addrInfo.addr, addrInfo.addr + addrInfo.stride);
             let verified = true;
-            for (let j = 0; j < chunkSize; j++) {
+            for (let j = 0; j < addrInfo.stride; j++) {
               if (written[j] !== encoded[j]) {
                 verified = false;
                 break;
