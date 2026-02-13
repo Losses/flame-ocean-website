@@ -39,15 +39,17 @@ class FirmwareAnalyzer:
     pattern recognition and statistical analysis.
     """
 
-    def __init__(self, firmware_path):
+    def __init__(self, firmware_path, quiet=False):
         """Initialize analyzer with firmware image.
 
         Args:
             firmware_path: Path to firmware .IMG file
+            quiet: If True, suppress debug output
         """
         with open(firmware_path, 'rb') as f:
             self.firmware = f.read()
         self.firmware_path = firmware_path
+        self.quiet = quiet
 
     def get_firmware_partition(self):
         """Read part_2_firmware_b partition information.
@@ -166,9 +168,10 @@ class FirmwareAnalyzer:
         search_start = partition['offset']
         search_end = partition['offset'] + partition['size']
 
-        print(f"  Searching LARGE_BASE (window interval scoring)...")
-        print(f"  Partition: part_2_firmware_b (0x{search_start:08X} - 0x{search_end:08X})")
-        print(f"  Signature set: {sorted(FOOTER_SIGNATURES)}")
+        if not self.quiet:
+            print(f"  Searching LARGE_BASE (window interval scoring)...")
+            print(f"  Partition: part_2_firmware_b (0x{search_start:08X} - 0x{search_end:08X})")
+            print(f"  Signature set: {sorted(FOOTER_SIGNATURES)}")
 
         window_size = 20902 * LARGE_STRIDE
 
@@ -184,10 +187,12 @@ class FirmwareAnalyzer:
 
         while current_stride > min_stride and current_regions:
             iteration += 1
-            print(f"\n  Round {iteration} scan (stride: {current_stride} bytes)...")
+            if not self.quiet:
+                print(f"\n  Round {iteration} scan (stride: {current_stride} bytes)...")
 
             if base_alignment is not None:
-                print(f"    Using grid alignment: addr % 33 = {base_alignment}")
+                if not self.quiet:
+                    print(f"    Using grid alignment: addr % 33 = {base_alignment}")
 
             region_results = []
 
@@ -212,14 +217,16 @@ class FirmwareAnalyzer:
             region_results.sort(key=lambda x: x['score'], reverse=True)
             top_windows = region_results[:5]
 
-            print(f"    Found {len(region_results)} windows, keeping top 5")
-            for i, win in enumerate(top_windows[:3]):
-                print(f"    [{i}] Window start:0x{win['window_start']:06X}, First addr:0x{win['first_addr']:06X}, Score:{win['score']:.1f}")
+            if not self.quiet:
+                print(f"    Found {len(region_results)} windows, keeping top 5")
+                for i, win in enumerate(top_windows[:3]):
+                    print(f"    [{i}] Window start:0x{win['window_start']:06X}, First addr:0x{win['first_addr']:06X}, Score:{win['score']:.1f}")
 
             if base_alignment is None and top_windows:
                 best_first_addr = top_windows[0]['first_addr']
                 base_alignment = best_first_addr % LARGE_STRIDE
-                print(f"    Determined grid alignment: 0x{best_first_addr:06X} % {LARGE_STRIDE} = {base_alignment}")
+                if not self.quiet:
+                    print(f"    Determined grid alignment: 0x{best_first_addr:06X} % {LARGE_STRIDE} = {base_alignment}")
 
             next_stride = max(min_stride, current_stride // 2)
             current_regions = []
@@ -239,8 +246,9 @@ class FirmwareAnalyzer:
 
             current_stride = next_stride
 
-        print(f"\n  ✅ Best candidate: 0x{best_addr:08X}")
-        print(f"  Score: {best_score}")
+        if not self.quiet:
+            print(f"\n  ✅ Best candidate: 0x{best_addr:08X}")
+            print(f"  Score: {best_score}")
 
         return best_addr
 
@@ -1072,7 +1080,7 @@ def main():
             sys.exit(1)
 
         try:
-            analyzer = FirmwareAnalyzer(args.firmware)
+            analyzer = FirmwareAnalyzer(args.firmware, quiet=True)
             addresses = analyzer.detect_addresses()
 
             if addresses is None:
