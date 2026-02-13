@@ -10,7 +10,6 @@ import {
   decodeV8,
   isDataEmpty,
   sliceSmallFontPixels,
-  padSmallFontPixels,
 } from "../rse/utils/font-decoder";
 import { type PixelData } from "../rse/types";
 import { validateBitmapData, encodeV8 } from "../rse/utils/font-encoder";
@@ -519,12 +518,9 @@ function processStreamCharacter(
   const lookupVal = firmwareData[LOOKUP_TABLE + (unicode >> 3)];
 
   // Prepare pixel data for encoding
-  let pixelsToEncode: PixelData;
-  if (state.fontType === "SMALL") {
-    pixelsToEncode = padSmallFontPixels(pixels as PixelData);
-  } else {
-    pixelsToEncode = pixels as PixelData;
-  }
+  // Note: For SMALL fonts, we don't pad - we preserve original bottom rows
+  // by copying bytes 24-31 from original firmware data after encoding
+  let pixelsToEncode: PixelData = pixels as PixelData;
 
   try {
     // Encode pixels to firmware format
@@ -541,6 +537,12 @@ function processStreamCharacter(
     if (state.fontType === "LARGE") {
       const originalData = firmwareData.slice(addr, addr + LARGE_STRIDE);
       chunkToWrite[LARGE_STRIDE - 1] = originalData[LARGE_STRIDE - 1];
+    } else {
+      // SMALL fonts: preserve original bottom 4 rows (bytes 24-31)
+      // This is critical - don't overwrite them with zeros!
+      const originalData = firmwareData.slice(addr, addr + chunkSize);
+      // Copy bytes 24-31 (bottom 4 rows) from original to preserve them
+      chunkToWrite.set(originalData.slice(24), 24);
     }
 
     // Write encoded data to firmware
@@ -1525,13 +1527,9 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           const lookupVal = getLookupValue(unicode, firmwareData, LOOKUP_TABLE);
 
           // Prepare pixel data for encoding
-          let pixelsToEncode: PixelData;
-          if (fontType === "SMALL") {
-            // Pad SMALL font pixels from 12x12 to 16x16 for encoding
-            pixelsToEncode = padSmallFontPixels(pixels as PixelData);
-          } else {
-            pixelsToEncode = pixels as PixelData;
-          }
+          // Note: For SMALL fonts, we don't pad - we preserve original bottom rows
+          // by copying bytes 24-31 from original firmware data after encoding
+          let pixelsToEncode: PixelData = pixels as PixelData;
 
           try {
             // Encode pixels to firmware format
@@ -1552,6 +1550,15 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
                 addrInfo.addr + addrInfo.stride,
               );
               chunkToWrite[addrInfo.stride - 1] = originalData[addrInfo.stride - 1];
+            } else {
+              // SMALL fonts: preserve original bottom 4 rows (bytes 24-31)
+              // This is critical - don't overwrite them with zeros!
+              const originalData = firmwareData.slice(
+                addrInfo.addr,
+                addrInfo.addr + addrInfo.stride,
+              );
+              // Copy bytes 24-31 (bottom 4 rows) from original to preserve them
+              chunkToWrite.set(originalData.slice(24), 24);
             }
 
             // Write encoded data to firmware
