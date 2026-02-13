@@ -437,6 +437,15 @@ export class FontExtractor {
 
     // Write data to firmware (mutates the original array)
     this.firmware.set(data, addr);
+
+    // Round-trip verification: read back and compare
+    const writtenData = this.firmware.slice(addr, addr + stride);
+    for (let i = 0; i < stride; i++) {
+      if (writtenData[i] !== data[i]) {
+        return false;
+      }
+    }
+
     return true;
   }
 

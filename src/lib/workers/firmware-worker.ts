@@ -2253,18 +2253,14 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           }
 
           // Process all characters
-          const SMALL_BASE = 0x3e648;
-          const SMALL_STRIDE = 32;
-          const LARGE_BASE = 0x4a000;
-          const LARGE_STRIDE = 33;
-          const LOOKUP_TABLE = 0x4e7bc;
-
+          // NOTE: Use global detected addresses (SMALL_BASE, LARGE_BASE, LOOKUP_TABLE)
+          // instead of hardcoded values to support different firmware versions
           for (let i = 0; i < codePoints.length; i++) {
             const unicode = codePoints[i];
             const char = String.fromCodePoint(unicode);
 
             // Progress update - send every 100 chars
-            if (i % 1 === 0) {
+            if (i % 100 === 0) {
               self.postMessage({
                 type: "progress",
                 id,
