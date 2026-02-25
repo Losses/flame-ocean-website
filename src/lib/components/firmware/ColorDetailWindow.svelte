@@ -186,7 +186,7 @@
 				<!-- Buttons -->
 				<div class="button-row">
 					{#if showUnlockButton && onunlock}
-						<!-- <Button onclick={onunlock}>Unlock</Button> -->
+						<Button onclick={onunlock}>Unlock</Button>
 					{:else if showEditButton && onedit}
 						<Button onclick={onedit}>Edit</Button>
 					{/if}
