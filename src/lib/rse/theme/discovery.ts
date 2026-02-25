@@ -424,10 +424,12 @@ export class ThemeDiscovery {
 				}
 			}
 
-			// Need at least 3 consecutive CMPs with different immediates (0-4)
+			// Need at least 3 consecutive CMPs with different immediates
 			if (consecutive.length >= 3) {
 				const imms = new Set(consecutive.map(c => c.imm));
-				if (imms.size >= 3 && Array.from(imms).every(v => v <= 4)) {
+				if (imms.size >= 3) {
+					// Detect the maximum theme ID from CMP immediates
+					const maxThemeId = Math.max(...Array.from(imms));
 					const funcStart = ThemeDiscovery.findFunctionStart(data, consecutive[0].addr);
 
 					if (funcStart && !seenAddrs.has(funcStart)) {
@@ -451,7 +453,7 @@ export class ThemeDiscovery {
 								const hw2_cmp = data[addr + 2] | (data[addr + 3] << 8);
 								if ((hw2_cmp & 0xFF00) === 0x0F00) {
 									const imm = hw2_cmp & 0xFF;
-									if (imm >= 0 && imm <= 4) {
+									if (imm >= 0 && imm <= maxThemeId) {
 										lastCmpIndex = imm;
 										lastCmpAddr = addr;
 									}
@@ -486,8 +488,11 @@ export class ThemeDiscovery {
 
 								// Only collect MOVW to R0 (color register)
 								if (rd === 0) {
+									// colorIdx should match the CMP immediate value, not the lastCmpIndex
+									// When isAtBeqTarget is true, we're at the BEQ target for CMP #0, so use 0
+									// Otherwise, the colorIdx is determined by which CMP we're processing
 									const colorIdx = isAtBeqTarget ? 0 : lastCmpIndex;
-									if (colorIdx >= 0) {
+									if (colorIdx >= 0 && colorIdx <= maxThemeId) {
 										preloadColors[colorIdx] = imm16;
 										// Decode the MOVW instruction for detailed tracking
 										const instr = this.decoder.decode(addr);

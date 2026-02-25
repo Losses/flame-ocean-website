@@ -77,7 +77,8 @@ interface FirmwareGroundTruth {
 }
 
 /**
- * Ground truth from HTML output - verified correct colors from Python implementation
+ * Ground truth extracted from all firmware versions (V1.8.0 - V3.2.0)
+ * Theme system was introduced in V1.8.0, earlier versions don't support theme customization
  */
 const GROUND_TRUTH: FirmwareGroundTruth[] = [
 	{
@@ -91,26 +92,26 @@ const GROUND_TRUTH: FirmwareGroundTruth[] = [
 			theme3: [0xFFFF, 0x0000, 0x0000],
 			theme4: [0xFFFF, 0x0000, 0x0000]
 		},
-		flacFuncAddr: 0x84DC0,
+		flacFuncAddr: 0x84DC2,
 		flacColors: {
 			themes0to3: 0x44DE,
 			theme4: 0xE162
 		},
-		progressFuncAddr: 0x8539C,
+		progressFuncAddr: 0x8536E,
 		progressColors: {
-			theme0: 0x10A2,
-			theme1: 0xFD55,
-			theme2: 0x2B6F,
-			theme3: 0xB2A0,
-			theme4: 0x632C
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
 		},
-		marqueeFuncAddr: 0x3D1DA,
+		marqueeFuncAddr: 0x3D1AC,
 		marqueeColors: {
-			theme0: 0x10C3,
-			theme1: 0xFF1C,
-			theme2: 0xC6FC,
-			theme3: 0xCC29,
-			theme4: 0xEF5D
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
 		}
 	},
 	{
@@ -124,26 +125,26 @@ const GROUND_TRUTH: FirmwareGroundTruth[] = [
 			theme3: [0xFFFF, 0x0000, 0x0000],
 			theme4: [0xFFFF, 0x0000, 0x0000]
 		},
-		flacFuncAddr: 0x86506,
+		flacFuncAddr: 0x86508,
 		flacColors: {
 			themes0to3: 0x44DE,
 			theme4: 0xE162
 		},
-		progressFuncAddr: 0x86AEA,
+		progressFuncAddr: 0x86ABC,
 		progressColors: {
-			theme0: 0x10A2,
-			theme1: 0xFD55,
-			theme2: 0x2B6F,
-			theme3: 0xB2A0,
-			theme4: 0x632C
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
 		},
-		marqueeFuncAddr: 0x3D246,
+		marqueeFuncAddr: 0x3D218,
 		marqueeColors: {
-			theme0: 0x10C3,
-			theme1: 0xFF1C,
-			theme2: 0xC6FC,
-			theme3: 0xCC29,
-			theme4: 0xEF5D
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
 		}
 	},
 	{
@@ -157,26 +158,224 @@ const GROUND_TRUTH: FirmwareGroundTruth[] = [
 			theme3: [0xFFFF, 0x0000, 0x0000],
 			theme4: [0xFFFF, 0x0000, 0x0000]
 		},
-		flacFuncAddr: 0x865AA,
+		flacFuncAddr: 0x865AC,
 		flacColors: {
 			themes0to3: 0x44DE,
 			theme4: 0xE162
 		},
-		progressFuncAddr: 0x86B3E,
+		progressFuncAddr: 0x86B60,
 		progressColors: {
-			theme0: 0x10A2,
-			theme1: 0xFD55,
-			theme2: 0x2B6F,
-			theme3: 0xB2A0,
-			theme4: 0x632C
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
 		},
-		marqueeFuncAddr: 0x3D252,
+		marqueeFuncAddr: 0x3D1A0,
 		marqueeColors: {
-			theme0: 0x10C3,
-			theme1: 0xFF1C,
-			theme2: 0xC6FC,
-			theme3: 0xCC29,
-			theme4: 0xEF5D
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
+		}
+	},
+	{
+		version: 'ECHO MINI V2.6.0',
+		filename: 'HIFIEC60.IMG',
+		menuFuncAddr: 0x3F806,
+		menuColors: {
+			theme0: [0x77DE, 0x2945, 0x0000],
+			theme1: [0xFFFF, 0x2945, 0xFFFF],
+			theme2: [0x77DE, 0x0000, 0x2945],
+			theme3: [0xFFFF, 0x0000, 0x0000],
+			theme4: [0xFFFF, 0x0000, 0x0000]
+		},
+		flacFuncAddr: 0x8669C,
+		flacColors: {
+			themes0to3: 0x44DE,
+			theme4: 0xE162
+		},
+		progressFuncAddr: 0x86C50,
+		progressColors: {
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
+		},
+		marqueeFuncAddr: 0x3D1A0,
+		marqueeColors: {
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
+		}
+	},
+	{
+		version: 'ECHO MINI V2.7.0',
+		filename: 'HIFIEC70.IMG',
+		menuFuncAddr: 0x3F81E,
+		menuColors: {
+			theme0: [0x77DE, 0x2945, 0x0000],
+			theme1: [0xFFFF, 0x2945, 0xFFFF],
+			theme2: [0x77DE, 0x0000, 0x2945],
+			theme3: [0xFFFF, 0x0000, 0x0000],
+			theme4: [0xFFFF, 0x0000, 0x0000]
+		},
+		flacFuncAddr: 0x867A8,
+		flacColors: {
+			themes0to3: 0x44DE,
+			theme4: 0xE162
+		},
+		progressFuncAddr: 0x86D5C,
+		progressColors: {
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
+		},
+		marqueeFuncAddr: 0x3D1CC,
+		marqueeColors: {
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
+		}
+	},
+	{
+		version: 'ECHO MINI V2.8.0',
+		filename: 'HIFIEC80.IMG',
+		menuFuncAddr: 0x3F9A6,
+		menuColors: {
+			theme0: [0x77DE, 0x2945, 0x0000],
+			theme1: [0xFFFF, 0x2945, 0xFFFF],
+			theme2: [0x77DE, 0x0000, 0x2945],
+			theme3: [0xFFFF, 0x0000, 0x0000],
+			theme4: [0xFFFF, 0x0000, 0x0000]
+		},
+		flacFuncAddr: 0x8692C,
+		flacColors: {
+			themes0to3: 0x44DE,
+			theme4: 0xE162
+		},
+		progressFuncAddr: 0x86EE0,
+		progressColors: {
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
+		},
+		marqueeFuncAddr: 0x3D34C,
+		marqueeColors: {
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
+		}
+	},
+	{
+		version: 'ECHO MINI V3.0.0',
+		filename: 'HIFIEC00.IMG',
+		menuFuncAddr: 0x3F86E,
+		menuColors: {
+			theme0: [0x77DE, 0x2945, 0x0000],
+			theme1: [0xFFFF, 0x2945, 0xFFFF],
+			theme2: [0x77DE, 0x0000, 0x2945],
+			theme3: [0xFFFF, 0x0000, 0x0000],
+			theme4: [0xFFFF, 0x0000, 0x0000]
+		},
+		flacFuncAddr: 0x86958,
+		flacColors: {
+			themes0to3: 0x44DE,
+			theme4: 0xE162
+		},
+		progressFuncAddr: 0x86F0C,
+		progressColors: {
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
+		},
+		marqueeFuncAddr: 0x3CFD0,
+		marqueeColors: {
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
+		}
+	},
+	{
+		version: 'ECHO MINI V3.1.0',
+		filename: 'HIFIEC10.IMG',
+		menuFuncAddr: 0x3F862,
+		menuColors: {
+			theme0: [0x77DE, 0x2945, 0x0000],
+			theme1: [0xFFFF, 0x2945, 0xFFFF],
+			theme2: [0x77DE, 0x0000, 0x2945],
+			theme3: [0xFFFF, 0x0000, 0x0000],
+			theme4: [0xFFFF, 0x0000, 0x0000]
+		},
+		flacFuncAddr: 0x86CB0,
+		flacColors: {
+			themes0to3: 0x44DE,
+			theme4: 0xE162
+		},
+		progressFuncAddr: 0x87264,
+		progressColors: {
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
+		},
+		marqueeFuncAddr: 0x3CFC4,
+		marqueeColors: {
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
+		}
+	},
+	{
+		version: 'ECHO MINI V3.2.0',
+		filename: 'HIFIEC20.IMG',
+		menuFuncAddr: 0x3F8AE,
+		menuColors: {
+			theme0: [0x77DE, 0x2945, 0x0000],
+			theme1: [0xFFFF, 0x2945, 0xFFFF],
+			theme2: [0x77DE, 0x0000, 0x2945],
+			theme3: [0xFFFF, 0x0000, 0x0000],
+			theme4: [0xFFFF, 0x0000, 0x0000]
+		},
+		flacFuncAddr: 0x86CFC,
+		flacColors: {
+			themes0to3: 0x44DE,
+			theme4: 0xE162
+		},
+		progressFuncAddr: 0x872B0,
+		progressColors: {
+			theme0: 0x632C,
+			theme1: 0x10A2,
+			theme2: 0xFD55,
+			theme3: 0x2B6F,
+			theme4: 0xB2A0
+		},
+		marqueeFuncAddr: 0x3D010,
+		marqueeColors: {
+			theme0: 0xEF5D,
+			theme1: 0x10C3,
+			theme2: 0xFF1C,
+			theme3: 0xC6FC,
+			theme4: 0xCC29
 		}
 	}
 ];
@@ -185,7 +384,14 @@ const GROUND_TRUTH: FirmwareGroundTruth[] = [
  * Load firmware from local filesystem
  */
 function loadFirmware(version: string, filename: string): Uint8Array {
-	const firmwarePath = join(BASE_DOWNLOAD_DIR, version, version, filename);
+	// Try nested directory structure first (most versions)
+	let firmwarePath = join(BASE_DOWNLOAD_DIR, version, version, filename);
+
+	// Fallback to flat directory structure (some older versions like V1.4.0, V1.4.6)
+	if (!existsSync(firmwarePath)) {
+		firmwarePath = join(BASE_DOWNLOAD_DIR, version, filename);
+	}
+
 	if (!existsSync(firmwarePath)) {
 		throw new Error(`Firmware not found: ${firmwarePath}\nRun: bun run src/lib/rse/__tests__/setup-fixtures.ts`);
 	}

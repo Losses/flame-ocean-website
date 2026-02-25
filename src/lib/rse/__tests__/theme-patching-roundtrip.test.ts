@@ -20,19 +20,32 @@ import { ThemePatcher } from '../theme/patcher.js';
 const BASE_DOWNLOAD_DIR = '/tmp/echo-mini-firmwares';
 
 /**
- * Test firmware versions
+ * Test firmware versions - all versions from V1.8.0 onwards that support theme customization
  */
 const TEST_FIRMWARES = [
 	{ version: 'ECHO MINI V1.8.0', filename: 'HIFIEC80.IMG' },
 	{ version: 'ECHO MINI V2.4.0', filename: 'HIFIEC40.IMG' },
-	{ version: 'ECHO MINI V2.5.0', filename: 'HIFIEC50.IMG' }
+	{ version: 'ECHO MINI V2.5.0', filename: 'HIFIEC50.IMG' },
+	{ version: 'ECHO MINI V2.6.0', filename: 'HIFIEC60.IMG' },
+	{ version: 'ECHO MINI V2.7.0', filename: 'HIFIEC70.IMG' },
+	{ version: 'ECHO MINI V2.8.0', filename: 'HIFIEC80.IMG' },
+	{ version: 'ECHO MINI V3.0.0', filename: 'HIFIEC00.IMG' },
+	{ version: 'ECHO MINI V3.1.0', filename: 'HIFIEC10.IMG' },
+	{ version: 'ECHO MINI V3.2.0', filename: 'HIFIEC20.IMG' }
 ];
 
 /**
  * Load firmware from local filesystem
  */
 function loadFirmware(version: string, filename: string): Uint8Array {
-	const firmwarePath = join(BASE_DOWNLOAD_DIR, version, version, filename);
+	// Try nested directory structure first (most versions)
+	let firmwarePath = join(BASE_DOWNLOAD_DIR, version, version, filename);
+
+	// Fallback to flat directory structure (some older versions)
+	if (!existsSync(firmwarePath)) {
+		firmwarePath = join(BASE_DOWNLOAD_DIR, version, filename);
+	}
+
 	if (!existsSync(firmwarePath)) {
 		throw new Error(`Firmware not found: ${firmwarePath}\nRun: bun run src/lib/rse/__tests__/setup-fixtures.ts`);
 	}
