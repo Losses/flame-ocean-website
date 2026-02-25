@@ -174,19 +174,23 @@ export class ThemeColorExtractor {
 		const allColors: number[] = [];
 
 		if (funcType === 'flac') {
-			// FLAC: Return one color per theme (from R0)
-			for (let themeId = 0; themeId < themeCount; themeId++) {
-				const simulator = new ControlFlowSimulator(this.decoder);
-				const themeRegister = func.themeRegister ?? 1; // FLAC uses R1
-				const [registers] = simulator.simulate(
-					func.addr,
-					func.endAddr || func.addr + 500,
-					themeId,
-					themeRegister
-				);
-				// FLAC returns color in R0
-				const value = registers.get(0) || 0;
-				allColors.push(value);
+			// For FLAC, check if firmware is patched by looking at flacBehavior
+			// If flacColors array exists, firmware is patched - read from it
+			// Otherwise, use colorForOther (themes 0-3) and colorFor4 (theme 4)
+			const result = this.extract();
+
+			if (result.flacBehavior.flacColors && result.flacBehavior.flacColors.length > 0) {
+				// Patched firmware: use colors from metadata
+				return [...result.flacBehavior.flacColors];
+			} else {
+				// Unpatched firmware: use colorForOther and colorFor4
+				for (let themeId = 0; themeId < themeCount; themeId++) {
+					if (themeId === 4) {
+						allColors.push(result.flacBehavior.colorFor4);
+					} else {
+						allColors.push(result.flacBehavior.colorForOther);
+					}
+				}
 			}
 		} else if (funcType === 'menu') {
 			// Menu: Return 3 colors per theme (R1, R2, R3 for each theme)
