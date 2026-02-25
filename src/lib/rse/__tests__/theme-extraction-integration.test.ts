@@ -705,4 +705,41 @@ describe('Theme Extraction Integration Tests', () => {
 			});
 		}
 	});
+
+	describe('Dynamic Theme Count Detection', () => {
+		for (const truth of GROUND_TRUTH) {
+			it(`should detect correct theme count for ${truth.version}`, () => {
+				const firmwareData = loadFirmware(truth.version, truth.filename);
+				const result = extractThemeColors(firmwareData);
+
+				// Find Menu function
+				const menuFunc = result.themeFunctions.find(f => f.type === 'menu');
+				expect(menuFunc).toBeDefined();
+
+				// Verify theme count is 5 (dynamically detected, not hardcoded)
+				expect(menuFunc!.themeCount).toBe(5);
+
+				// Find FLAC function
+				const flacFunc = result.themeFunctions.find(f => f.type === 'flac');
+				expect(flacFunc).toBeDefined();
+
+				// Verify theme count is 5
+				expect(flacFunc!.themeCount).toBe(5);
+
+				// Find Progress Bar function
+				const progressFunc = result.themeFunctions.find(f => f.type === 'progress');
+				expect(progressFunc).toBeDefined();
+
+				// Verify theme count is 5
+				expect(progressFunc!.themeCount).toBe(5);
+
+				// Find Marquee function
+				const marqueeFunc = result.themeFunctions.find(f => f.type === 'marquee');
+				expect(marqueeFunc).toBeDefined();
+
+				// Verify theme count is 5
+				expect(marqueeFunc!.themeCount).toBe(5);
+			});
+		}
+	});
 });
