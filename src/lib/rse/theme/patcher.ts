@@ -266,7 +266,20 @@ export class ThemePatcher {
 		const menuFunc = result.themeFunctions.find(f => f.type === 'menu');
 		let menuColors: number[] = [];
 		if (menuFunc) {
-			menuColors = extractor.getColorsForFunction('menu');
+			// getColorsForFunction returns: [T0_R1, T0_R2, T0_R3, T1_R1, T1_R2, T1_R3, ...]
+			// Patcher expects: [T0_R1, T1_R1, T2_R1, T3_R1, T4_R1, T0_R2, T1_R2, T2_R2, T3_R2, T4_R2, ...]
+			// We need to transform from interleaved-by-theme to interleaved-by-register
+			const rawColors = extractor.getColorsForFunction('menu');
+			const themeCount = menuFunc.themeCount ?? 5;
+
+			// rawColors has 15 values: [T0_R1, T0_R2, T0_R3, T1_R1, T1_R2, T1_R3, T2_R1, T2_R2, T2_R3, T3_R1, T3_R2, T3_R3, T4_R1, T4_R2, T4_R3]
+			// Transform to: [T0_R1, T1_R1, T2_R1, T3_R1, T4_R1, T0_R2, T1_R2, T2_R2, T3_R2, T4_R2, T0_R3, T1_R3, T2_R3, T3_R3, T4_R3]
+			for (let regIdx = 0; regIdx < 3; regIdx++) {
+				for (let themeId = 0; themeId < themeCount; themeId++) {
+					const srcIdx = themeId * 3 + regIdx;
+					menuColors.push(rawColors[srcIdx]);
+				}
+			}
 		} else {
 			throw new ThemeError('Menu function not found in firmware');
 		}

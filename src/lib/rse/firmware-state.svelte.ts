@@ -940,16 +940,12 @@ export class FirmwareState {
         throw new Error("FLAC function not found in firmware");
       }
 
-      // Extract current FLAC colors (using flacBehavior)
-      const currentFlacColors: number[] = [];
-      if (result.flacBehavior.isFlac) {
-        for (let themeId = 0; themeId < 5; themeId++) {
-          const color = themeId === 4 ? result.flacBehavior.colorFor4 : result.flacBehavior.colorForOther;
-          currentFlacColors[themeId] = color;
-        }
-      } else {
-        throw new Error("FLAC behavior not detected - cannot safely patch");
-      }
+      // Extract current FLAC colors using getColorsForFunction
+      // This correctly handles both patched and unpatched firmware
+      const extractor = new ThemeColorExtractor(firmwareData);
+      const currentFlacColors = extractor.getColorsForFunction('flac');
+
+      console.error('[DEBUG] Original FLAC colors:', currentFlacColors.map(c => '0x' + c.toString(16)));
 
       // Extract Menu colors (required for patching)
       const menuFunc = result.themeFunctions.find(f => f.type === 'menu');
@@ -1035,15 +1031,19 @@ export class FirmwareState {
         throw new Error("FLAC function not found in patched firmware - verification failed");
       }
 
-      // Verify FLAC colors are preserved
-      if (verifyResult.flacBehavior.isFlac) {
-        for (let themeId = 0; themeId < 5; themeId++) {
-          const expectedColor = themeId === 4 ? result.flacBehavior.colorFor4 : result.flacBehavior.colorForOther;
-          const actualColor = themeId === 4 ? verifyResult.flacBehavior.colorFor4 : verifyResult.flacBehavior.colorForOther;
+      // Verify FLAC colors using getColorsForFunction
+      // This correctly handles both original and patched firmware
+      const verifyExtractor = new ThemeColorExtractor(patchedData);
+      const actualFlacColors = verifyExtractor.getColorsForFunction('flac');
 
-          if (actualColor !== expectedColor) {
-            throw new Error(`FLAC color verification failed for theme ${themeId}: expected 0x${expectedColor.toString(16)}, got 0x${actualColor.toString(16)}`);
-          }
+      console.error('[DEBUG] Patched FLAC colors:', actualFlacColors.map(c => '0x' + c.toString(16)));
+
+      for (let i = 0; i < 5; i++) {
+        const expectedColor = currentFlacColors[i];
+        const actualColor = actualFlacColors[i];
+
+        if (actualColor !== expectedColor) {
+          throw new Error(`FLAC color verification failed for theme ${i}: expected 0x${expectedColor.toString(16)}, got 0x${actualColor.toString(16)}`);
         }
       }
 
@@ -1867,16 +1867,11 @@ export class FirmwareState {
             throw new Error("FLAC or Menu function not found in firmware");
           }
 
-          // Extract current FLAC colors
-          const currentFlacColors: number[] = [];
-          if (result.flacBehavior.isFlac) {
-            for (let i = 0; i < 5; i++) {
-              currentFlacColors[i] = i === 4 ? result.flacBehavior.colorFor4 : result.flacBehavior.colorForOther;
-            }
-            currentFlacColors[themeId] = rgb565;  // Update the selected theme color
-          } else {
-            throw new Error("FLAC behavior not detected - cannot edit");
-          }
+          // Extract current FLAC colors using getColorsForFunction
+          // This correctly handles both patched and unpatched firmware
+          const extractor = new ThemeColorExtractor(firmwareData);
+          const currentFlacColors = extractor.getColorsForFunction('flac');
+          currentFlacColors[themeId] = rgb565;  // Update the selected theme color
 
           // Extract current Menu colors
           const currentMenuColors: number[] = [];
@@ -1947,14 +1942,14 @@ export class FirmwareState {
           // Round-trip verification: extract colors from patched firmware
           const verifyResult = extractThemeColors(patchedData);
 
-          if (!verifyResult.flacBehavior.isFlac) {
-            throw new Error("FLAC behavior not found in patched firmware");
-          }
+          // Verify FLAC colors using getColorsForFunction
+          // This correctly handles both patched and unpatched firmware
+          const verifyExtractor = new ThemeColorExtractor(patchedData);
+          const actualFlacColors = verifyExtractor.getColorsForFunction('flac');
 
-          // Verify FLAC colors
           for (let i = 0; i < 5; i++) {
             const expectedColor = currentFlacColors[i];
-            const actualColor = i === 4 ? verifyResult.flacBehavior.colorFor4 : verifyResult.flacBehavior.colorForOther;
+            const actualColor = actualFlacColors[i];
 
             if (actualColor !== expectedColor) {
               throw new Error(`FLAC color verification failed for theme ${i}: expected 0x${expectedColor.toString(16)}, got 0x${actualColor.toString(16)}`);

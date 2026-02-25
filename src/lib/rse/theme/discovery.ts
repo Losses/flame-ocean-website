@@ -10,7 +10,6 @@ import { ThumbDecoder } from './thumb/index.js';
 import type { ThemeFunction, FlacBehavior } from './types.js';
 import { DiscoveryError } from './errors.js';
 import { decodeBlTarget } from './thumb/encoders.js';
-import { ControlFlowSimulator } from './simulator.js';
 
 /**
  * Pattern matching results for function discovery
@@ -663,32 +662,14 @@ export class ThemeDiscovery {
 				seenAddrs.add(funcStart);
 				const funcEnd = this.findFunctionEnd(funcStart, 2000);
 
-				// Detect theme count by simulating the Menu function with different theme values
-				// Menu function uses R12 to hold theme value
-				let menuThemeCount = 0;
-				const simulator = new ControlFlowSimulator(this.decoder);
+				// Detect theme count by analyzing CMP patterns across the firmware
+				// The Menu function doesn't validate theme input directly, but the overall
+				// firmware has CMP checks that reveal the supported theme count
+				const [detectedThemeCount, warnings] = discoverThemeCount(data);
+				const menuThemeCount = detectedThemeCount;
 
-				// Try theme values 0-9 to find the maximum supported
-				for (let testTheme = 0; testTheme <= 9; testTheme++) {
-					const [, colorWrites] = simulator.simulate(
-						funcStart,
-						funcEnd,
-						testTheme,
-						12 // R12 is theme register for Menu
-					);
-
-					// Check if this theme produces unique color writes
-					if (colorWrites.length > 0) {
-						menuThemeCount = testTheme + 1;
-					} else {
-						// No color writes for this theme, assume we've found the max
-						break;
-					}
-				}
-
-				// Fallback to 5 if detection failed (shouldn't happen)
-				if (menuThemeCount === 0) {
-					menuThemeCount = 5;
+				if (warnings.length > 0) {
+					console.warn(`[ThemeDiscovery] Menu theme count detection: ${warnings.join(', ')}`);
 				}
 
 				functions.push({
