@@ -425,11 +425,13 @@ export class ThemeDiscovery {
 			}
 
 			// Need at least 3 consecutive CMPs with different immediates
+			// Support dynamic theme count by detecting the actual CMP values present
 			if (consecutive.length >= 3) {
 				const imms = new Set(consecutive.map(c => c.imm));
 				if (imms.size >= 3) {
 					// Detect the maximum theme ID from CMP immediates
 					const maxThemeId = Math.max(...Array.from(imms));
+					const themeCount = maxThemeId + 1;  // Number of themes (e.g., 5 for themes 0-4)
 					const funcStart = ThemeDiscovery.findFunctionStart(data, consecutive[0].addr);
 
 					if (funcStart && !seenAddrs.has(funcStart)) {
@@ -520,7 +522,7 @@ export class ThemeDiscovery {
 						let uiElement = 'Unknown UI Element';
 						let funcType: 'progress' | 'marquee' | 'unknown' = 'unknown';
 
-						if (behavior.cmpR12Count >= 5 && behavior.distinctColors === 5) {
+						if (behavior.cmpR12Count >= themeCount && behavior.distinctColors === themeCount) {
 							if (behavior.strhCount > 0) {
 								uiElement = 'Progress Bar Background';
 								funcType = 'progress';
