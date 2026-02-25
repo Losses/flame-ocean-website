@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { clsx } from 'clsx';
 	import Button from './Button.svelte';
 	import Window from './Window.svelte';
 
@@ -319,7 +318,6 @@
 		}
 		const newOklch = rgbToOklch(r, g, b);
 		oklch = newOklch;
-		onColorSelect?.({ r, g, b });
 	}
 
 	function handleOkClick() {
@@ -343,12 +341,21 @@
 						{#each BASIC_COLORS as color, i (color)}
 							<div
 								class="color-swatch"
+								class:selected={selectedIndex === 100 + i}
 								style="background-color: {color}"
-								onclick={() => selectColor(color)}
+								onclick={() => {
+									selectedIndex = 100 + i;
+									selectColor(color);
+								}}
 								title={color}
 								role="button"
 								tabindex="0"
-								onkeydown={(e) => e.key === 'Enter' && selectColor(color)}
+								onkeydown={(e) => {
+									if (e.key === 'Enter') {
+										selectedIndex = 100 + i;
+										selectColor(color);
+									}
+								}}
 							></div>
 						{/each}
 					</div>
@@ -359,17 +366,21 @@
 					<div class="color-grid">
 						{#each customColors as color, i (i)}
 							<div
-								class={clsx('color-swatch', selectedIndex === i && 'selected')}
+								class="color-swatch"
+								class:selected={selectedIndex === i}
 								style="background-color: {color}"
 								onclick={() => {
 									selectedIndex = i;
-									if (color !== '#FFFFFF' && color !== 'rgb(255, 255, 255)') {
-										selectColor(color);
-									}
+									selectColor(color);
 								}}
 								role="button"
 								tabindex="0"
-								onkeydown={(e) => e.key === 'Enter' && selectColor(color)}
+								onkeydown={(e) => {
+									if (e.key === 'Enter') {
+										selectedIndex = i;
+										selectColor(color);
+									}
+								}}
 							></div>
 						{/each}
 					</div>
@@ -589,8 +600,7 @@
 	}
 
 	.color-swatch.selected {
-		outline: 1px dotted #000;
-		outline-offset: 1px;
+		box-shadow: 0 0 0 1px #000;
 	}
 
 	/* Spectrum Area */
