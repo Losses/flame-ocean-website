@@ -60,6 +60,8 @@ export interface ThemeFunction {
 	readonly preloadColors: Readonly<Record<number, number>>;
 	/** MOVW instructions for preloaded colors (theme index -> MOVW record) */
 	readonly preloadMovwRecords: Readonly<Record<number, MovwRecord>>;
+	/** Number of themes supported by this function (detected from firmware) */
+	readonly themeCount: number;
 	/** UI element this function controls */
 	uiElement: string;
 	/** Register that holds the theme value (default: 0 for R0) */

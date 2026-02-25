@@ -10,6 +10,7 @@ import { ThumbDecoder } from './thumb/index.js';
 import type { ThemeFunction, FlacBehavior } from './types.js';
 import { DiscoveryError } from './errors.js';
 import { decodeBlTarget } from './thumb/encoders.js';
+import { ControlFlowSimulator } from './simulator.js';
 
 /**
  * Pattern matching results for function discovery
@@ -540,6 +541,7 @@ export class ThemeDiscovery {
 							colorWrites: [],
 							preloadColors,
 							preloadMovwRecords,
+							themeCount,
 							uiElement
 						});
 					}
@@ -622,6 +624,21 @@ export class ThemeDiscovery {
 				const funcEnd = this.findFunctionEnd(funcStart, 2000);
 				const flacBehavior = ThemeDiscovery.detectFlacByContext(this.decoder, funcStart);
 
+				// Detect theme count from CMP R1, #imm instruction
+				// FLAC checks if R1 == 4, so it supports themes 0-4 (5 themes total)
+				let flacThemeCount = 5;
+				// Try to parse the actual immediate value from CMP instruction
+				const cmpAddr = funcAddr; // funcAddr is the CMP address from detectFlacFunction
+				if (cmpAddr + 4 < data.length) {
+					const hw1 = data[cmpAddr] | (data[cmpAddr + 1] << 8);
+					const hw2 = data[cmpAddr + 2] | (data[cmpAddr + 3] << 8);
+					// Check if it's CMP.W R1, #imm (F1B1 0Fmm)
+					if (hw1 === 0xF1B1 && (hw2 & 0xFF00) === 0x0F00) {
+						const imm = hw2 & 0xFF;
+						flacThemeCount = imm + 1; // If CMP checks for #4, then themes are 0-4 (5 themes)
+					}
+				}
+
 				functions.push({
 					addr: funcStart,
 					endAddr: funcEnd,
@@ -630,6 +647,7 @@ export class ThemeDiscovery {
 					colorWrites: [],
 					preloadColors: {},
 					preloadMovwRecords: {},
+					themeCount: flacThemeCount,
 					uiElement: flacBehavior.type !== 'unknown' ? 'FLAC String Text' : 'Unknown UI Element',
 					themeRegister: 1 // FLAC uses R1 for theme value
 				});
@@ -645,6 +663,34 @@ export class ThemeDiscovery {
 				seenAddrs.add(funcStart);
 				const funcEnd = this.findFunctionEnd(funcStart, 2000);
 
+				// Detect theme count by simulating the Menu function with different theme values
+				// Menu function uses R12 to hold theme value
+				let menuThemeCount = 0;
+				const simulator = new ControlFlowSimulator(this.decoder);
+
+				// Try theme values 0-9 to find the maximum supported
+				for (let testTheme = 0; testTheme <= 9; testTheme++) {
+					const [, colorWrites] = simulator.simulate(
+						funcStart,
+						funcEnd,
+						testTheme,
+						12 // R12 is theme register for Menu
+					);
+
+					// Check if this theme produces unique color writes
+					if (colorWrites.length > 0) {
+						menuThemeCount = testTheme + 1;
+					} else {
+						// No color writes for this theme, assume we've found the max
+						break;
+					}
+				}
+
+				// Fallback to 5 if detection failed (shouldn't happen)
+				if (menuThemeCount === 0) {
+					menuThemeCount = 5;
+				}
+
 				functions.push({
 					addr: funcStart,
 					endAddr: funcEnd,
@@ -653,6 +699,7 @@ export class ThemeDiscovery {
 					colorWrites: [],
 					preloadColors: {},
 					preloadMovwRecords: {},
+					themeCount: menuThemeCount,
 					uiElement: 'Menu Text Colors'
 				});
 			}

@@ -75,8 +75,9 @@ export class ThemeColorExtractor {
 				const simulator = new ControlFlowSimulator(this.decoder);
 				const allColorWrites: ColorWrite[] = [];
 				const themeRegister = func.themeRegister ?? 0; // Default to R0
+				const themeCount = func.themeCount ?? 5; // Use detected theme count
 
-				for (let themeId = 0; themeId < 5; themeId++) {
+				for (let themeId = 0; themeId < themeCount; themeId++) {
 					const [, colorWrites] = simulator.simulate(
 						func.addr,
 						func.endAddr || func.addr + 500,
@@ -159,8 +160,9 @@ export class ThemeColorExtractor {
 		// For switch_case patterns (progress, marquee), extract from preloadColors
 		if (func.patternType === 'switch_case' && func.preloadColors) {
 			const colors: number[] = [];
-			// Colors are indexed 0-4 in preloadColors
-			for (let i = 0; i < 5; i++) {
+			const themeCount = func.themeCount ?? 5;
+			// Colors are indexed 0-themeCount-1 in preloadColors
+			for (let i = 0; i < themeCount; i++) {
 				colors.push(func.preloadColors[i] || 0);
 			}
 			return colors;
@@ -169,31 +171,35 @@ export class ThemeColorExtractor {
 		// For FLAC and Menu, use control flow simulation
 		const simulator = new ControlFlowSimulator(this.decoder);
 		const themeRegister = func.themeRegister ?? 0; // Default to R0
-		const [registers] = simulator.simulate(
-			func.addr,
-			func.endAddr || func.addr + 500,
-			4,
-			themeRegister
-		);
+		const themeCount = func.themeCount ?? 5;
 
-		// Extract colors in expected order
-		if (funcType === 'flac') {
-			// FLAC uses R4-R8 (5 colors)
-			const flacColors: number[] = [];
-			for (const reg of [4, 5, 6, 7, 8]) {
-				const value = registers.get(reg) || 0;
-				flacColors.push(value);
+		// Extract colors for all themes
+		const allColors: number[] = [];
+		for (let themeId = 0; themeId < themeCount; themeId++) {
+			const [registers] = simulator.simulate(
+				func.addr,
+				func.endAddr || func.addr + 500,
+				themeId,
+				themeRegister
+			);
+
+			// Extract colors in expected order
+			if (funcType === 'flac') {
+				// FLAC uses R4-R8 (5 colors)
+				for (const reg of [4, 5, 6, 7, 8]) {
+					const value = registers.get(reg) || 0;
+					allColors.push(value);
+				}
+			} else {
+				// Menu uses colors from the first color write register
+				// For now, get the first register that has a value
+				const firstReg = registers.size > 0 ? Array.from(registers.keys())[0] : 0;
+				const value = registers.get(firstReg) || 0;
+				allColors.push(value);
 			}
-			return flacColors;
-		} else {
-			// Menu uses R0-R14 (15 colors typically)
-			const menuColors: number[] = [];
-			for (let reg = 0; reg <= 14; reg++) {
-				const value = registers.get(reg) || 0;
-				menuColors.push(value);
-			}
-			return menuColors;
 		}
+
+		return allColors;
 	}
 }
 
