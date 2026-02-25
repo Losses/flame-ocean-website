@@ -229,7 +229,10 @@ export class FirmwareState {
                   // buildColorTree() has already detected the patch status from the firmware
                   // Force update the selected color detail to reflect the new status
                   if (this.selectedColorDetail && this.selectedColorDetail.semantic.includes('Codec Info')) {
-                    this.selectedColorDetail = { ...this.selectedColorDetail };
+                    this.selectedColorDetail = {
+                      ...this.selectedColorDetail,
+                      isFlacPatched: this.flacPatched  // Update with new patch status
+                    };
                   }
                   this.progress = 100;
                   this.statusMessage = "FLAC color editing unlocked successfully!";
