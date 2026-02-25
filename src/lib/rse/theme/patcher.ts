@@ -331,20 +331,22 @@ export class ThemePatcher {
 			throw new ValidationError('At least one of progressColors or marqueeColors must be provided');
 		}
 
-		// Validate color counts
-		if (options.progressColors && options.progressColors.length !== 5) {
-			throw new ValidationError('Progress Bar colors must have exactly 5 values');
-		}
-		if (options.marqueeColors && options.marqueeColors.length !== 5) {
-			throw new ValidationError('Marquee colors must have exactly 5 values');
-		}
-
-		// Get the function addresses from theme extraction
+		// Get the function discovery first to determine theme count
 		const extractor = new ThemeColorExtractor(this.data);
 		const result = extractor.extract();
 
+		// Get theme count from discovered functions
 		const progressFunc = result.themeFunctions.find(f => f.type === 'progress');
 		const marqueeFunc = result.themeFunctions.find(f => f.type === 'marquee');
+		const themeCount = progressFunc?.themeCount || marqueeFunc?.themeCount || 5;
+
+		// Validate color counts based on detected theme count
+		if (options.progressColors && options.progressColors.length !== themeCount) {
+			throw new ValidationError(`Progress Bar colors must have exactly ${themeCount} values (one per theme)`);
+		}
+		if (options.marqueeColors && options.marqueeColors.length !== themeCount) {
+			throw new ValidationError(`Marquee colors must have exactly ${themeCount} values (one per theme)`);
+		}
 
 		if (options.progressColors && !progressFunc) {
 			throw new ThemeError('Progress Bar function not found in firmware');
@@ -601,16 +603,26 @@ export class ThemePatcher {
 		intent: { flacCustom: boolean; menuCustom: boolean } = { flacCustom: true, menuCustom: true }
 	): PatchResult {
 		try {
-			// Validate color counts
-			if (flacColors.length !== 5) {
-				throw new ValidationError('FLAC colors must have exactly 5 values');
-			}
-			if (menuColors.length !== 15) {
-				throw new ValidationError('Menu colors must have exactly 15 values');
-			}
-
-			// Analyze firmware
+			// Analyze firmware first to get theme count
 			const analysis = this.analyze();
+
+			// Get theme count from ThemeColorExtractor (discovery module)
+			// We need to use the discovery directly since PatchPointInfo doesn't have themeCount
+			const extractor = new ThemeColorExtractor(this.data);
+			const discoveryResult = extractor.extract();
+
+			// Find theme functions and get their themeCount
+			const flacThemeFunc = discoveryResult.themeFunctions.find(f => f.type === 'flac');
+			const menuThemeFunc = discoveryResult.themeFunctions.find(f => f.type === 'menu');
+			const themeCount = flacThemeFunc?.themeCount || menuThemeFunc?.themeCount || 5;
+
+			// Validate color counts based on detected theme count
+			if (flacColors.length !== themeCount) {
+				throw new ValidationError(`FLAC colors must have exactly ${themeCount} values (one per theme)`);
+			}
+			if (menuColors.length !== themeCount * 3) {
+				throw new ValidationError(`Menu colors must have exactly ${themeCount * 3} values (${themeCount} themes × 3 attributes)`);
+			}
 
 			if (!analysis.canPatch) {
 				// Determine why patching failed

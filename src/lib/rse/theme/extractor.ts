@@ -148,6 +148,7 @@ export class ThemeColorExtractor {
 
 	/**
 	 * Get specific colors for a function type
+	 * Returns colors in the format expected by the patcher
 	 */
 	getColorsForFunction(funcType: 'flac' | 'menu' | 'progress' | 'marquee'): number[] {
 		const result = this.extract();
@@ -168,34 +169,40 @@ export class ThemeColorExtractor {
 			return colors;
 		}
 
-		// For FLAC and Menu, use control flow simulation
-		const simulator = new ControlFlowSimulator(this.decoder);
-		const themeRegister = func.themeRegister ?? 0; // Default to R0
+		// For FLAC and Menu, extract colors from all themes
 		const themeCount = func.themeCount ?? 5;
-
-		// Extract colors for all themes
 		const allColors: number[] = [];
-		for (let themeId = 0; themeId < themeCount; themeId++) {
-			const [registers] = simulator.simulate(
-				func.addr,
-				func.endAddr || func.addr + 500,
-				themeId,
-				themeRegister
-			);
 
-			// Extract colors in expected order
-			if (funcType === 'flac') {
-				// FLAC uses R4-R8 (5 colors)
-				for (const reg of [4, 5, 6, 7, 8]) {
-					const value = registers.get(reg) || 0;
-					allColors.push(value);
-				}
-			} else {
-				// Menu uses colors from the first color write register
-				// For now, get the first register that has a value
-				const firstReg = registers.size > 0 ? Array.from(registers.keys())[0] : 0;
-				const value = registers.get(firstReg) || 0;
+		if (funcType === 'flac') {
+			// FLAC: Return one color per theme (from R0)
+			for (let themeId = 0; themeId < themeCount; themeId++) {
+				const simulator = new ControlFlowSimulator(this.decoder);
+				const themeRegister = func.themeRegister ?? 1; // FLAC uses R1
+				const [registers] = simulator.simulate(
+					func.addr,
+					func.endAddr || func.addr + 500,
+					themeId,
+					themeRegister
+				);
+				// FLAC returns color in R0
+				const value = registers.get(0) || 0;
 				allColors.push(value);
+			}
+		} else if (funcType === 'menu') {
+			// Menu: Return 3 colors per theme (R1, R2, R3 for each theme)
+			for (let themeId = 0; themeId < themeCount; themeId++) {
+				const simulator = new ControlFlowSimulator(this.decoder);
+				const themeRegister = func.themeRegister ?? 12; // Menu uses R12
+				const [registers] = simulator.simulate(
+					func.addr,
+					func.endAddr || func.addr + 500,
+					themeId,
+					themeRegister
+				);
+				// Menu uses R1, R2, R3 for the three color attributes
+				allColors.push(registers.get(1) || 0);
+				allColors.push(registers.get(2) || 0);
+				allColors.push(registers.get(3) || 0);
 			}
 		}
 

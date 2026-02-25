@@ -272,7 +272,7 @@ const patcher = new ThemePatcher(original);
 const flacColors = {first_flac_colors};
 const menuColors = {first_menu_colors};
 
-const result = patcher.patch(flacColors, menuColors, '{first_patched}', true);
+const result = patcher.patch({{ flacColors, menuColors }}, '{first_patched}', true);
 console.log(JSON.stringify({{ success: result.success }}));
 """
 	first_patch_script_path = Path("/tmp/first_patch_script.ts")
