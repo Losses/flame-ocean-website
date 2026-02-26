@@ -52,7 +52,7 @@ export {
 } from './metadata.js';
 
 // Instruction encoding
-export { encodeBl, encodeB16bit, encodeMovw, encodePush } from './thumb/encoders.js';
+export { encodeBl, decodeBlTarget, encodeB16bit, encodeMovw, encodePush } from './thumb/encoders.js';
 
 // Main extractor
 export { ThemeColorExtractor, extractThemeColors } from './extractor.js';

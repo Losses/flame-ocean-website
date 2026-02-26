@@ -54,49 +54,14 @@ describe('Theme Patcher - Instruction Encoding', () => {
 			expect(hw2 & 0xd000).toEqual(0xd000);
 		});
 
-		it.skip('should maintain BL roundtrip correctness', () => {
+		it('should maintain BL roundtrip correctness', () => {
 			// This test verifies BL instruction encoding/decoding roundtrip.
-			// Note: The encodeBl implementation is correct (verified by Python tests),
-			// but the decoding logic in this test needs to match the exact encoding algorithm.
-			// The actual theme patcher functionality works correctly as verified by all other tests.
+			// Using the decodeBlTarget function which matches the encodeBl implementation.
 			const fromAddr = 0x86cb0;
-			// Use a target that's properly aligned for BL encoding
-			// (offset >> 1 must have bit 11 = 0 for precise encoding)
-			const toAddr = 0x009fd000; // Properly aligned target
+			const toAddr = 0xa0d204; // Real NOP slide address from V3.1.0
 
 			const blBytes = encodeBl(fromAddr, toAddr);
-
-			// Decode using the same logic as encodeBl implementation
-			const hw1 = blBytes[0] | (blBytes[1] << 8);
-			const hw2 = blBytes[2] | (blBytes[3] << 8);
-
-			const S = (hw1 >> 10) & 1;
-			const imm10 = hw1 & 0x3ff;  // Extract 10 bits
-			const J1 = (hw2 >> 13) & 1;
-			const J2 = (hw2 >> 11) & 1;
-			const imm11 = hw2 & 0x7ff;
-
-			// Reconstruct imm25 by reversing the encoding process
-			// encodeBl does: imm25 = (S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | imm11
-			// Where: I1 = (imm25 >> 23) & 1, I2 = (imm25 >> 22) & 1
-			// And: J1 = ~(S ^ I1) & 1, J2 = ~(S ^ I2) & 1
-			// So: I1 = ~(S ^ J1) & 1, I2 = ~(S ^ J2) & 1
-			const I1 = ~(S ^ J1) & 1;
-			const I2 = ~(S ^ J2) & 1;
-
-			// Reconstruct imm25
-			const imm25 = (S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | imm11;
-
-			// Reconstruct offset (shift left by 1 and sign extend)
-			// Since imm25 is masked to 25 bits, we need to sign extend bit 24
-			let offset = imm25 << 1;
-			if (S) {
-				// Sign extend negative values
-				offset = offset | 0xfe000000;
-			}
-
-			// Calculate target
-			const decodedTarget = (fromAddr + 4 + offset) >>> 0;
+			const decodedTarget = decodeBlTarget(fromAddr, blBytes);
 
 			expect(decodedTarget).toEqual(toAddr);
 		});
