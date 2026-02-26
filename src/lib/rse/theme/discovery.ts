@@ -213,6 +213,59 @@ export class ThemeDiscovery {
 	}
 
 	/**
+	 * Find FLAC patch point - the MOVW R1 instruction that sets the default color
+	 *
+	 * FLAC function structure:
+	 *   CMP R1, #4         ← Pattern start (cmpAddr)
+	 *   IT EQ
+	 *   MOVW R1, #0xE162   ← Conditional color for theme 4
+	 *   ASRS R2, R4, #5
+	 *   MOVW R1, #0x44DE   ← Default color for themes 0-3 ← PATCH HERE
+	 *   STRH R1, [R0, #0]  ← Store the color
+	 *
+	 * We need to patch the SECOND MOVW R1 (the one after the IT block).
+	 */
+	static findFlacPatchPoint(data: Uint8Array, cmpAddr: number, maxSearch = 100): number | null {
+		let movwR1Count = 0;
+
+		// Start searching from the CMP+ITE pattern (skip the 4-byte IT block)
+		for (let offset = 4; offset < maxSearch; offset += 2) {
+			const addr = cmpAddr + offset;
+			if (addr + 4 > data.length) break;
+
+			const hw = data[addr] | (data[addr + 1] << 8);
+
+			// Check if this is a 32-bit MOVW instruction
+			if ((hw & 0xF800) === 0xF000) {
+				const hw2 = data[addr + 2] | (data[addr + 3] << 8);
+				const opcode = (hw >> 4) & 0xF;
+
+				// MOVW instruction (opcode = 4)
+				if (opcode === 4) {
+					const rd = (hw2 >> 8) & 0xF;
+
+					// Found MOVW R1 - count it
+					if (rd === 1) {
+						movwR1Count++;
+						// We want the SECOND MOVW R1 (default color for themes 0-3)
+						if (movwR1Count === 2) {
+							return addr;
+						}
+					}
+				}
+			}
+
+			// Skip 32-bit instructions
+			const is32bit = hw >= 0xe800;
+			if (is32bit) {
+				offset += 2;
+			}
+		}
+
+		return null;
+	}
+
+	/**
 	 * Find function start by tracing back to PUSH instruction
 	 */
 	static findFunctionStart(data: Uint8Array, addr: number, maxBack = 200): number {
@@ -233,6 +286,7 @@ export class ThemeDiscovery {
 	/**
 	 * Find the first BL instruction in a function
 	 * Searches forward from function start to find the first BL instruction
+	 * @deprecated DO NOT USE - finds internal function calls, not safe patch points
 	 */
 	static findFirstBlInFunction(data: Uint8Array, funcAddr: number, maxSearch = 2000): number | null {
 		for (let offset = 0; offset < maxSearch; offset += 2) {
@@ -799,14 +853,14 @@ export function discoverFlacFunction(data: Uint8Array, version?: string): [numbe
 	// Fall back to CMP+ITE pattern search (for unpatched or partially patched firmware)
 	const cmpAddrResult = ThemeDiscovery.detectFlacFunction(data);
 	if (cmpAddrResult) {
-		const [funcAddr] = cmpAddrResult;
-		// Find the FIRST BL instruction in the function to use as patch address
-		const firstBlAddr = ThemeDiscovery.findFirstBlInFunction(data, funcAddr, 2000);
-		if (firstBlAddr) {
-			return [funcAddr, firstBlAddr];
+		const [cmpAddr] = cmpAddrResult;
+		// Find the MOVW R1 instruction that sets the default color (themes 0-3)
+		const patchAddr = ThemeDiscovery.findFlacPatchPoint(data, cmpAddr);
+		if (patchAddr) {
+			return [cmpAddr, patchAddr];
 		}
-		// If no BL found, fall back to using the CMP address
-		return [funcAddr, funcAddr];
+		// Fallback: use the CMP address if patch point not found
+		return [cmpAddr, cmpAddr];
 	}
 
 	return null;
@@ -842,12 +896,10 @@ export function discoverMenuFunction(data: Uint8Array, version?: string): [numbe
 	const movAddrResult = ThemeDiscovery.detectMenuFunction(data);
 	if (movAddrResult) {
 		const [funcAddr] = movAddrResult;
-		// Find the FIRST BL instruction in the function to use as patch address
-		const firstBlAddr = ThemeDiscovery.findFirstBlInFunction(data, funcAddr, 2000);
-		if (firstBlAddr) {
-			return [funcAddr, firstBlAddr];
-		}
-		// If no BL found, fall back to using the MOV.W address
+		// CRITICAL: Use funcAddr as the patch address, NOT the first BL instruction!
+		// The first BL in the function typically calls an internal helper function.
+		// Replacing it would break the function and crash the firmware.
+		// Instead, we replace the MOV.W R12,#0 instructions with our patch BL.
 		return [funcAddr, funcAddr];
 	}
 

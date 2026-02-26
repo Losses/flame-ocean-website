@@ -1027,6 +1027,7 @@ export class ThemePatcher {
 		}
 
 		// Select color based on R1 (theme index 0-4)
+		// Return the color in R1 (since STRH R1, [R0, #0] stores R1)
 		// Use simple cascading checks: if R1 matches, branch to that theme's handler
 		// BEQ offset is in instructions (2-byte each), calculated from PC+4
 
@@ -1047,23 +1048,23 @@ export class ThemePatcher {
 		code.push(0x01, 0xD0);  // BEQ theme_3 (offset = 1)
 
 		// Default (theme 4): fall through when R1 == 4
-		code.push(0x40, 0x46);  // MOV R0, R8 (MOV with high register)
+		code.push(0x49, 0x46);  // MOV R1, R8 (MOV with high register)
 		code.push(0x70, 0x47);  // BX LR
 
 		// theme_3:
-		code.push(0x38, 0x46);  // MOV R0, R7
+		code.push(0x41, 0x46);  // MOV R1, R7
 		code.push(0x70, 0x47);  // BX LR
 
 		// theme_2:
-		code.push(0x30, 0x46);  // MOV R0, R6
+		code.push(0x39, 0x46);  // MOV R1, R6
 		code.push(0x70, 0x47);  // BX LR
 
 		// theme_1:
-		code.push(0x28, 0x46);  // MOV R0, R5
+		code.push(0x31, 0x46);  // MOV R1, R5
 		code.push(0x70, 0x47);  // BX LR
 
 		// theme_0:
-		code.push(0x20, 0x46);  // MOV R0, R4
+		code.push(0x29, 0x46);  // MOV R1, R4
 		code.push(0x70, 0x47);  // BX LR
 
 		return new Uint8Array(code);
