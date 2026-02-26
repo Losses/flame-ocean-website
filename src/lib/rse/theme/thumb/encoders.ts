@@ -51,8 +51,8 @@ export function encodeBl(fromAddr: number, toAddr: number): Uint8Array {
 	// Extract components from 25-bit value
 	// imm10 = bits [21:12] (10 bits)
 	const imm10 = (imm25 >> 12) & 0x3ff;
-	// imm11 = bits [10:0] (11 bits) - lower 11 bits of imm25
-	const imm11 = imm25 & 0x7ff;
+	// imm11 = bits [11:1] (11 bits) - note: shift right by 1 to skip bit 0
+	const imm11 = (imm25 >> 1) & 0x7ff;
 	// I1, I2 = sign extension bits [23:22]
 	const I1 = (imm25 >> 23) & 1;
 	const I2 = (imm25 >> 22) & 1;
@@ -65,7 +65,26 @@ export function encodeBl(fromAddr: number, toAddr: number): Uint8Array {
 	const hw1 = 0xf000 | (S << 10) | imm10;
 	const hw2 = 0xd000 | (J1 << 13) | (1 << 12) | (J2 << 11) | imm11;
 
-	return new Uint8Array([hw1 & 0xff, (hw1 >> 8) & 0xff, hw2 & 0xff, (hw2 >> 8) & 0xff]);
+	const blBytes = new Uint8Array([hw1 & 0xff, (hw1 >> 8) & 0xff, hw2 & 0xff, (hw2 >> 8) & 0xff]);
+
+	// CRITICAL: Verify BL encoding is precise
+	// Some firmware versions (e.g., V1.8.0 FLAC) have patch addresses that are not 4-byte aligned,
+	// causing BL instruction to lose 2 bytes of precision. This MUST be caught before patching.
+	const decodedTarget = decodeBlTarget(fromAddr, blBytes);
+	if (decodedTarget !== toAddr) {
+		const precisionLoss = Math.abs(decodedTarget - toAddr);
+		throw new ThumbEncodingError(
+			`BL instruction precision loss detected: ` +
+			`Expected target 0x${toAddr.toString(16)}, ` +
+			`but decodes to 0x${decodedTarget.toString(16)} ` +
+			`(${precisionLoss > 0 ? '+' : ''}${precisionLoss} bytes).\n` +
+			`This is caused by patch address 0x${fromAddr.toString(16)} not being 4-byte aligned ` +
+			`(mod 4 = ${fromAddr % 4}).\n` +
+			`Patching this firmware would result in incorrect execution and CANNOT be allowed.`
+		);
+	}
+
+	return blBytes;
 }
 
 /**
@@ -339,9 +358,9 @@ export function decodeBlTarget(fromAddr: number, blBytes: Uint8Array): number {
 
 	// Reconstruct offset
 	// BL encoding stores offset as (offset >> 1) where offset is the byte difference
-	// The encoding format is: S:I1:I2:imm10:imm11 where imm11 is bits [10:0] of offset >> 1
-	// So imm11 is placed at bits [10:0] (no shift needed)
-	const imm25 = (S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | imm11;
+	// The encoding format is: S:I1:I2:imm10:imm11 where imm11 is bits [11:1] of offset >> 1
+	// So imm11 needs to be placed at bits [11:1], meaning we shift left by 1
+	const imm25 = (S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | (imm11 << 1);
 
 	// Sign extend imm25 from 25 bits to 32 bits
 	let imm32: number;

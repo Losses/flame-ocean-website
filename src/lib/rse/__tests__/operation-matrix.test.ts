@@ -235,6 +235,98 @@ describe('Complete Operation Matrix Tests', () => {
 		});
 	});
 
+	describe('Partial re-patch scenarios (Both → FLAC, Both → Menu)', () => {
+		testVersions.forEach(version => {
+			const firmwarePath = `/tmp/echo-mini-firmwares/${version}/${version}/HIFIEC40.IMG`;
+
+			if (!existsSync(firmwarePath)) {
+				it.skip(`should test ${version} - firmware not found`);
+				return;
+			}
+
+			const colors1 = generateValidColors();
+			const colors2 = generateValidColors();
+			// Modify colors2 to be different
+			colors2.flac = [0xFF00, 0xF800, 0x001F, 0x07FF, 0xFFFF];
+			colors2.menu = [];
+			for (let reg = 0; reg < 3; reg++) {
+				for (let theme = 0; theme < 5; theme++) {
+					colors2.menu.push(0x07FF + (theme * 0x1000) + (reg * 0x100));
+				}
+			}
+
+			describe(`Version ${version}`, () => {
+				it('should re-patch from Both to FLAC only', async () => {
+					const patcher = new ThemePatcher(readFileSync(firmwarePath));
+					const outputPath1 = `/tmp/test-${version.replace(/\s+/g, '_')}-both-to-flac-1.IMG`;
+					const outputPath2 = `/tmp/test-${version.replace(/\s+/g, '_')}-both-to-flac-2.IMG`;
+
+					if (existsSync(outputPath1)) unlinkSync(outputPath1);
+					if (existsSync(outputPath2)) unlinkSync(outputPath2);
+
+					// First patch: Both FLAC and Menu
+					let result = patcher.patch(
+						{ flacColors: colors1.flac, menuColors: colors1.menu },
+						outputPath1,
+						true
+					);
+					expect(result.success).toBe(true);
+
+					// Re-patch: FLAC only (Menu should keep colors1)
+					const patchedData1 = readFileSync(outputPath1);
+					const patcher2 = new ThemePatcher(patchedData1);
+					result = patcher2.patch(
+						{ flacColors: colors2.flac },  // Only FLAC
+						outputPath2,
+						true
+					);
+					expect(result.success).toBe(true);
+
+					// Verify output firmware is valid
+					const patchedData2 = readFileSync(outputPath2);
+					expect(patchedData2.length).toBeGreaterThan(0);
+
+					unlinkSync(outputPath1);
+					unlinkSync(outputPath2);
+				});
+
+				it('should re-patch from Both to Menu only', async () => {
+					const patcher = new ThemePatcher(readFileSync(firmwarePath));
+					const outputPath1 = `/tmp/test-${version.replace(/\s+/g, '_')}-both-to-menu-1.IMG`;
+					const outputPath2 = `/tmp/test-${version.replace(/\s+/g, '_')}-both-to-menu-2.IMG`;
+
+					if (existsSync(outputPath1)) unlinkSync(outputPath1);
+					if (existsSync(outputPath2)) unlinkSync(outputPath2);
+
+					// First patch: Both FLAC and Menu
+					let result = patcher.patch(
+						{ flacColors: colors1.flac, menuColors: colors1.menu },
+						outputPath1,
+						true
+					);
+					expect(result.success).toBe(true);
+
+					// Re-patch: Menu only (FLAC should keep colors1)
+					const patchedData1 = readFileSync(outputPath1);
+					const patcher2 = new ThemePatcher(patchedData1);
+					result = patcher2.patch(
+						{ menuColors: colors2.menu },  // Only Menu
+						outputPath2,
+						true
+					);
+					expect(result.success).toBe(true);
+
+					// Verify output firmware is valid
+					const patchedData2 = readFileSync(outputPath2);
+					expect(patchedData2.length).toBeGreaterThan(0);
+
+					unlinkSync(outputPath1);
+					unlinkSync(outputPath2);
+				});
+			});
+		});
+	});
+
 	describe('Cross-version compatibility', () => {
 		it('should produce consistent results across versions', () => {
 			const results: Array<{ version: string; success: boolean }> = [];
