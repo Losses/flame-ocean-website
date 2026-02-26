@@ -41,27 +41,17 @@ export function encodeBl(fromAddr: number, toAddr: number): Uint8Array {
 		throw new ThumbEncodingError(`BL offset out of range: ${offset}`);
 	}
 
-	// Get 25-bit signed value (offset >> 1 because Thumb is 16-bit aligned)
-	const offsetShifted = offset >> 1;
+	// Get 25-bit value (offset >> 1 because Thumb is 16-bit aligned)
+	// Use unsigned AND to get the lower 25 bits (matches Python implementation)
+	const imm25 = (offset >> 1) & 0x1FFFFFF;
 
-	// Convert to signed 25-bit integer
-	// In JavaScript, we need to handle sign extension manually
-	let imm25: number;
-	if (offsetShifted >= 0) {
-		// Positive: just take lower 25 bits
-		imm25 = offsetShifted & 0x1ffffff;
-	} else {
-		// Negative: convert to two's complement 25-bit representation
-		imm25 = ((offsetShifted & 0x1ffffff) + 0x10000000) | 0xfe000000;
-	}
-
-	// Sign bit (bit 24 of the 25-bit value)
-	const S = (imm25 >> 24) & 1;
+	// Sign bit based on original offset (not imm25) - matches Python implementation
+	const S = offset < 0 ? 1 : 0;
 
 	// Extract components from 25-bit value
 	// imm10 = bits [21:12] (10 bits)
 	const imm10 = (imm25 >> 12) & 0x3ff;
-	// imm11 = bits [11:1] (11 bits)
+	// imm11 = bits [11:1] (11 bits) - note: shift right by 1 to skip bit 0
 	const imm11 = (imm25 >> 1) & 0x7ff;
 	// I1, I2 = sign extension bits [23:22]
 	const I1 = (imm25 >> 23) & 1;
@@ -368,9 +358,9 @@ export function decodeBlTarget(fromAddr: number, blBytes: Uint8Array): number {
 		imm32 = imm32 - 0x100000000;
 	}
 
-	// Calculate target: PC + 4 + (imm32 * 2) + 2
-	// The +2 accounts for Thumb instruction alignment issues
-	return fromAddr + 4 + (imm32 << 1) + 2;
+	// Calculate target: from + 4 + (imm32 << 1)
+	// imm32 already contains (offset >> 1), so we shift left to get the actual offset
+	return fromAddr + 4 + (imm32 << 1);
 }
 
 /**

@@ -677,6 +677,7 @@ export class ThumbDecoder {
 		const i1 = ~(j1 ^ s) & 1;
 		const i2 = ~(j2 ^ s) & 1;
 
+		// Construct imm32 with imm11 at bits [11:1] (shifted left by 1)
 		let imm32 = (s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1);
 		if (s) {
 			imm32 = imm32 | 0xfe000000;
