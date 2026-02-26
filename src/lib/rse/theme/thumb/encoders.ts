@@ -5,10 +5,13 @@
  * Ported from theme_patcher.py encode functions.
  */
 
+import { EncodingError } from '../errors.js';
+
 /**
  * Custom error for Thumb instruction encoding errors
+ * Extends EncodingError for proper error handling
  */
-export class ThumbEncodingError extends Error {
+export class ThumbEncodingError extends EncodingError {
 	constructor(message: string) {
 		super(message);
 		this.name = 'ThumbEncodingError';
