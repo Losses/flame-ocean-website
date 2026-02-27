@@ -830,7 +830,7 @@ export class ThemePatcher {
 			console.error('[DEBUG] Step 1: NOP slide selection and safety check completed');
 
 			// Create patch data (skip safety check for re-patch)
-			const patchData = this.createPatchData(flacColors, menuColors, nopSlide, isRepatch, intent);
+			const patchData = this.createPatchData(flacColors, menuColors, nopSlide, isRepatch, intent, analysis.patchStatus);
 			console.error('[DEBUG] Step 2: createPatchData() completed');
 
 			// Apply patches
@@ -922,7 +922,8 @@ export class ThemePatcher {
 		menuColors: number[],
 		nopSlide: NopSlide,
 		isRepatchInput = false,
-		intent: { flacCustom: boolean; menuCustom: boolean } = { flacCustom: true, menuCustom: true }
+		intent: { flacCustom: boolean; menuCustom: boolean } = { flacCustom: true, menuCustom: true },
+		patchStatus?: { flacPatched: boolean; menuPatched: boolean }
 	): { flacCodeAddr: number; menuCodeAddr: number; code: Uint8Array; metadataAddr: number } {
 		// DEBUG: Log input NOP slide
 		console.error(`[DEBUG] createPatchData: nopSlide.start = 0x${nopSlide.start.toString(16)}, size = ${nopSlide.size}`);
@@ -945,9 +946,11 @@ export class ThemePatcher {
 		const actualFlacHandler = this.generateFlacHandler(flacColors);
 		const actualMenuHandler = this.generateMenuHandler(menuColors);
 
-		// During re-patching, always use both handlers to ensure consistent layout
-		// This prevents issues when adding a handler that didn't exist before
-		const useBothHandlers = isRepatchInput;
+		// During re-patching, use both handlers only if both were previously patched
+		// This preserves user's intent when they only want to update one handler
+		// If both handlers existed before, we keep both to maintain consistent layout
+		const bothHandlersPreviouslyPatched = patchStatus?.flacPatched && patchStatus?.menuPatched;
+		const useBothHandlers = isRepatchInput && bothHandlersPreviouslyPatched;
 
 		// Determine which handlers to include in code buffer
 		const flacHandler = (intent.flacCustom || useBothHandlers) ? actualFlacHandler : new Uint8Array(0);
