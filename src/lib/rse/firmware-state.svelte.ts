@@ -1910,9 +1910,6 @@ export class FirmwareState {
           this.progress = 60;
           this.statusMessage = "Verifying patch...";
 
-          // Round-trip verification: extract colors from patched firmware
-          const verifyResult = extractThemeColors(patchedData);
-
           // Verify FLAC colors using getColorsForFunction
           // This correctly handles both patched and unpatched firmware
           const verifyExtractor = new ThemeColorExtractor(patchedData);
@@ -1928,40 +1925,17 @@ export class FirmwareState {
           }
 
           // Verify Menu colors weren't affected (only if Menu was already patched)
-          if (menuHasBl) {
-            const verifyMenuFunc = verifyResult.themeFunctions.find(f => f.type === 'menu');
-            if (verifyMenuFunc) {
-              const verifyWritesByTheme: Map<number, import("$lib/rse/theme").ColorWrite[]> = new Map();
-              for (const write of verifyMenuFunc.colorWrites) {
-                const tId = write.themeCondition ?? 0;
-                if (!verifyWritesByTheme.has(tId)) {
-                  verifyWritesByTheme.set(tId, []);
-                }
-                verifyWritesByTheme.get(tId)!.push(write);
-              }
+          if (menuHasBl && currentMenuColors) {
+            // Use getColorsForFunction for reliable extraction (handles patched firmware)
+            const verifyExtractor = new ThemeColorExtractor(patchedData);
+            const actualMenuColors = verifyExtractor.getColorsForFunction('menu');
 
-              for (let tId = 0; tId < 5; tId++) {
-                const themeWrites = verifyWritesByTheme.get(tId) || [];
-                const themeColors: Map<number, number> = new Map();
-                for (const write of themeWrites) {
-                  if (write.targetReg === 1 || write.targetReg === 2 || write.targetReg === 3) {
-                    themeColors.set(write.targetReg, write.colorValue);
-                  }
-                }
+            for (let i = 0; i < currentMenuColors.length; i++) {
+              const expectedColor = currentMenuColors[i];
+              const actualColor = actualMenuColors[i];
 
-                const r1 = themeColors.get(1) ?? 0;
-                const r2 = themeColors.get(2) ?? 0;
-                const r3 = themeColors.get(3) ?? 0;
-
-                if (r1 !== currentMenuColors![tId]) {
-                  throw new Error(`Menu R1 color for theme ${tId} was modified: expected 0x${currentMenuColors![tId].toString(16)}, got 0x${r1.toString(16)}`);
-                }
-                if (r2 !== currentMenuColors![tId + 5]) {
-                  throw new Error(`Menu R2 color for theme ${tId} was modified: expected 0x${currentMenuColors![tId + 5].toString(16)}, got 0x${r2.toString(16)}`);
-                }
-                if (r3 !== currentMenuColors![tId + 10]) {
-                  throw new Error(`Menu R3 color for theme ${tId} was modified: expected 0x${currentMenuColors![tId + 10].toString(16)}, got 0x${r3.toString(16)}`);
-                }
+              if (actualColor !== expectedColor) {
+                throw new Error(`Menu color verification failed for index ${i}: expected 0x${expectedColor.toString(16)}, got 0x${actualColor.toString(16)}`);
               }
             }
           }

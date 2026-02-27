@@ -6,7 +6,7 @@
  */
 
 import { ThumbDecoder } from './thumb/index.js';
-import { ThemeDiscovery } from './discovery.js';
+import { ThemeDiscovery, discoverMenuFunction } from './discovery.js';
 import { ControlFlowSimulator } from './simulator.js';
 import { BehaviorAnalyzer } from './behavior.js';
 import { createColorMap, type ThemeFunction, type AnalysisResult, type FlacBehavior, type ColorWrite } from './types.js';
@@ -15,6 +15,7 @@ import {
 	AnalysisError,
 	throwThemeError
 } from './errors.js';
+import { PatchDetector } from './detector.js';
 
 /**
  * Theme Color Extractor Class
@@ -25,11 +26,13 @@ export class ThemeColorExtractor {
 	private readonly decoder: ThumbDecoder;
 	private readonly discovery: ThemeDiscovery;
 	private readonly behaviorAnalyzer: BehaviorAnalyzer;
+	private readonly data: Uint8Array;
 
 	/**
 	 * Create a new ThemeColorExtractor
 	 */
 	constructor(firmwareData: Uint8Array) {
+		this.data = firmwareData;
 		this.decoder = new ThumbDecoder(firmwareData);
 		this.discovery = new ThemeDiscovery(this.decoder);
 		this.behaviorAnalyzer = new BehaviorAnalyzer(this.decoder);
@@ -193,7 +196,57 @@ export class ThemeColorExtractor {
 				}
 			}
 		} else if (funcType === 'menu') {
-			// Menu: Return 3 colors per theme (R1, R2, R3 for each theme)
+			// Menu: Check if firmware is patched by using discoverMenuFunction
+			const menuDiscovery = discoverMenuFunction(this.data);
+			const isPatched = menuDiscovery !== null;
+
+			if (isPatched) {
+				// Menu is patched - read metadata from NOP slide
+				// [funcAddr, patchAddr] = menuDiscovery
+				const [, patchAddr] = menuDiscovery;
+
+				// Decode BL instruction to get NOP slide start
+				const detector = new PatchDetector(this.data);
+				const nopSlideStart = detector.decodeBlTarget(patchAddr);
+
+				// Find NOP slide end by looking for metadata signature
+				// Metadata is always last 51 bytes of NOP slide
+				// Standard NOP slide size is 256 bytes
+				let nopSlideEnd = nopSlideStart + 256;
+				if (nopSlideEnd > this.data.length) {
+					nopSlideEnd = this.data.length;
+				}
+
+				// Try to read metadata
+				const nopSlide = {
+					start: nopSlideStart,
+					end: nopSlideEnd,
+					size: nopSlideEnd - nopSlideStart,
+					source: 'extractor',
+					isActive: true,
+					referenceCount: 0
+				};
+
+				const metadata = detector.readPatchMetadata(nopSlide);
+				if (metadata && metadata.menuColors && metadata.menuColors.length === 15) {
+					// Found valid metadata with Menu colors
+					console.error('[DEBUG] Menu colors from metadata:', metadata.menuColors.map(c => '0x' + c.toString(16)));
+					return [...metadata.menuColors];
+				} else {
+					// Menu appears to be patched but metadata is invalid
+					console.error('[ERROR] Menu is patched but metadata is invalid or missing');
+					console.error('[ERROR] NOP slide:', nopSlide);
+					console.error('[ERROR] Metadata:', metadata);
+					throw new NotFoundError(
+						'Menu function is patched but metadata cannot be read.\n\n' +
+						'This may indicate a corrupted patch.\n' +
+						'Please start with a clean original firmware file.'
+					);
+				}
+			}
+
+			// Unpatched firmware: use simulator
+			console.error('[DEBUG] Menu is unpatched, using simulator');
 			for (let themeId = 0; themeId < themeCount; themeId++) {
 				const simulator = new ControlFlowSimulator(this.decoder);
 				const themeRegister = func.themeRegister ?? 12; // Menu uses R12
@@ -208,6 +261,7 @@ export class ThemeColorExtractor {
 				allColors.push(registers.get(2) || 0);
 				allColors.push(registers.get(3) || 0);
 			}
+			console.error('[DEBUG] Menu colors from simulator:', allColors.map(c => '0x' + c.toString(16)));
 		}
 
 		return allColors;
