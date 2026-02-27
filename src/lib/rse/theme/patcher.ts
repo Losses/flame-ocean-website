@@ -5,7 +5,7 @@
  * Uses detection, NOP slide finding, and instruction encoding to patch.
  */
 
-import { encodeBl, encodeMovw, encodeMovt } from './thumb/encoders.js';
+import { encodeBl, encodeMovw, encodeMovt, decodeBlTarget } from './thumb/encoders.js';
 import { fileIO } from '../utils/file-io.js';
 import { NopSlideFinder } from './nop-slide.js';
 import { CodeReferenceAnalyzer, type LandingPoint, type NopSlideAnalysis } from './code-reference-analyzer.js';
@@ -417,18 +417,32 @@ export class ThemePatcher {
 	/**
 	 * Find existing NOP slide from patched firmware
 	 *
-	 * Uses signature-based discovery to find our patch code and NOP slide.
+	 * Uses direct BL instruction scanning to find our patch code and NOP slide.
+	 * This is more reliable than signature-based discovery for re-patching scenarios.
 	 */
 	private findExistingNopSlide(): NopSlide | null {
-		// Use signature-based discovery to find existing patches
-		const patches = discoverPatchesBySignature(this.data);
-		if (!patches) {
+		// Find FLAC function and get the BL instruction
+		const flacResult = discoverFlacFunction(this.data, this.version);
+		if (!flacResult) {
 			return null;
 		}
 
-		const { nopSlideAddr } = patches;
+		const [funcAddr, patchAddr] = flacResult;
 
-		// Find the metadata first (it's at the end of the NOP slide)
+		// Decode the BL instruction to get the handler address
+		const blBytes = this.data.slice(patchAddr, patchAddr + 4);
+		const hw1 = blBytes[0] | (blBytes[1] << 8);
+		const hw2 = blBytes[2] | (blBytes[3] << 8);
+
+		// Verify this is a BL instruction
+		if ((hw1 & 0xf800) !== 0xf000 || (hw2 & 0xd000) !== 0xd000) {
+			return null;
+		}
+
+		// Decode BL target to get NOP slide start
+		const nopSlideAddr = decodeBlTarget(patchAddr, blBytes);
+
+		// Find the metadata (it's at the end of the NOP slide)
 		// Metadata is 51 bytes and starts with 'ECHO' magic
 		const METADATA_SIZE = 51;
 		const MAX_SEARCH = 1024;
@@ -453,37 +467,73 @@ export class ThemePatcher {
 		}
 
 		// Now search backward from the NOP slide area to find the start
-		// Look for the boundary between zeros and code
+		// CRITICAL: NOP slide is a continuous region of zeros. We need to find the
+		// START of the zero region, not just where patch code begins.
+		//
+		// The problem with the old logic:
+		// - It searched backward and found the first non-zero byte before patch code
+		// - But this could be original firmware data (like 0x1C64B8: 00 00 80 00)
+		// - The real NOP slide start is further back where zeros CONTINUOUSLY begin
+		//
+		// New logic: Find the start of CONTINUOUS zeros
 		let start = nopSlideAddr;
 		const MAX_BACK = 512;
-		for (let back = 0; back < MAX_BACK; back++) {
-			const checkAddr = nopSlideAddr - back;
-			if (checkAddr < 0) break;
 
-			// Look for zero bytes before code
-			// NOP slide typically has zeros (possibly with 2-byte padding), then code
-			if (this.data[checkAddr] === 0x00 && this.data[checkAddr + 1] === 0x00) {
-				// Check if this is followed by non-zero code after potential padding
-				let afterPadding = checkAddr + 2;
-				// Skip 2-byte padding
-				if (afterPadding < this.data.length && this.data[afterPadding] !== 0x00) {
-					start = afterPadding;
-					break;
-				}
-				// Check if code starts immediately (no padding)
-				if (checkAddr + 1 < this.data.length && this.data[checkAddr + 1] !== 0x00) {
-					start = checkAddr + 1;
-					break;
-				}
+		// First, search backward to find the start of the continuous zero region
+		// CRITICAL: Check 4-byte aligned addresses only, and stop at the first non-zero boundary
+		let zeroStart = nopSlideAddr;
+		for (let back = 0; back < MAX_BACK; back += 4) {
+			const checkAddr = nopSlideAddr - back;
+			if (checkAddr < 4) break; // Need at least 4 bytes to check
+
+			// Check 4 bytes for zeros (NOP slide typically has consecutive zeros)
+			const isZero = this.data[checkAddr] === 0x00 &&
+			               this.data[checkAddr + 1] === 0x00 &&
+			               this.data[checkAddr + 2] === 0x00 &&
+			               this.data[checkAddr + 3] === 0x00;
+
+			if (isZero) {
+				zeroStart = checkAddr;
+			} else {
+				// Found non-zero byte, this is the boundary
+				break;
 			}
 		}
+
+		// zeroStart is now at the beginning of the zero region
+		// But we need to ensure it's 4-byte aligned BEFORE any patch code was written
+		// The original NOP slide should be 4-byte aligned
+		start = zeroStart;
 
 		// CRITICAL: Ensure NOP slide start is 4-byte aligned for BL instruction precision
 		// BL instructions in Thumb mode can only target addresses that are 4-byte aligned
 		// (the offset is encoded with bit 0 implied as 1, so odd addresses lose precision)
+		//
+		// IMPORTANT: Only align if we're NOT already on a patch code boundary
+		// If the start is already at patch code (non-zero), we found the wrong boundary
 		if (start % 4 !== 0) {
-			// Round up to next 4-byte boundary
-			start = start + (4 - (start % 4));
+			// Check if aligning would put us in zero region
+			const alignedStart = start + (4 - (start % 4));
+			let isZeroRegion = true;
+			for (let i = 0; i < 16; i++) {
+				const checkAddr = alignedStart + i;
+				if (checkAddr >= this.data.length) {
+					isZeroRegion = false;
+					break;
+				}
+				if (this.data[checkAddr] !== 0x00) {
+					isZeroRegion = false;
+					break;
+				}
+			}
+
+			if (isZeroRegion) {
+				// Safe to align
+				start = alignedStart;
+			} else {
+				// Would move into non-zero region, keep current start
+				// This shouldn't happen if the zero region detection is correct
+			}
 		}
 
 		const nopSlideSize = end - start;

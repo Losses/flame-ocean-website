@@ -936,6 +936,19 @@ async function runComprehensiveTests() {
 					if (secondPatchResult.success) {
 						console.log(`    ✓ Second patch: SUCCESS`);
 
+						// CRITICAL: Verify second patch reuses the same NOP slide as first patch
+						// This prevents the bootloop bug where second patch creates a new NOP slide
+						if (secondPatchResult.nopSlideAddr !== firstPatchResult.nopSlideAddr) {
+							const delta = secondPatchResult.nopSlideAddr - firstPatchResult.nopSlideAddr;
+							console.log(`    ✗ Second patch created NEW NOP slide (should reuse existing)`);
+							console.log(`      First:  0x${firstPatchResult.nopSlideAddr.toString(16)}`);
+							console.log(`      Second: 0x${secondPatchResult.nopSlideAddr.toString(16)}`);
+							console.log(`      Delta:  ${delta >= 0 ? '+' : ''}${delta} bytes`);
+							scenarioResults.verificationFailed = true;
+						} else {
+							console.log(`    ✓ NOP slide reused: 0x${firstPatchResult.nopSlideAddr.toString(16)}`);
+						}
+
 						// Find BL instruction in patched firmware for BL verification test
 						const patchedData2 = readFileSync(secondOutputPath);
 						const blAddr2 = findBlInFunction(patchedData2, firmware.flacAddr);
