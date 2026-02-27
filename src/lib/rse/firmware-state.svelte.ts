@@ -951,38 +951,8 @@ export class FirmwareState {
       console.error('[DEBUG] Original FLAC colors:', currentFlacColors.map(c => '0x' + c.toString(16)));
 
       // Extract Menu colors (required for patching)
-      const menuFunc = result.themeFunctions.find(f => f.type === 'menu');
-      if (!menuFunc) {
-        throw new Error("Menu function not found - required for FLAC patching");
-      }
-
-      // Extract Menu colors
-      const currentMenuColors: number[] = [];
-      const writesByTheme: Map<number, import("$lib/rse/theme").ColorWrite[]> = new Map();
-      for (const write of menuFunc.colorWrites) {
-        const themeId = write.themeCondition ?? 0;
-        if (!writesByTheme.has(themeId)) {
-          writesByTheme.set(themeId, []);
-        }
-        writesByTheme.get(themeId)!.push(write);
-      }
-
-      // Process each theme's writes to get the final colors for R1, R2, R3
-      for (let themeId = 0; themeId < 5; themeId++) {
-        const themeWrites = writesByTheme.get(themeId) || [];
-        const themeColors: Map<number, number> = new Map();
-
-        for (const write of themeWrites) {
-          if (write.targetReg === 1 || write.targetReg === 2 || write.targetReg === 3) {
-            themeColors.set(write.targetReg, write.colorValue);
-          }
-        }
-
-        // Order: R1 (index 0-4), R2 (index 5-9), R3 (index 10-14)
-        currentMenuColors[themeId] = themeColors.get(1) ?? 0;
-        currentMenuColors[themeId + 5] = themeColors.get(2) ?? 0;
-        currentMenuColors[themeId + 10] = themeColors.get(3) ?? 0;
-      }
+      // Use getColorsForFunction to correctly handle both patched and unpatched firmware
+      const currentMenuColors = extractor.getColorsForFunction('menu');
 
       this.progress = 30;
       this.statusMessage = "Applying FLAC patch...";
@@ -1877,28 +1847,8 @@ export class FirmwareState {
           currentFlacColors[themeId] = rgb565;  // Update the selected theme color
 
           // Extract current Menu colors
-          const currentMenuColors: number[] = [];
-          const writesByTheme: Map<number, import("$lib/rse/theme").ColorWrite[]> = new Map();
-          for (const write of menuFunc.colorWrites) {
-            const tId = write.themeCondition ?? 0;
-            if (!writesByTheme.has(tId)) {
-              writesByTheme.set(tId, []);
-            }
-            writesByTheme.get(tId)!.push(write);
-          }
-
-          for (let tId = 0; tId < 5; tId++) {
-            const themeWrites = writesByTheme.get(tId) || [];
-            const themeColors: Map<number, number> = new Map();
-            for (const write of themeWrites) {
-              if (write.targetReg === 1 || write.targetReg === 2 || write.targetReg === 3) {
-                themeColors.set(write.targetReg, write.colorValue);
-              }
-            }
-            currentMenuColors[tId] = themeColors.get(1) ?? 0;
-            currentMenuColors[tId + 5] = themeColors.get(2) ?? 0;
-            currentMenuColors[tId + 10] = themeColors.get(3) ?? 0;
-          }
+          // Use getColorsForFunction to correctly handle both patched and unpatched firmware
+          const currentMenuColors = extractor.getColorsForFunction('menu');
 
           this.progress = 40;
           this.statusMessage = "Applying patch...";
