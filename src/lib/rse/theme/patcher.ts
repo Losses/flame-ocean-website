@@ -478,6 +478,14 @@ export class ThemePatcher {
 			}
 		}
 
+		// CRITICAL: Ensure NOP slide start is 4-byte aligned for BL instruction precision
+		// BL instructions in Thumb mode can only target addresses that are 4-byte aligned
+		// (the offset is encoded with bit 0 implied as 1, so odd addresses lose precision)
+		if (start % 4 !== 0) {
+			// Round up to next 4-byte boundary
+			start = start + (4 - (start % 4));
+		}
+
 		const nopSlideSize = end - start;
 
 		return {
