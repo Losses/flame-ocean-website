@@ -163,25 +163,23 @@ print(f"Expected color: 0x{EXPECTED_COLOR:X} (theme {THEME_INDEX})")
 # Initialize emulator
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
 
-# Map ENTIRE firmware code region (0x80000 - 0x100000 covers most functions)
-# This ensures all function calls can execute
-CODE_BASE = 0x80000
-CODE_SIZE = 0x80000  # 512KB
-mu.mem_map(CODE_BASE, CODE_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
+# RKNanoD memory map:
+# Flash:    0x00000000 - 0x02100000 (33MB)
+# SYSRAM0:  0x03000000 - 0x0304FFFF (320KB)
+# SYSRAM1:  0x03050000 - 0x0308FFFF (256KB)
 
-# Also map handler region if it's outside code region
-if EXPECTED_HANDLER < CODE_BASE or EXPECTED_HANDLER >= CODE_BASE + CODE_SIZE:
-    handler_base = EXPECTED_HANDLER & ~0xFFF
-    mu.mem_map(handler_base, 0x10000, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
+# Map entire Flash region for code execution
+FLASH_BASE = 0x00000000
+FLASH_SIZE = 0x02100000  # 33MB
+mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
 
-# Map stack region
-mu.mem_map(0x20000000, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
+# Map SYSRAM0 for stack
+SYSRAM0_BASE = 0x03000000
+SYSRAM0_SIZE = 0x00050000  # 320KB
+mu.mem_map(SYSRAM0_BASE, SYSRAM0_SIZE, UC_PROT_READ | UC_PROT_WRITE)
 
-# Write firmware code to memory
-mu.mem_write(CODE_BASE, data[CODE_BASE:CODE_BASE + CODE_SIZE])
-
-if EXPECTED_HANDLER < CODE_BASE or EXPECTED_HANDLER >= CODE_BASE + CODE_SIZE:
-    mu.mem_write(handler_base, data[handler_base:handler_base + 0x10000])
+# Write entire firmware to Flash
+mu.mem_write(FLASH_BASE, data[FLASH_BASE:FLASH_BASE + FLASH_SIZE])
 
 # Execution tracking
 bl_executed = False
@@ -277,65 +275,6 @@ def hook_code(uc, address, size, user_data):
             uc.emu_stop()
     except:
         pass
-        bl_executed = True
-        # Read BL instruction bytes
-        bl_bytes = uc.mem_read(BL_ADDR, 4)
-        hw1 = bl_bytes[0] | (bl_bytes[1] << 8)
-        hw2 = bl_bytes[2] | (bl_bytes[3] << 8)
-
-        # Verify this is a BL instruction
-        if (hw1 & 0xf800) == 0xf000 and (hw2 & 0xd000) == 0xd000:
-            # Decode BL target
-            S = (hw1 >> 10) & 1
-            J1 = (hw2 >> 13) & 1
-            J2 = (hw2 >> 11) & 1
-            imm10 = hw1 & 0x3FF
-            imm11 = hw2 & 0x7FF
-
-            I1 = (~(J1 ^ S)) & 1
-            I2 = (~(J2 ^ S)) & 1
-
-            imm25 = (S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | (imm11 << 1)
-            imm32 = imm25 << 1
-            if S:
-                imm32 |= 0xFE000000
-
-            bl_target_actual = BL_ADDR + 4 + imm32
-
-            print(f"  ✓ BL executed at 0x{address:X}")
-            print(f"  → BL target: 0x{bl_target_actual:X}")
-
-            # CRITICAL: Verify BL precision
-            if bl_target_actual != EXPECTED_HANDLER:
-                precision_error = bl_target_actual - EXPECTED_HANDLER
-                print(f"  ✗ BL PRECISION LOSS DETECTED!")
-                print(f"    Expected: 0x{EXPECTED_HANDLER:X}")
-                print(f"    Actual:   0x{bl_target_actual:X}")
-                print(f"    Error:    {precision_error:+d} bytes")
-                uc.emu_stop()
-                return
-            else:
-                print(f"  ✓ BL precision verified (exact match)")
-                # DON'T stop - let execution continue to handler
-        else:
-            print(f"  ✗ Not a BL instruction at 0x{address:X}")
-            uc.emu_stop()
-
-    # Check if we entered the handler
-    if address == EXPECTED_HANDLER:
-        handler_executed = True
-        print(f"  ✓ Handler entered at 0x{address:X}")
-
-    # Check for BX LR (handler return)
-    try:
-        instr_bytes = uc.mem_read(address, 2)
-        if instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47:  # BX LR
-            bx_lr_executed = True
-            final_r0_value = uc.reg_read(UC_ARM_REG_R0)
-            print(f"  ✓ BX LR executed, R0 = 0x{final_r0_value & 0xFFFF:X}")
-            uc.emu_stop()
-    except:
-        pass
 
 # Hook code execution
 mu.hook_add(UC_HOOK_CODE, hook_code)
@@ -352,19 +291,9 @@ def hook_mem_invalid(uc, access, address, size, value, user_data):
 
 mu.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, hook_mem_invalid)
 
-# Hook to stop after BL execution
-stop_after_bl = False
-
-def hook_code_debug(uc, address, size, user_data):
-    global stop_after_bl
-    # Stop a few instructions after BL
-    if stop_after_bl and instruction_count > 10:
-        print(f"  ⚠ Stopped after BL, final PC=0x{address:X}")
-        uc.emu_stop()
-
 # Set up initial state
 mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)  # Thumb mode
-mu.reg_write(UC_ARM_REG_SP, 0x20008000)
+mu.reg_write(UC_ARM_REG_SP, 0x03050000)    # RKNanoD SYSRAM0 stack (top of 320KB)
 mu.reg_write(UC_ARM_REG_R0, 0x30000000)    # Destination address (unused by handler)
 mu.reg_write(UC_ARM_REG_R1, THEME_INDEX)   # Theme index
 mu.reg_write(UC_ARM_REG_PC, FLAC_FUNC | 1) # Start from FLAC FUNCTION, not handler!

@@ -2,9 +2,9 @@
  * Comprehensive Unicorn Test Runner for Theme Patcher
  *
  * This script tests ALL patching combinations:
- * - First patch: FLAC-only, Menu-only, Both (3 options)
- * - Second patch: FLAC-only, Menu-only, Both (3 options)
- * - Total: 9 scenarios
+ * - Single-patch scenarios: Original → FLAC-only, Original → Menu-only, Original → Both (3 scenarios)
+ * - Two-patch scenarios: First patch × Second patch (9 scenarios)
+ * - Total: 12 scenarios
  *
  * For each scenario, we:
  * 1. Use the TypeScript patcher to create patched firmware
@@ -14,9 +14,9 @@
  * Usage: bun run src/lib/rse/__tests__/run-unicorn-comprehensive.ts
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { execSync } from 'child_process';
-import { join, dirname } from 'path';
+import { join } from 'path';
 import { ThemePatcher } from '../theme/patcher.js';
 
 const PYTHON_PATH = '/nix/store/lc6q15imd72k6a4mpm9zzr3g0yygs4k6-system-path/bin/python3';
@@ -132,6 +132,31 @@ const SCENARIO_TEMPLATES = [
 	}
 ];
 
+// Single-patch scenarios (test one patch only, no second patch)
+const SINGLE_PATCH_SCENARIOS = [
+	{
+		id: 'single_flac',
+		name: 'Original → FLAC-only',
+		firstOp: 'flac-only' as const,
+		getFirstColors: () => ({ flacColors: TEST_COLORS.flac.first }),
+		isSinglePatch: true as const
+	},
+	{
+		id: 'single_menu',
+		name: 'Original → Menu-only',
+		firstOp: 'menu-only' as const,
+		getFirstColors: () => ({ menuColors: TEST_COLORS.menu.first }),
+		isSinglePatch: true as const
+	},
+	{
+		id: 'single_both',
+		name: 'Original → Both',
+		firstOp: 'both' as const,
+		getFirstColors: () => ({ flacColors: TEST_COLORS.flac.first, menuColors: TEST_COLORS.menu.first }),
+		isSinglePatch: true as const
+	}
+];
+
 /**
  * Create output directory
  */
@@ -145,16 +170,18 @@ function ensureOutputDir() {
 }
 
 /**
- * Generate Python Unicorn test script for a specific firmware and scenario
- * Uses the reference approach: emulate from NOP slide, not FLAC function
+ * Generate Python Unicorn test script with BL precision verification
+ * Tests COMPLETE execution flow: FLAC function → BL → handler → return
  */
-function generateUnicornScript(
-	firmwareInfo: typeof FIRMWARE_INFO[0],
-	scenarioName: string,
-	patchNumber: 1 | 2,
+function generateUnicornScriptWithBLVerification(
+	_firmwareInfo: typeof FIRMWARE_INFO[0],
+	_scenarioName: string,
+	_patchNumber: 1 | 2,
 	expectedFlac: number[],
 	patchedFirmwarePath: string,
-	nopSlideAddr: number
+	flacFuncAddr: number,
+	blAddr: number,
+	expectedHandlerAddr: number
 ): string {
 
 	return `
@@ -168,72 +195,240 @@ from unicorn.arm_const import *
 with open('${patchedFirmwarePath}', 'rb') as f:
     data = f.read()
 
-# NOP slide address from BL decoding (may have 2-byte padding)
-NOP_SLIDE_RAW = 0x${nopSlideAddr.toString(16)}
+# FLAC function and BL addresses
+FLAC_FUNC = 0x${flacFuncAddr.toString(16)}
+BL_ADDR = 0x${blAddr.toString(16)}
+EXPECTED_HANDLER = 0x${expectedHandlerAddr.toString(16)}
 
-# Find actual code start (skip 0x0000 padding)
-code_start = NOP_SLIDE_RAW
-while code_start < len(data) and data[code_start] == 0x00 and data[code_start + 1] == 0x00:
-    code_start += 2
+print(f"FLAC function: 0x{FLAC_FUNC:X}")
+print(f"BL instruction: 0x{BL_ADDR:X}")
+print(f"Expected handler: 0x{EXPECTED_HANDLER:X}")
 
-print(f"NOP slide raw: 0x{NOP_SLIDE_RAW:X}, code start: 0x{code_start:X}")
+# Verify NOP slide boundary protection
+# Check that handler is within expected NOP slide region
+NOP_SLIDE_START = EXPECTED_HANDLER & ~0xFFF  # Page-aligned
+NOP_SLIDE_END = NOP_SLIDE_START + 0x1000      # 4KB page
+
+if EXPECTED_HANDLER < NOP_SLIDE_START or EXPECTED_HANDLER >= NOP_SLIDE_END:
+    print(f"⚠ WARNING: Handler at 0x{EXPECTED_HANDLER:X} may be outside expected NOP slide")
+    print(f"  Expected range: 0x{NOP_SLIDE_START:X} - 0x{NOP_SLIDE_END:X}")
 
 # Initialize emulator
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
 
-# Page-align for memory mapping
-code_base = code_start & ~0xFFF
-mu.mem_map(code_base, 0x10000, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
+# RKNanoD memory map:
+# Flash:    0x00000000 - 0x02100000 (33MB)
+# SYSRAM0:  0x03000000 - 0x0304FFFF (320KB)
 
-# Write code (512 bytes from actual code start)
-mu.mem_write(code_start, data[code_start:code_start + 512])
+# Map entire Flash region for code execution
+FLASH_BASE = 0x00000000
+FLASH_SIZE = 0x02100000  # 33MB
+mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
 
-# Also map stack region
-mu.mem_map(0x20000000, 0x10000, UC_PROT_READ | UC_PROT_WRITE)
+# Map SYSRAM0 for stack
+SYSRAM0_BASE = 0x03000000
+SYSRAM0_SIZE = 0x00050000  # 320KB
+mu.mem_map(SYSRAM0_BASE, SYSRAM0_SIZE, UC_PROT_READ | UC_PROT_WRITE)
+
+# Write entire firmware to Flash
+mu.mem_write(FLASH_BASE, data[FLASH_BASE:FLASH_BASE + FLASH_SIZE])
 
 # Expected FLAC colors
 expected_flac = ${JSON.stringify(expectedFlac)}
 
-# Hook to stop at BX LR
+# Execution tracking
+bl_executed = False
+bl_target_actual = 0
+handler_executed = False
+bx_lr_executed = False
+flac_results = []
+instruction_count = 0
+MAX_INSTRUCTIONS = 1000
+
 def hook_code(uc, address, size, user_data):
+    global bl_executed, bl_target_actual, handler_executed, bx_lr_executed, flac_results, instruction_count
+
+    instruction_count += 1
+    if instruction_count > MAX_INSTRUCTIONS:
+        print(f"  ⚠ Stopped after {MAX_INSTRUCTIONS} instructions")
+        uc.emu_stop()
+        return
+
+    # Check if we're at the BL instruction
+    if address == BL_ADDR:
+        bl_executed = True
+        # Read BL instruction bytes
+        bl_bytes = uc.mem_read(BL_ADDR, 4)
+        hw1 = bl_bytes[0] | (bl_bytes[1] << 8)
+        hw2 = bl_bytes[2] | (bl_bytes[3] << 8)
+
+        # Verify this is a BL instruction
+        if (hw1 & 0xf800) == 0xf000 and (hw2 & 0xd000) == 0xd000:
+            # Decode BL target
+            S = (hw1 >> 10) & 1
+            J1 = (hw2 >> 13) & 1
+            J2 = (hw2 >> 11) & 1
+            imm10 = hw1 & 0x3FF
+            imm11 = hw2 & 0x7FF
+
+            I1 = (~(J1 ^ S)) & 1
+            I2 = (~(J2 ^ S)) & 1
+
+            imm25 = (S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | (imm11 << 1)
+            imm32 = imm25 << 1
+            if S:
+                imm32 |= 0xFE000000
+
+            bl_target_actual = BL_ADDR + 4 + imm32
+
+            print(f"  ✓ BL executed at 0x{address:X}")
+            print(f"  → BL target: 0x{bl_target_actual:X}")
+
+            # CRITICAL: Verify BL precision
+            if bl_target_actual != EXPECTED_HANDLER:
+                precision_error = bl_target_actual - EXPECTED_HANDLER
+                print(f"  ✗ BL PRECISION LOSS DETECTED!")
+                print(f"    Expected: 0x{EXPECTED_HANDLER:X}")
+                print(f"    Actual:   0x{bl_target_actual:X}")
+                print(f"    Error:    {precision_error:+d} bytes")
+                uc.emu_stop()
+                return
+            else:
+                print(f"  ✓ BL precision verified (exact match)")
+        else:
+            print(f"  ✗ Not a BL instruction at 0x{address:X}")
+            uc.emu_stop()
+
+    # Check if we entered the handler (clear Thumb bit for comparison)
+    if (address & ~1) == EXPECTED_HANDLER:
+        handler_executed = True
+        print(f"  ✓ Handler entered at 0x{address:X}")
+
+    # Check for BX LR (handler return)
     try:
         instr_bytes = uc.mem_read(address, 2)
         if instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47:  # BX LR
+            bx_lr_executed = True
+            r0_value = uc.reg_read(UC_ARM_REG_R0)
+            color_value = r0_value & 0xFFFF
+            # Get theme index from R1
+            theme_idx = uc.reg_read(UC_ARM_REG_R1)
+            if 0 <= theme_idx < len(expected_flac):
+                flac_results.append(color_value)
+                print(f"  ✓ BX LR executed, Theme {theme_idx}, R0 = 0x{color_value:X}")
+            else:
+                print(f"  ✓ BX LR executed, R0 = 0x{color_value:X}")
             uc.emu_stop()
     except:
         pass
 
+# Hook code execution
 mu.hook_add(UC_HOOK_CODE, hook_code)
 
+# Hook invalid memory access for debugging
+def hook_mem_invalid(uc, access, address, size, value, user_data):
+    if access == UC_MEM_WRITE:
+        print(f"  ⚠ Invalid write to 0x{address:X}, PC=0x{uc.reg_read(UC_ARM_REG_PC):X}")
+    else:
+        print(f"  ⚠ Invalid read from 0x{address:X}, PC=0x{uc.reg_read(UC_ARM_REG_PC):X}")
+    uc.emu_stop()
+    return False
+
+mu.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, hook_mem_invalid)
+
 # Emulate FLAC handler for each theme
-flac_results = []
 for theme_idx, expected_color in enumerate(expected_flac):
+    print(f"\\nTesting theme {theme_idx} (expected: 0x{expected_color:X})...")
+
+    # Reset tracking
+    bl_executed = False
+    bl_target_actual = 0
+    handler_executed = False
+    bx_lr_executed = False
+    instruction_count = 0
+
     # Set up registers
-    mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)
-    mu.reg_write(UC_ARM_REG_SP, 0x20008000)
-    mu.reg_write(UC_ARM_REG_R1, theme_idx)  # Theme index in R1
-    mu.reg_write(UC_ARM_REG_LR, (code_start + 100) | 1)
-    mu.reg_write(UC_ARM_REG_PC, code_start | 1)
+    mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)  # Thumb mode
+    mu.reg_write(UC_ARM_REG_SP, 0x03050000)    # RKNanoD SYSRAM0 stack
+    mu.reg_write(UC_ARM_REG_R1, theme_idx)     # Theme index in R1
+    mu.reg_write(UC_ARM_REG_LR, (FLAC_FUNC + 100) | 1)
+    mu.reg_write(UC_ARM_REG_PC, FLAC_FUNC | 1) # Start from FLAC FUNCTION!
 
     # Emulate
     try:
-        mu.emu_start(code_start | 1, (code_start + 1000) | 1, 0, 100)
-        r0 = mu.reg_read(UC_ARM_REG_R0)
-        flac_results.append(r0 & 0xFFFF)
+        mu.emu_start(FLAC_FUNC | 1, (FLAC_FUNC + 1000) | 1, 0, 1000)
     except UcError as e:
-        flac_results.append(0)
+        pass
 
-print(f"FLAC results: {flac_results}")
+print(f"\\nFLAC results: {flac_results}")
 print(f"Expected FLAC: {expected_flac}")
 
-# Verify
-if flac_results == expected_flac:
+# Verify execution flow
+success = True
+if not bl_executed:
+    print("✗ FAIL: BL instruction was not executed")
+    success = False
+else:
+    print("✓ BL instruction executed")
+
+if bl_target_actual != EXPECTED_HANDLER:
+    print(f"✗ FAIL: BL precision error (expected 0x{EXPECTED_HANDLER:X}, got 0x{bl_target_actual:X})")
+    success = False
+else:
+    print(f"✓ BL precision verified (0x{EXPECTED_HANDLER:X})")
+
+if not handler_executed:
+    print("⚠ WARNING: Handler entry not detected")
+else:
+    print("✓ Handler executed")
+
+if not bx_lr_executed:
+    print("⚠ WARNING: BX LR not detected")
+else:
+    print("✓ Handler returned (BX LR)")
+
+if flac_results != expected_flac:
+    print(f"✗ FAIL: Color values incorrect")
+    success = False
+else:
+    print("✓ All color values correct")
+
+print(f"\\n=== Result ===")
+if success:
     print("✅ PASS")
     sys.exit(0)
 else:
     print("❌ FAIL")
     sys.exit(1)
 `;
+}
+
+
+/**
+ * Find BL instruction in FLAC function
+ */
+function findBlInFunction(data: Buffer, funcAddr: number): number | null {
+	// Search forward from function start for BL instruction
+	for (let offset = 0; offset < 500; offset += 2) {
+		const addr = funcAddr + offset;
+		if (addr + 4 > data.length) break;
+
+		const hw1 = data[addr] | (data[addr + 1] << 8);
+		const hw2 = data[addr + 2] | (data[addr + 3] << 8);
+
+		// Check if this is a BL instruction
+		if ((hw1 & 0xf800) === 0xf000 && (hw2 & 0xd000) === 0xd000) {
+			return addr;
+		}
+
+		// Check if 32-bit instruction to skip correctly
+		const is32bit = hw1 >= 0xe800;
+		if (is32bit) {
+			offset += 2;
+		}
+	}
+
+	return null;
 }
 
 /**
@@ -263,6 +458,52 @@ function decodeBlTarget(data: Buffer, blAddr: number): number {
 }
 
 /**
+ * Verify NOP slide boundary protection
+ * Ensures patch code stays within discovered NOP slide boundaries
+ */
+function verifyNopSlideBoundaries(
+	patchedData: Buffer,
+	nopSlideAddr: number,
+	firmwareSize: number
+): { safe: boolean; message: string } {
+	// Check if NOP slide is within firmware bounds
+	if (nopSlideAddr < 0 || nopSlideAddr >= firmwareSize) {
+		return {
+			safe: false,
+			message: `NOP slide at 0x${nopSlideAddr.toString(16)} is outside firmware bounds (0x${firmwareSize.toString(16)})`
+		};
+	}
+
+	// Check for a reasonable NOP slide (at least 256 bytes)
+	const MIN_NOP_SLIDE_SIZE = 256;
+	if (nopSlideAddr + MIN_NOP_SLIDE_SIZE > firmwareSize) {
+		return {
+			safe: false,
+			message: `NOP slide at 0x${nopSlideAddr.toString(16)} is too close to firmware end`
+		};
+	}
+
+	// Verify the region is actually a NOP slide (check for zeros)
+	const checkSize = Math.min(64, firmwareSize - nopSlideAddr);
+	let zeroCount = 0;
+	for (let i = 0; i < checkSize; i++) {
+		if (patchedData[nopSlideAddr + i] === 0x00) {
+			zeroCount++;
+		}
+	}
+
+	// At least 80% should be zeros (NOP bytes)
+	if (zeroCount < checkSize * 0.8) {
+		return {
+			safe: false,
+			message: `Region at 0x${nopSlideAddr.toString(16)} doesn't appear to be a valid NOP slide (${zeroCount}/${checkSize} zeros)`
+		};
+	}
+
+	return { safe: true, message: 'OK' };
+}
+
+/**
  * Apply patch using TypeScript patcher
  * Returns: { success: boolean, nopSlideAddr: number }
  */
@@ -284,6 +525,12 @@ function applyPatch(
 		// Read patched firmware and decode BL at FLAC address to find NOP slide
 		const patchedData = readFileSync(outputPath);
 		const nopSlideAddr = decodeBlTarget(patchedData, flacAddr);
+
+		// Verify NOP slide boundaries
+		const boundaryCheck = verifyNopSlideBoundaries(patchedData, nopSlideAddr, patchedData.length);
+		if (!boundaryCheck.safe) {
+			console.error(`  ⚠ Boundary check warning: ${boundaryCheck.message}`);
+		}
 
 		return { success: true, nopSlideAddr };
 	} catch (error) {
@@ -320,7 +567,7 @@ function runUnicornTest(scriptPath: string): { success: boolean; output: string 
  * Build test scenarios for a specific firmware with its ground truth colors
  */
 function buildScenariosForFirmware(groundTruth: { flacColors: number[]; menuColors: number[] }) {
-	return SCENARIO_TEMPLATES.map(template => {
+	const twoPatchScenarios = SCENARIO_TEMPLATES.map(template => {
 		// Determine expected colors after first patch
 		let expectedAfterFirstFlac: number[];
 		let expectedAfterFirstMenu: number[];
@@ -358,9 +605,37 @@ function buildScenariosForFirmware(groundTruth: { flacColors: number[]; menuColo
 			firstColors,
 			secondColors,
 			expectedAfterFirst: { flac: expectedAfterFirstFlac, menu: expectedAfterFirstMenu },
-			expectedAfterSecond: { flac: expectedAfterSecondFlac, menu: expectedAfterSecondMenu }
+			expectedAfterSecond: { flac: expectedAfterSecondFlac, menu: expectedAfterSecondMenu },
+			isSinglePatch: false
 		};
 	});
+
+	const singlePatchScenarios = SINGLE_PATCH_SCENARIOS.map(template => {
+		// Determine expected colors after first patch
+		let expectedAfterFirstFlac: number[];
+		let expectedAfterFirstMenu: number[];
+
+		const firstColors = template.getFirstColors();
+		if ('flacColors' in firstColors) {
+			expectedAfterFirstFlac = firstColors.flacColors;
+		} else {
+			expectedAfterFirstFlac = groundTruth.flacColors;
+		}
+		if ('menuColors' in firstColors) {
+			expectedAfterFirstMenu = firstColors.menuColors;
+		} else {
+			expectedAfterFirstMenu = groundTruth.menuColors;
+		}
+
+		return {
+			...template,
+			firstColors,
+			expectedAfterFirst: { flac: expectedAfterFirstFlac, menu: expectedAfterFirstMenu },
+			isSinglePatch: true
+		};
+	});
+
+	return [...twoPatchScenarios, ...singlePatchScenarios];
 }
 
 /**
@@ -377,6 +652,7 @@ async function runComprehensiveTests() {
 		unicornVerify: boolean;
 		patchApplicationFailed: boolean; // Type 1: Second patch application failed (e.g., "Menu function not found")
 		verificationFailed: boolean;      // Type 2: Patch applied but Unicorn verification failed
+		isSinglePatch: boolean;           // Type 3: Single-patch scenario (no second patch)
 	}> = [];
 
 	console.log('╔═══════════════════════════════════════════════════════════════════════════╗');
@@ -422,7 +698,8 @@ async function runComprehensiveTests() {
 				secondPatch: false,
 				unicornVerify: false,
 				patchApplicationFailed: false,
-				verificationFailed: false
+				verificationFailed: false,
+				isSinglePatch: scenario.isSinglePatch || false
 			};
 
 			// First patch
@@ -435,18 +712,36 @@ async function runComprehensiveTests() {
 				if (firstPatchResult.success) {
 					console.log(`    ✓ First patch: SUCCESS`);
 
-					// Generate and run Unicorn test for first patch
-					const script1Path = join(OUTPUT_DIR, 'scripts', `test_${firmware.version}_${scenario.id}_1.py`);
-					const script1 = generateUnicornScript(firmware, scenario.name, 1, scenario.expectedAfterFirst.flac, firstOutputPath, firstPatchResult.nopSlideAddr);
-					writeFileSync(script1Path, script1);
+					// Find BL instruction in patched firmware for BL verification test
+					const patchedData = readFileSync(firstOutputPath);
+					const blAddr = findBlInFunction(patchedData, firmware.flacAddr);
 
-					const unicorn1 = runUnicornTest(script1Path);
-					if (unicorn1.success) {
-						console.log(`    ✓ First patch Unicorn: VERIFIED`);
-						scenarioResults.firstPatch = true;
+					if (blAddr) {
+						// Generate and run BL verification test (complete flow: FLAC function → BL → handler)
+						const script1BLPath = join(OUTPUT_DIR, 'scripts', `test_${firmware.version}_${scenario.id}_1_bl.py`);
+						const script1BL = generateUnicornScriptWithBLVerification(
+							firmware,
+							scenario.name,
+							1,
+							scenario.expectedAfterFirst.flac,
+							firstOutputPath,
+							firmware.flacAddr,
+							blAddr,
+							firstPatchResult.nopSlideAddr
+						);
+						writeFileSync(script1BLPath, script1BL);
+
+						const unicorn1BL = runUnicornTest(script1BLPath);
+						if (unicorn1BL.success) {
+							console.log(`    ✓ First patch BL + Flow: VERIFIED`);
+							scenarioResults.firstPatch = true;
+						} else {
+							console.log(`    ✗ First patch BL + Flow: FAILED`);
+							console.log(`      ${unicorn1BL.output.split('\n').slice(-3).join(' ')}`);
+						}
 					} else {
-						console.log(`    ✗ First patch Unicorn: FAILED`);
-						console.log(`      ${unicorn1.output.split('\n').slice(-3).join(' ')}`);
+						console.log(`    ✗ Could not find BL instruction for verification`);
+						scenarioResults.firstPatch = false;
 					}
 				} else {
 					console.log(`    ✗ First patch: FAILED`);
@@ -455,30 +750,48 @@ async function runComprehensiveTests() {
 				console.log(`    ✗ First patch: ERROR - ${error}`);
 			}
 
-			// Second patch
-			if (firstPatchResult.success) {
+			// Second patch (skip for single-patch scenarios)
+			if (firstPatchResult.success && !scenario.isSinglePatch && 'secondColors' in scenario) {
 				const secondOutputPath = join(OUTPUT_DIR, `${firmware.version}_${scenario.id}_2.IMG`);
 				let secondPatchResult = { success: false, nopSlideAddr: 0 };
 
 				try {
-					secondPatchResult = applyPatch(firstOutputPath, scenario.secondColors, secondOutputPath, firmware.flacAddr);
+					secondPatchResult = applyPatch(firstOutputPath, (scenario as any).secondColors, secondOutputPath, firmware.flacAddr);
 
 					if (secondPatchResult.success) {
 						console.log(`    ✓ Second patch: SUCCESS`);
 
-						// Generate and run Unicorn test for second patch
-						const script2Path = join(OUTPUT_DIR, 'scripts', `test_${firmware.version}_${scenario.id}_2.py`);
-						const script2 = generateUnicornScript(firmware, scenario.name, 2, scenario.expectedAfterSecond.flac, secondOutputPath, secondPatchResult.nopSlideAddr);
-						writeFileSync(script2Path, script2);
+						// Find BL instruction in patched firmware for BL verification test
+						const patchedData2 = readFileSync(secondOutputPath);
+						const blAddr2 = findBlInFunction(patchedData2, firmware.flacAddr);
 
-						const unicorn2 = runUnicornTest(script2Path);
-						if (unicorn2.success) {
-							console.log(`    ✓ Second patch Unicorn: VERIFIED`);
-							scenarioResults.secondPatch = true;
-							scenarioResults.unicornVerify = true;
+						if (blAddr2 && 'expectedAfterSecond' in scenario) {
+							// Generate and run BL verification test (complete flow: FLAC function → BL → handler)
+							const script2BLPath = join(OUTPUT_DIR, 'scripts', `test_${firmware.version}_${scenario.id}_2_bl.py`);
+							const script2BL = generateUnicornScriptWithBLVerification(
+								firmware,
+								scenario.name,
+								2,
+								(scenario as any).expectedAfterSecond.flac,
+								secondOutputPath,
+								firmware.flacAddr,
+								blAddr2,
+								secondPatchResult.nopSlideAddr
+							);
+							writeFileSync(script2BLPath, script2BL);
+
+							const unicorn2BL = runUnicornTest(script2BLPath);
+							if (unicorn2BL.success) {
+								console.log(`    ✓ Second patch BL + Flow: VERIFIED`);
+								scenarioResults.secondPatch = true;
+								scenarioResults.unicornVerify = true;
+							} else {
+								console.log(`    ✗ Second patch BL + Flow: FAILED`);
+								console.log(`      ${unicorn2BL.output.split('\n').slice(-3).join(' ')}`);
+								scenarioResults.verificationFailed = true;
+							}
 						} else {
-							console.log(`    ✗ Second patch Unicorn: FAILED`);
-							console.log(`      ${unicorn2.output.split('\n').slice(-3).join(' ')}`);
+							console.log(`    ✗ Could not find BL instruction for verification`);
 							scenarioResults.verificationFailed = true;
 						}
 					} else {
@@ -488,6 +801,10 @@ async function runComprehensiveTests() {
 				} catch (error) {
 					console.log(`    ✗ Second patch: ERROR - ${error}`);
 				}
+			} else if (firstPatchResult.success && scenario.isSinglePatch) {
+				// Single-patch scenario: mark as complete after first patch verification
+				console.log(`    ⊘ Single-patch scenario: skipping second patch`);
+				scenarioResults.unicornVerify = scenarioResults.firstPatch;
 			}
 
 			results.push(scenarioResults);
@@ -498,26 +815,37 @@ async function runComprehensiveTests() {
 	// Print summary
 	console.log('\n\n╔═══════════════════════════════════════════════════════════════════════════╗');
 	console.log('║                           Test Summary                                  ║');
-	console.log('╚═════════════════════════════════════════════════════════════════════════╝');
+	console.log('╚═══════════════════════════════════════════════════════════════════════════╝');
 	console.log();
 
-	const firstPatchPassed = results.filter(r => r.firstPatch).length;
-	const firstPatchTotal = results.length;
-	const secondPatchPassed = results.filter(r => r.secondPatch).length;
-	const secondPatchAttempted = results.filter(r => r.firstPatch).length;
+	const singlePatchResults = results.filter(r => r.isSinglePatch);
+	const twoPatchResults = results.filter(r => !r.isSinglePatch);
+
+	const singlePatchPassed = singlePatchResults.filter(r => r.firstPatch && r.unicornVerify).length;
+	const singlePatchTotal = singlePatchResults.length;
+
+	const firstPatchPassed = twoPatchResults.filter(r => r.firstPatch).length;
+	const firstPatchTotal = twoPatchResults.length;
+	const secondPatchPassed = twoPatchResults.filter(r => r.secondPatch).length;
+	const secondPatchAttempted = twoPatchResults.filter(r => r.firstPatch).length;
 
 	// Count the two types of second patch failures
-	const patchApplicationFailures = results.filter(r => r.patchApplicationFailed).length;
-	const verificationFailures = results.filter(r => r.verificationFailed).length;
+	const patchApplicationFailures = twoPatchResults.filter(r => r.patchApplicationFailed).length;
+	const verificationFailures = twoPatchResults.filter(r => r.verificationFailed).length;
 
-	console.log(`First Patch (FLAC Handler):`);
-	console.log(`  ${firstPatchPassed}/${firstPatchTotal} PASSED ✅`);
+	console.log(`Single-Patch Scenarios (3 total):`);
+	console.log(`  ${singlePatchPassed}/${singlePatchTotal} PASSED ✅`);
 	console.log();
 
-	console.log(`Second Patch:`);
-	console.log(`  Attempted: ${secondPatchAttempted} (only runs if first patch succeeded)`);
-	console.log(`  Passed: ${secondPatchPassed}/${secondPatchAttempted} ✅`);
-	console.log(`  Failed: ${secondPatchAttempted - secondPatchPassed}/${secondPatchAttempted} ❌`);
+	console.log(`Two-Patch Scenarios (9 total):`);
+	console.log(`  First Patch (FLAC Handler):`);
+	console.log(`    ${firstPatchPassed}/${firstPatchTotal} PASSED ✅`);
+	console.log();
+
+	console.log(`  Second Patch:`);
+	console.log(`    Attempted: ${secondPatchAttempted} (only runs if first patch succeeded)`);
+	console.log(`    Passed: ${secondPatchPassed}/${secondPatchAttempted} ✅`);
+	console.log(`    Failed: ${secondPatchAttempted - secondPatchPassed}/${secondPatchAttempted} ❌`);
 	console.log();
 
 	if (patchApplicationFailures > 0) {
@@ -540,8 +868,8 @@ async function runComprehensiveTests() {
 	}
 
 	return {
-		firstPatchPassed,
-		firstPatchTotal,
+		firstPatchPassed: firstPatchPassed + singlePatchPassed,
+		firstPatchTotal: firstPatchTotal + singlePatchTotal,
 		secondPatchPassed,
 		secondPatchAttempted,
 		results
