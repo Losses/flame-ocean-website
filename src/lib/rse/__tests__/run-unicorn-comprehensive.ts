@@ -170,6 +170,136 @@ function ensureOutputDir() {
 }
 
 /**
+ * Generate Python Unicorn script to verify ground truth colors
+ * Executes ORIGINAL firmware's FLAC function and reads R0 values
+ * Compares with static ground truth extraction
+ */
+function generateGroundTruthVerificationScript(
+	originalFirmwarePath: string,
+	flacFuncAddr: number,
+	blAddr: number,
+	expectedHandlerAddr: number,
+	staticGroundTruth: number[]
+): string {
+
+	return `
+import sys
+sys.path.insert(0, 'references')
+
+from unicorn import *
+from unicorn.arm_const import *
+
+# Load ORIGINAL firmware (unpatched)
+with open('${originalFirmwarePath}', 'rb') as f:
+    data = f.read()
+
+FLAC_FUNC = 0x${flacFuncAddr.toString(16)}
+BL_ADDR = 0x${blAddr.toString(16)}
+EXPECTED_HANDLER = 0x${expectedHandlerAddr.toString(16)}
+
+# Static ground truth from ThemeColorExtractor
+static_ground_truth = ${JSON.stringify(staticGroundTruth)}
+
+print(f"=== Ground Truth Verification ===")
+print(f"Firmware: ${originalFirmwarePath}")
+print(f"FLAC function: 0x{FLAC_FUNC:X}")
+print(f"Static ground truth: {static_ground_truth}")
+
+# Initialize emulator
+mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+
+# RKNanoD memory map
+FLASH_BASE = 0x00000000
+FLASH_SIZE = 0x02100000
+mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
+
+SYSRAM0_BASE = 0x03000000
+SYSRAM0_SIZE = 0x00050000
+mu.mem_map(SYSRAM0_BASE, SYSRAM0_SIZE, UC_PROT_READ | UC_PROT_WRITE)
+
+# Write firmware to Flash
+mu.mem_write(FLASH_BASE, data[FLASH_BASE:FLASH_BASE + FLASH_SIZE])
+
+# Track execution results
+flac_results = []
+instruction_count = 0
+MAX_INSTRUCTIONS = 2000
+
+def hook_code(uc, address, size, user_data):
+    global flac_results, instruction_count
+
+    instruction_count += 1
+    if instruction_count > MAX_INSTRUCTIONS:
+        print(f"  ⚠ Stopped after {MAX_INSTRUCTIONS} instructions")
+        uc.emu_stop()
+        return
+
+    # Check for BX LR (handler return)
+    try:
+        instr_bytes = uc.mem_read(address, 2)
+        if instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47:  # BX LR
+            r0_value = uc.reg_read(UC_ARM_REG_R0)
+            color_value = r0_value & 0xFFFF
+            theme_idx = uc.reg_read(UC_ARM_REG_R1)
+            flac_results.append(color_value)
+            print(f"  ✓ Ground truth: Theme {theme_idx}, R0 = 0x{color_value:X}")
+            uc.emu_stop()
+    except:
+        pass
+
+mu.hook_add(UC_HOOK_CODE, hook_code)
+
+def hook_mem_invalid(uc, access, address, size, value, user_data):
+    if access == UC_MEM_WRITE:
+        print(f"  ⚠ Invalid write to 0x{address:X}")
+    else:
+        print(f"  ⚠ Invalid read from 0x{address:X}")
+    uc.emu_stop()
+    return False
+
+mu.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, hook_mem_invalid)
+
+# Test all themes (5 FLAC colors)
+for theme_idx in range(len(static_ground_truth)):
+    print(f"\\nTesting theme {theme_idx}...")
+
+    # Reset tracking
+    flac_results = []
+    instruction_count = 0
+
+    # Set up registers
+    mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)
+    mu.reg_write(UC_ARM_REG_SP, 0x03050000)
+    mu.reg_write(UC_ARM_REG_R1, theme_idx)
+    mu.reg_write(UC_ARM_REG_LR, (FLAC_FUNC + 100) | 1)
+    mu.reg_write(UC_ARM_REG_PC, FLAC_FUNC | 1)
+
+    # Emulate
+    try:
+        mu.emu_start(FLAC_FUNC | 1, (FLAC_FUNC + 1000) | 1, 0, 1000)
+    except UcError as e:
+        pass
+
+# After all themes tested, verify ground truth
+print(f"\\n=== Ground Truth Verification Results ===")
+print(f"Static extraction: {static_ground_truth}")
+print(f"Unicorn execution: {flac_results}")
+
+if flac_results == static_ground_truth:
+    print("✅ PASS: Ground truth verified by Unicorn execution")
+    sys.exit(0)
+else:
+    print("❌ FAIL: Ground truth MISMATCH!")
+    print(f"  Static:     {static_ground_truth}")
+    print(f"  Execution:   {flac_results}")
+    for i, (s, e) in enumerate(zip(flac_results, static_ground_truth)):
+        if s != e:
+            print(f"  Theme {i}: static=0x{e:X}, execution=0x{s:X}")
+    sys.exit(1)
+`;
+}
+
+/**
  * Generate Python Unicorn test script with BL precision verification
  * Tests COMPLETE execution flow: FLAC function → BL → handler → return
  */
@@ -679,6 +809,51 @@ async function runComprehensiveTests() {
 			console.log(`  ✓ Ground truth: FLAC [${gt.flacColors.slice(0, 3).map((v: number) => '0x' + v.toString(16)).join(', ')}...] Menu [${gt.menuColors.slice(0, 3).map((v: number) => '0x' + v.toString(16)).join(', ')}...]`);
 		} catch (error) {
 			console.log(`  ✗ Failed to extract ground truth: ${error}`);
+			continue;
+		}
+
+		// Verify ground truth with Unicorn execution
+		console.log('  Verifying ground truth with Unicorn execution...');
+		try {
+			// Read original firmware to find BL instruction
+			const originalData = readFileSync(firmwarePath);
+			const originalBlAddr = findBlInFunction(originalData, firmware.flacAddr);
+
+			if (!originalBlAddr) {
+				console.log(`  ✗ Could not find BL instruction in original firmware`);
+				continue;
+			}
+
+			// Decode BL to get handler address in original firmware
+			const originalHandlerAddr = decodeBlTarget(originalData, originalBlAddr);
+
+			// Generate and run ground truth verification script
+			const gtVerifyScriptPath = join(OUTPUT_DIR, 'scripts', `verify_gt_${firmware.version}.py`);
+			const gtVerifyScript = generateGroundTruthVerificationScript(
+				firmwarePath,
+				firmware.flacAddr,
+				originalBlAddr,
+				originalHandlerAddr,
+				firmware.groundTruth.flacColors
+			);
+			writeFileSync(gtVerifyScriptPath, gtVerifyScript);
+
+			const gtVerifyResult = execSync(`${PYTHON_PATH} ${gtVerifyScriptPath}`, {
+				cwd: process.cwd(),
+				encoding: 'utf-8',
+				stdio: 'pipe',
+				timeout: 30000
+			});
+
+			if (gtVerifyResult.includes('✅ PASS')) {
+				console.log(`  ✓ Ground truth verified by Unicorn execution`);
+			} else {
+				console.log(`  ✗ Ground truth verification FAILED`);
+				console.log(`    ${gtVerifyResult.split('\n').slice(-5).join('    ')}`);
+				continue;
+			}
+		} catch (error: any) {
+			console.log(`  ✗ Ground truth verification ERROR: ${error?.message || error}`);
 			continue;
 		}
 
