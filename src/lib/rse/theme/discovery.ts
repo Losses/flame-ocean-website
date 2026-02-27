@@ -859,8 +859,17 @@ export function discoverFlacFunction(data: Uint8Array, version?: string): [numbe
 		if (patchAddr) {
 			return [cmpAddr, patchAddr];
 		}
-		// Fallback: use the CMP address if patch point not found
-		return [cmpAddr, cmpAddr];
+		// CRITICAL: Do NOT use CMP address as fallback - this would corrupt the firmware!
+		// If we can't find the patch point, the firmware structure is unrecognized
+		// and patching would be unsafe. Throw an error instead of silently failing.
+		throw new DiscoveryError(
+			'FLAC function structure not recognized - unable to find safe patch point.\n\n' +
+			'This may be an unsupported firmware version.\n' +
+			'Theme system support: V2.4.0 and later\n\n' +
+			`Function found at: 0x${cmpAddr.toString(16)}\n` +
+			'Patching this firmware could corrupt the code and cause boot failure.\n' +
+			'If you believe this is an error, please report it with your firmware version.'
+		);
 	}
 
 	return null;
