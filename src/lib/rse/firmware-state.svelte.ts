@@ -20,6 +20,7 @@ import { extractThemeColors, type ColorWrite } from "$lib/rse/theme";
 import { ThemePatcher } from "$lib/rse/theme/patcher.js";
 import { ThemeColorExtractor } from "$lib/rse/theme/extractor.js";
 import { patchSwitchCaseFunction } from "$lib/rse/theme/switch-case-patcher.js";
+import { discoverMenuFunction } from "$lib/rse/theme/discovery.js";
 
 // Types
 export interface FontPlaneInfo {
@@ -950,10 +951,6 @@ export class FirmwareState {
 
       console.error('[DEBUG] Original FLAC colors:', currentFlacColors.map(c => '0x' + c.toString(16)));
 
-      // Extract Menu colors (required for patching)
-      // Use getColorsForFunction to correctly handle both patched and unpatched firmware
-      const currentMenuColors = extractor.getColorsForFunction('menu');
-
       this.progress = 30;
       this.statusMessage = "Applying FLAC patch...";
 
@@ -989,7 +986,7 @@ export class FirmwareState {
           id: "patchTheme",
           firmware: firmwareData,
           flacColors: currentFlacColors,
-          menuColors: currentMenuColors,
+          // menuColors: NOT PROVIDED - Menu stays unpatched
         });
       });
 
@@ -1846,14 +1843,22 @@ export class FirmwareState {
           const currentFlacColors = extractor.getColorsForFunction('flac');
           currentFlacColors[themeId] = rgb565;  // Update the selected theme color
 
-          // Extract current Menu colors
-          // Use getColorsForFunction to correctly handle both patched and unpatched firmware
-          const currentMenuColors = extractor.getColorsForFunction('menu');
+          // Check if Menu is already patched (has BL instruction at its patch point)
+          // Use discoverMenuFunction to get the patch address
+          const menuDiscovery = discoverMenuFunction(firmwareData);
+          const menuHasBl = menuDiscovery !== null;  // Has BL if discoverMenuFunction succeeds
+
+          // Extract Menu colors if Menu is patched (for preservation during re-patching)
+          let currentMenuColors: number[] | undefined;
+          if (menuHasBl) {
+            currentMenuColors = extractor.getColorsForFunction('menu');
+          }
 
           this.progress = 40;
           this.statusMessage = "Applying patch...";
 
-          // Apply FLAC and Menu patch using the worker (non-blocking)
+          // Apply FLAC patch using the worker (non-blocking)
+          // Only provide Menu colors if Menu is already patched (to preserve them)
           const patchedData = await new Promise<Uint8Array>((resolve, reject) => {
             const handler = (e: MessageEvent) => {
               const { type, id: responseId, result, error } = e.data;
@@ -1880,13 +1885,26 @@ export class FirmwareState {
               }
             };
             this.worker!.addEventListener("message", handler);
-            this.worker!.postMessage({
+
+            const messageData: {
+              type: string;
+              id: string;
+              firmware: Uint8Array;
+              flacColors: number[];
+              menuColors?: number[];
+            } = {
               type: "patchTheme",
               id: "patchThemeEdit",
               firmware: firmwareData,
               flacColors: currentFlacColors,
-              menuColors: currentMenuColors,
-            });
+            };
+
+            // Only include menuColors if Menu is already patched
+            if (menuHasBl && currentMenuColors) {
+              messageData.menuColors = currentMenuColors;
+            }
+
+            this.worker!.postMessage(messageData);
           });
 
           this.progress = 60;
@@ -1909,39 +1927,41 @@ export class FirmwareState {
             }
           }
 
-          // Verify Menu colors weren't affected
-          const verifyMenuFunc = verifyResult.themeFunctions.find(f => f.type === 'menu');
-          if (verifyMenuFunc) {
-            const verifyWritesByTheme: Map<number, import("$lib/rse/theme").ColorWrite[]> = new Map();
-            for (const write of verifyMenuFunc.colorWrites) {
-              const tId = write.themeCondition ?? 0;
-              if (!verifyWritesByTheme.has(tId)) {
-                verifyWritesByTheme.set(tId, []);
-              }
-              verifyWritesByTheme.get(tId)!.push(write);
-            }
-
-            for (let tId = 0; tId < 5; tId++) {
-              const themeWrites = verifyWritesByTheme.get(tId) || [];
-              const themeColors: Map<number, number> = new Map();
-              for (const write of themeWrites) {
-                if (write.targetReg === 1 || write.targetReg === 2 || write.targetReg === 3) {
-                  themeColors.set(write.targetReg, write.colorValue);
+          // Verify Menu colors weren't affected (only if Menu was already patched)
+          if (menuHasBl) {
+            const verifyMenuFunc = verifyResult.themeFunctions.find(f => f.type === 'menu');
+            if (verifyMenuFunc) {
+              const verifyWritesByTheme: Map<number, import("$lib/rse/theme").ColorWrite[]> = new Map();
+              for (const write of verifyMenuFunc.colorWrites) {
+                const tId = write.themeCondition ?? 0;
+                if (!verifyWritesByTheme.has(tId)) {
+                  verifyWritesByTheme.set(tId, []);
                 }
+                verifyWritesByTheme.get(tId)!.push(write);
               }
 
-              const r1 = themeColors.get(1) ?? 0;
-              const r2 = themeColors.get(2) ?? 0;
-              const r3 = themeColors.get(3) ?? 0;
+              for (let tId = 0; tId < 5; tId++) {
+                const themeWrites = verifyWritesByTheme.get(tId) || [];
+                const themeColors: Map<number, number> = new Map();
+                for (const write of themeWrites) {
+                  if (write.targetReg === 1 || write.targetReg === 2 || write.targetReg === 3) {
+                    themeColors.set(write.targetReg, write.colorValue);
+                  }
+                }
 
-              if (r1 !== currentMenuColors[tId]) {
-                throw new Error(`Menu R1 color for theme ${tId} was modified: expected 0x${currentMenuColors[tId].toString(16)}, got 0x${r1.toString(16)}`);
-              }
-              if (r2 !== currentMenuColors[tId + 5]) {
-                throw new Error(`Menu R2 color for theme ${tId} was modified: expected 0x${currentMenuColors[tId + 5].toString(16)}, got 0x${r2.toString(16)}`);
-              }
-              if (r3 !== currentMenuColors[tId + 10]) {
-                throw new Error(`Menu R3 color for theme ${tId} was modified: expected 0x${currentMenuColors[tId + 10].toString(16)}, got 0x${r3.toString(16)}`);
+                const r1 = themeColors.get(1) ?? 0;
+                const r2 = themeColors.get(2) ?? 0;
+                const r3 = themeColors.get(3) ?? 0;
+
+                if (r1 !== currentMenuColors![tId]) {
+                  throw new Error(`Menu R1 color for theme ${tId} was modified: expected 0x${currentMenuColors![tId].toString(16)}, got 0x${r1.toString(16)}`);
+                }
+                if (r2 !== currentMenuColors![tId + 5]) {
+                  throw new Error(`Menu R2 color for theme ${tId} was modified: expected 0x${currentMenuColors![tId + 5].toString(16)}, got 0x${r2.toString(16)}`);
+                }
+                if (r3 !== currentMenuColors![tId + 10]) {
+                  throw new Error(`Menu R3 color for theme ${tId} was modified: expected 0x${currentMenuColors![tId + 10].toString(16)}, got 0x${r3.toString(16)}`);
+                }
               }
             }
           }
