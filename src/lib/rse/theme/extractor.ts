@@ -18,6 +18,17 @@ import {
 import { PatchDetector } from './detector.js';
 
 /**
+ * Check if there's actually a BL instruction at the given address
+ * This is needed because discoverMenuFunction returns non-null even for unpatched firmware
+ */
+function hasBlInstructionAt(data: Uint8Array, addr: number): boolean {
+	if (addr + 4 > data.length) return false;
+	const hw1 = data[addr] | (data[addr + 1] << 8);
+	const hw2 = data[addr + 2] | (data[addr + 3] << 8);
+	return (hw1 & 0xf800) === 0xf000 && (hw2 & 0xd000) === 0xd000;
+}
+
+/**
  * Theme Color Extractor Class
  *
  * Analyzes firmware to discover and extract theme color values.
@@ -198,7 +209,9 @@ export class ThemeColorExtractor {
 		} else if (funcType === 'menu') {
 			// Menu: Check if firmware is patched by using discoverMenuFunction
 			const menuDiscovery = discoverMenuFunction(this.data);
-			const isPatched = menuDiscovery !== null;
+			// CRITICAL: discoverMenuFunction returns non-null even for unpatched firmware!
+			// We must check if the second element (patch address) actually has a BL instruction
+			const isPatched = menuDiscovery !== null && hasBlInstructionAt(this.data, menuDiscovery[1]);
 
 			if (isPatched) {
 				// Menu is patched - read metadata from NOP slide

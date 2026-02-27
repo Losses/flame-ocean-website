@@ -22,6 +22,17 @@ import { ThemeColorExtractor } from "$lib/rse/theme/extractor.js";
 import { patchSwitchCaseFunction } from "$lib/rse/theme/switch-case-patcher.js";
 import { discoverMenuFunction } from "$lib/rse/theme/discovery.js";
 
+/**
+ * Check if there's actually a BL instruction at the given address
+ * This is needed because discoverMenuFunction returns non-null even for unpatched firmware
+ */
+function hasBlInstructionAt(data: Uint8Array, addr: number): boolean {
+  if (addr + 4 > data.length) return false;
+  const hw1 = data[addr] | (data[addr + 1] << 8);
+  const hw2 = data[addr + 2] | (data[addr + 3] << 8);
+  return (hw1 & 0xf800) === 0xf000 && (hw2 & 0xd000) === 0xd000;
+}
+
 // Types
 export interface FontPlaneInfo {
   name: string;
@@ -1846,7 +1857,9 @@ export class FirmwareState {
           // Check if Menu is already patched (has BL instruction at its patch point)
           // Use discoverMenuFunction to get the patch address
           const menuDiscovery = discoverMenuFunction(firmwareData);
-          const menuHasBl = menuDiscovery !== null;  // Has BL if discoverMenuFunction succeeds
+          // IMPORTANT: discoverMenuFunction returns non-null even for unpatched firmware!
+          // We must check if the second element (patch address) actually has a BL instruction
+          const menuHasBl = menuDiscovery !== null && hasBlInstructionAt(firmwareData, menuDiscovery[1]);
 
           // Extract Menu colors if Menu is patched (for preservation during re-patching)
           let currentMenuColors: number[] | undefined;

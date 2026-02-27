@@ -594,57 +594,79 @@ export class ThemePatcher {
 		if (flacColors && !menuColors) {
 			// FLAC only: extract Menu colors
 			if (isPatched) {
-				// Read from existing patch metadata
+				// Try to extract Menu colors from existing patch code
 				const existingNopSlide = this.findExistingNopSlide();
-				if (!existingNopSlide) {
-					throw new PatchError(
-						'Cannot extract Menu colors from patched firmware: unable to locate existing patch.\n\n' +
-						'This may indicate a corrupted or incompatible patch.\n' +
-						'Please start with a clean original firmware file.'
-					);
+				if (existingNopSlide) {
+					// Try metadata first (fast)
+					const metadata = this.detector.findPatchMetadata([existingNopSlide]);
+					if (metadata && metadata.menuColors && metadata.menuColors.length === 15) {
+						menuColors = [...metadata.menuColors];
+						console.error('[INFO] Patching FLAC only - keeping existing Menu colors from metadata');
+					} else {
+						// Metadata unavailable - extract from patch code directly
+						console.error('[WARN] Could not read Menu metadata, extracting from patch code');
+						const extractedColors = this.detector.extractPatchedColors(existingNopSlide.start, 'menu');
+						if (extractedColors.size === 15) {
+							menuColors = Array.from(extractedColors.values());
+							console.error('[INFO] Patching FLAC only - using Menu colors from patch code:', menuColors.map(c => '0x' + c.toString(16)));
+						} else {
+							// Can't extract colors - fall back to ground truth
+							console.error('[WARN] Could not extract Menu colors, using ground truth');
+							const groundTruth = this.extractGroundTruthColors();
+							menuColors = [...groundTruth.menuColors];
+							console.error('[INFO] Patching FLAC only - using ground truth Menu colors');
+						}
+					}
+				} else {
+					// Could not find NOP slide - use ground truth
+					console.error('[WARN] Could not locate existing NOP slide, using ground truth');
+					const groundTruth = this.extractGroundTruthColors();
+					menuColors = [...groundTruth.menuColors];
+					console.error('[INFO] Patching FLAC only - using ground truth Menu colors');
 				}
-				const metadata = this.detector.readPatchMetadata(existingNopSlide);
-				if (!metadata) {
-					throw new PatchError(
-						'Cannot extract Menu colors from patched firmware: unable to read patch metadata.\n\n' +
-						'This may indicate a corrupted or incompatible patch.\n' +
-						'Please start with a clean original firmware file.'
-					);
-				}
-				menuColors = [...metadata.menuColors]; // Create mutable copy
-				console.error('[INFO] Patching FLAC only - keeping existing Menu colors from patch');
 			} else {
 				// Not patched: extract ground truth
 				const groundTruth = this.extractGroundTruthColors();
-				menuColors = [...groundTruth.menuColors]; // Create mutable copy
+				menuColors = [...groundTruth.menuColors];
 				console.error('[INFO] Patching FLAC only - using ground truth Menu colors');
 			}
 		} else if (!flacColors && menuColors) {
 			// Menu only: extract FLAC colors
 			if (isPatched) {
-				// Read from existing patch metadata
+				// Try to extract FLAC colors from existing patch code
 				const existingNopSlide = this.findExistingNopSlide();
-				if (!existingNopSlide) {
-					throw new PatchError(
-						'Cannot extract FLAC colors from patched firmware: unable to locate existing patch.\n\n' +
-						'This may indicate a corrupted or incompatible patch.\n' +
-						'Please start with a clean original firmware file.'
-					);
+				if (existingNopSlide) {
+					// Try metadata first (fast)
+					const metadata = this.detector.findPatchMetadata([existingNopSlide]);
+					if (metadata && metadata.flacColors && metadata.flacColors.length === 5) {
+						flacColors = [...metadata.flacColors];
+						console.error('[INFO] Patching Menu only - keeping existing FLAC colors from metadata');
+					} else {
+						// Metadata unavailable - extract from patch code directly
+						console.error('[WARN] Could not read FLAC metadata, extracting from patch code');
+						const extractedColors = this.detector.extractPatchedColors(existingNopSlide.start, 'flac');
+						if (extractedColors.size === 5) {
+							flacColors = Array.from(extractedColors.values());
+							console.error('[INFO] Patching Menu only - using FLAC colors from patch code:', flacColors.map(c => '0x' + c.toString(16)));
+						} else {
+							// Can't extract colors - fall back to ground truth
+							console.error('[WARN] Could not extract FLAC colors, using ground truth');
+							const groundTruth = this.extractGroundTruthColors();
+							flacColors = [...groundTruth.flacColors];
+							console.error('[INFO] Patching Menu only - using ground truth FLAC colors');
+						}
+					}
+				} else {
+					// Could not find NOP slide - use ground truth
+					console.error('[WARN] Could not locate existing NOP slide, using ground truth');
+					const groundTruth = this.extractGroundTruthColors();
+					flacColors = [...groundTruth.flacColors];
+					console.error('[INFO] Patching Menu only - using ground truth FLAC colors');
 				}
-				const metadata = this.detector.readPatchMetadata(existingNopSlide);
-				if (!metadata) {
-					throw new PatchError(
-						'Cannot extract FLAC colors from patched firmware: unable to read patch metadata.\n\n' +
-						'This may indicate a corrupted or incompatible patch.\n' +
-						'Please start with a clean original firmware file.'
-					);
-				}
-				flacColors = [...metadata.flacColors]; // Create mutable copy
-				console.error('[INFO] Patching Menu only - keeping existing FLAC colors from patch');
 			} else {
 				// Not patched: extract ground truth
 				const groundTruth = this.extractGroundTruthColors();
-				flacColors = [...groundTruth.flacColors]; // Create mutable copy
+				flacColors = [...groundTruth.flacColors];
 				console.error('[INFO] Patching Menu only - using ground truth FLAC colors');
 			}
 		}
