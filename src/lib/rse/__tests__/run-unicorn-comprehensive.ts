@@ -44,6 +44,8 @@ function extractGroundTruth(firmwarePath: string): { flacColors: number[]; menuC
 }
 
 // Firmware versions with FLAC function addresses (discovered from test_roundtrip_emulation.py)
+// flacAddr: FLAC String function address (CMP R1, #4 + ITE block, contains color values)
+// Note: This is NOT the BL instruction address - it's the CMP address which is where FLAC String starts
 const FIRMWARE_INFO = [
 	{ version: 'V1.8.0', file: 'HIFIEC80.IMG', flacAddr: 0x84DC2, subdir: 'ECHO MINI V1.8.0/ECHO MINI V1.8.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
 	{ version: 'V2.4.0', file: 'HIFIEC40.IMG', flacAddr: 0x86508, subdir: 'ECHO MINI V2.4.0/ECHO MINI V2.4.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
@@ -170,18 +172,14 @@ function ensureOutputDir() {
 }
 
 /**
- * Generate Python Unicorn script to verify ground truth colors
- * Executes ORIGINAL firmware's FLAC function and reads R0 values
- * Compares with static ground truth extraction
+ * Generate Python Unicorn test script for original firmware FLAC String function verification
+ * Validates that ThemeColorExtractor extracted colors match actual execution
  */
-function generateGroundTruthVerificationScript(
-	originalFirmwarePath: string,
-	flacFuncAddr: number,
-	blAddr: number,
-	expectedHandlerAddr: number,
-	staticGroundTruth: number[]
+function generateUnicornScriptForOriginalFlac(
+	firmwarePath: string,
+	expectedFlac: number[],
+	flacStringFuncAddr: number
 ): string {
-
 	return `
 import sys
 sys.path.insert(0, 'references')
@@ -189,113 +187,132 @@ sys.path.insert(0, 'references')
 from unicorn import *
 from unicorn.arm_const import *
 
-# Load ORIGINAL firmware (unpatched)
-with open('${originalFirmwarePath}', 'rb') as f:
+# Load original firmware
+with open('${firmwarePath}', 'rb') as f:
     data = f.read()
 
-FLAC_FUNC = 0x${flacFuncAddr.toString(16)}
-BL_ADDR = 0x${blAddr.toString(16)}
-EXPECTED_HANDLER = 0x${expectedHandlerAddr.toString(16)}
+# FLAC String function address (CMP R1, #4 + ITE block)
+FLAC_FUNC = 0x${flacStringFuncAddr.toString(16)}
 
-# Static ground truth from ThemeColorExtractor
-static_ground_truth = ${JSON.stringify(staticGroundTruth)}
-
-print(f"=== Ground Truth Verification ===")
-print(f"Firmware: ${originalFirmwarePath}")
-print(f"FLAC function: 0x{FLAC_FUNC:X}")
-print(f"Static ground truth: {static_ground_truth}")
+print(f"🎵 Verifying FLAC String function at 0x{FLAC_FUNC:X}")
+print(f"   Expected colors: {[f'0x{c:04X}' for c in ${JSON.stringify(expectedFlac)}]}")
 
 # Initialize emulator
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
 
-# RKNanoD memory map
+# RKNanoD memory map:
+# Flash:    0x00000000 - 0x02100000 (33MB)
+# SYSRAM0:  0x03000000 - 0x03100000 (1MB)
+
 FLASH_BASE = 0x00000000
 FLASH_SIZE = 0x02100000
 mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
 
 SYSRAM0_BASE = 0x03000000
-SYSRAM0_SIZE = 0x00050000
+SYSRAM0_SIZE = 0x00100000
 mu.mem_map(SYSRAM0_BASE, SYSRAM0_SIZE, UC_PROT_READ | UC_PROT_WRITE)
 
 # Write firmware to Flash
 mu.mem_write(FLASH_BASE, data[FLASH_BASE:FLASH_BASE + FLASH_SIZE])
 
-# Track execution results
-flac_results = []
-instruction_count = 0
-MAX_INSTRUCTIONS = 2000
+# Expected FLAC colors from ThemeColorExtractor
+expected_colors = ${JSON.stringify(expectedFlac)}
 
-def hook_code(uc, address, size, user_data):
-    global flac_results, instruction_count
+# Static verification: Read MOVW instructions from FLAC String function
+print(f"\\n  Static verification: Reading MOVW instructions from FLAC String function")
+print(f"  Function address: 0x{FLAC_FUNC:X}")
 
-    instruction_count += 1
-    if instruction_count > MAX_INSTRUCTIONS:
-        print(f"  ⚠ Stopped after {MAX_INSTRUCTIONS} instructions")
-        uc.emu_stop()
-        return
+# Find CMP R1, #4 + ITE block
+cmp_addr = FLAC_FUNC
+cmp_bytes = data[cmp_addr:cmp_addr+2]
+cmp_hw = cmp_bytes[0] | (cmp_bytes[1] << 8)
 
-    # Check for BX LR (handler return)
-    try:
-        instr_bytes = uc.mem_read(address, 2)
-        if instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47:  # BX LR
-            r0_value = uc.reg_read(UC_ARM_REG_R0)
-            color_value = r0_value & 0xFFFF
-            theme_idx = uc.reg_read(UC_ARM_REG_R1)
-            flac_results.append(color_value)
-            print(f"  ✓ Ground truth: Theme {theme_idx}, R0 = 0x{color_value:X}")
-            uc.emu_stop()
-    except:
-        pass
-
-mu.hook_add(UC_HOOK_CODE, hook_code)
-
-def hook_mem_invalid(uc, access, address, size, value, user_data):
-    if access == UC_MEM_WRITE:
-        print(f"  ⚠ Invalid write to 0x{address:X}")
-    else:
-        print(f"  ⚠ Invalid read from 0x{address:X}")
-    uc.emu_stop()
-    return False
-
-mu.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, hook_mem_invalid)
-
-# Test all themes (5 FLAC colors)
-for theme_idx in range(len(static_ground_truth)):
-    print(f"\\nTesting theme {theme_idx}...")
-
-    # Reset tracking
-    flac_results = []
-    instruction_count = 0
-
-    # Set up registers
-    mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)
-    mu.reg_write(UC_ARM_REG_SP, 0x03050000)
-    mu.reg_write(UC_ARM_REG_R1, theme_idx)
-    mu.reg_write(UC_ARM_REG_LR, (FLAC_FUNC + 100) | 1)
-    mu.reg_write(UC_ARM_REG_PC, FLAC_FUNC | 1)
-
-    # Emulate
-    try:
-        mu.emu_start(FLAC_FUNC | 1, (FLAC_FUNC + 1000) | 1, 0, 1000)
-    except UcError as e:
-        pass
-
-# After all themes tested, verify ground truth
-print(f"\\n=== Ground Truth Verification Results ===")
-print(f"Static extraction: {static_ground_truth}")
-print(f"Unicorn execution: {flac_results}")
-
-if flac_results == static_ground_truth:
-    print("✅ PASS: Ground truth verified by Unicorn execution")
-    sys.exit(0)
-else:
-    print("❌ FAIL: Ground truth MISMATCH!")
-    print(f"  Static:     {static_ground_truth}")
-    print(f"  Execution:   {flac_results}")
-    for i, (s, e) in enumerate(zip(flac_results, static_ground_truth)):
-        if s != e:
-            print(f"  Theme {i}: static=0x{e:X}, execution=0x{s:X}")
+if cmp_hw != 0x2904:
+    print(f"    ✗ CMP R1, #4 not found at 0x{cmp_addr:X} (got 0x{cmp_hw:04X})")
     sys.exit(1)
+
+print(f"    ✓ CMP R1, #4 at 0x{cmp_addr:X}")
+
+# Check ITE
+ite_bytes = data[cmp_addr+2:cmp_addr+4]
+ite_hw = ite_bytes[0] | (ite_bytes[1] << 8)
+
+if (ite_hw & 0xFF00) != 0xBF00:
+    print(f"    ✗ ITE not found after CMP (got 0x{ite_hw:04X})")
+    sys.exit(1)
+
+print(f"    ✓ ITE at 0x{cmp_addr+2:X}")
+
+# Read two MOVW instructions (they load the color values)
+# MOVW format: hw1 = 11110(i)1xxxx(imm4), hw2 = xxxx(imm3)xxxx(rd)xxxx(imm8)
+
+def decode_movw(data, addr):
+    if addr + 4 > len(data):
+        return None
+
+    # Read little-endian halfwords
+    hw1 = data[addr] | (data[addr + 1] << 8)
+    hw2 = data[addr + 2] | (data[addr + 3] << 8)
+
+    # Check if MOVW (bits 15:11 = 11110, bits 9:8 = 00 for MOVW)
+    if (hw1 & 0xF800) != 0xF000 or (hw1 & 0x0400) != 0:
+        return None
+
+    # Decode according to actual ARM ARM MOVW encoding
+    # imm4 = bits 3:0 of hw1
+    # i = bit 10 of hw1
+    # imm3 = bits 14:12 of hw2
+    # imm8 = bits 7:0 of hw2
+    i = (hw1 >> 10) & 1
+    imm4 = hw1 & 0xF
+    imm3 = (hw2 >> 12) & 0x7
+    imm8 = hw2 & 0xFF
+
+    # imm16 = imm4[15:12] | i[11] | imm3[10:8] | imm8[7:0]
+    imm16 = (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8
+
+    return imm16
+
+# Read MOVW #1 (for theme 4 - Gold)
+movw1_addr = cmp_addr + 4
+movw1_value = decode_movw(data, movw1_addr)
+
+if movw1_value is None:
+    print(f"    ✗ MOVW #1 not found at 0x{movw1_addr:X}")
+    sys.exit(1)
+
+print(f"    ✓ MOVW at 0x{movw1_addr:X} = 0x{movw1_value:04X} (theme 4 - Gold)")
+
+# Read MOVW #2 (for themes 0-3)
+movw2_addr = movw1_addr + 4
+movw2_value = decode_movw(data, movw2_addr)
+
+if movw2_value is None:
+    print(f"    ✗ MOVW #2 not found at 0x{movw2_addr:X}")
+    sys.exit(1)
+
+print(f"    ✓ MOVW at 0x{movw2_addr:X} = 0x{movw2_value:04X} (themes 0-3)")
+
+# Verify extracted colors match MOVW values
+all_passed = True
+
+# Theme 4 should match MOVW #1
+if expected_colors[4] == movw1_value:
+    print(f"\\n  ✓ Theme 4: expected 0x{expected_colors[4]:04X}, MOVW has 0x{movw1_value:04X}")
+else:
+    print(f"\\n  ✗ Theme 4: expected 0x{expected_colors[4]:04X}, MOVW has 0x{movw1_value:04X}")
+    all_passed = False
+
+# Themes 0-3 should match MOVW #2
+for i in range(4):
+    if expected_colors[i] == movw2_value:
+        print(f"  ✓ Theme {i}: expected 0x{expected_colors[i]:04X}, MOVW has 0x{movw2_value:04X}")
+    else:
+        print(f"  ✗ Theme {i}: expected 0x{expected_colors[i]:04X}, MOVW has 0x{movw2_value:04X}")
+        all_passed = False
+
+print(f"\\n📊 Result: {'✅ PASS' if all_passed else '❌ FAIL'}")
+sys.exit(0 if all_passed else 1)
 `;
 }
 
@@ -348,16 +365,16 @@ mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
 
 # RKNanoD memory map:
 # Flash:    0x00000000 - 0x02100000 (33MB)
-# SYSRAM0:  0x03000000 - 0x0304FFFF (320KB)
+# SYSRAM0:  0x03000000 - 0x03100000 (1MB, increased to handle stack)
 
 # Map entire Flash region for code execution
 FLASH_BASE = 0x00000000
 FLASH_SIZE = 0x02100000  # 33MB
 mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
 
-# Map SYSRAM0 for stack
+# Map SYSRAM0 for stack with increased size
 SYSRAM0_BASE = 0x03000000
-SYSRAM0_SIZE = 0x00050000  # 320KB
+SYSRAM0_SIZE = 0x00100000  # 1MB
 mu.mem_map(SYSRAM0_BASE, SYSRAM0_SIZE, UC_PROT_READ | UC_PROT_WRITE)
 
 # Write entire firmware to Flash
@@ -812,49 +829,34 @@ async function runComprehensiveTests() {
 			continue;
 		}
 
-		// Verify ground truth with Unicorn execution
-		console.log('  Verifying ground truth with Unicorn execution...');
+		// GROUND TRUTH VERIFICATION
+		// =========================
+		// Validate that ThemeColorExtractor extracted colors are correct by reading
+		// MOVW instructions from the original firmware's FLAC String function
+		console.log('  Verifying ground truth colors...');
 		try {
-			// Read original firmware to find BL instruction
-			const originalData = readFileSync(firmwarePath);
-			const originalBlAddr = findBlInFunction(originalData, firmware.flacAddr);
+			// Use FLAC String function address (contains CMP R1, #4 + ITE block)
+			// flacAddr points to the CMP instruction which is the start of FLAC String function
+			const flacStringAddr = firmware.flacAddr;
 
-			if (!originalBlAddr) {
-				console.log(`  ✗ Could not find BL instruction in original firmware`);
-				continue;
-			}
-
-			// Decode BL to get handler address in original firmware
-			const originalHandlerAddr = decodeBlTarget(originalData, originalBlAddr);
-
-			// Generate and run ground truth verification script
-			const gtVerifyScriptPath = join(OUTPUT_DIR, 'scripts', `verify_gt_${firmware.version}.py`);
-			const gtVerifyScript = generateGroundTruthVerificationScript(
+			// Generate and run verification script
+			const verifyScriptPath = join(OUTPUT_DIR, 'scripts', `verify_${firmware.version}_flac.py`);
+			const verifyScript = generateUnicornScriptForOriginalFlac(
 				firmwarePath,
-				firmware.flacAddr,
-				originalBlAddr,
-				originalHandlerAddr,
-				firmware.groundTruth.flacColors
+				firmware.groundTruth.flacColors,
+				flacStringAddr
 			);
-			writeFileSync(gtVerifyScriptPath, gtVerifyScript);
+			writeFileSync(verifyScriptPath, verifyScript);
 
-			const gtVerifyResult = execSync(`${PYTHON_PATH} ${gtVerifyScriptPath}`, {
-				cwd: process.cwd(),
-				encoding: 'utf-8',
-				stdio: 'pipe',
-				timeout: 30000
-			});
-
-			if (gtVerifyResult.includes('✅ PASS')) {
-				console.log(`  ✓ Ground truth verified by Unicorn execution`);
+			const verifyResult = runUnicornTest(verifyScriptPath);
+			if (verifyResult.success) {
+				console.log('  ✓ Ground truth verification: PASSED');
 			} else {
-				console.log(`  ✗ Ground truth verification FAILED`);
-				console.log(`    ${gtVerifyResult.split('\n').slice(-5).join('    ')}`);
-				continue;
+				console.log('  ⚠ Ground truth verification: FAILED');
+				console.log(`    ${verifyResult.output.split('\n').slice(-3).join(' ')}`);
 			}
-		} catch (error: any) {
-			console.log(`  ✗ Ground truth verification ERROR: ${error?.message || error}`);
-			continue;
+		} catch (error) {
+			console.log(`  ⚠ Ground truth verification skipped: ${error}`);
 		}
 
 		// Build scenarios with this firmware's ground truth

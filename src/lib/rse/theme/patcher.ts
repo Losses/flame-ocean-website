@@ -421,26 +421,40 @@ export class ThemePatcher {
 	 * This is more reliable than signature-based discovery for re-patching scenarios.
 	 */
 	private findExistingNopSlide(): NopSlide | null {
-		// Find FLAC function and get the BL instruction
-		const flacResult = discoverFlacFunction(this.data, this.version);
-		if (!flacResult) {
-			return null;
+		// Helper function to try finding NOP slide address from a function
+		const tryFindNopSlideAddr = (funcResult: [number, number] | null): number | null => {
+			if (!funcResult) {
+				return null;
+			}
+
+			const [, patchAddr] = funcResult;
+
+			// Decode the BL instruction to get the handler address
+			const blBytes = this.data.slice(patchAddr, patchAddr + 4);
+			const hw1 = blBytes[0] | (blBytes[1] << 8);
+			const hw2 = blBytes[2] | (blBytes[3] << 8);
+
+			// Verify this is a BL instruction
+			if ((hw1 & 0xf800) !== 0xf000 || (hw2 & 0xd000) !== 0xd000) {
+				return null;
+			}
+
+			// Decode BL target to get NOP slide start
+			return decodeBlTarget(patchAddr, blBytes);
+		};
+
+		// Try FLAC function first (for FLAC-only or Both patches)
+		let nopSlideAddr = tryFindNopSlideAddr(discoverFlacFunction(this.data, this.version));
+
+		// If FLAC not patched, try Menu function (for Menu-only patches)
+		if (nopSlideAddr === null) {
+			nopSlideAddr = tryFindNopSlideAddr(discoverMenuFunction(this.data, this.version));
 		}
 
-		const [funcAddr, patchAddr] = flacResult;
-
-		// Decode the BL instruction to get the handler address
-		const blBytes = this.data.slice(patchAddr, patchAddr + 4);
-		const hw1 = blBytes[0] | (blBytes[1] << 8);
-		const hw2 = blBytes[2] | (blBytes[3] << 8);
-
-		// Verify this is a BL instruction
-		if ((hw1 & 0xf800) !== 0xf000 || (hw2 & 0xd000) !== 0xd000) {
+		// Still not found? Can't re-patch
+		if (nopSlideAddr === null) {
 			return null;
 		}
-
-		// Decode BL target to get NOP slide start
-		const nopSlideAddr = decodeBlTarget(patchAddr, blBytes);
 
 		// Find the metadata (it's at the end of the NOP slide)
 		// Metadata is 51 bytes and starts with 'ECHO' magic
