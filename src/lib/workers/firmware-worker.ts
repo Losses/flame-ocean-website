@@ -1605,11 +1605,12 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>): Promise<void> => {
           menuColors?: number[];
         };
 
-        if (!flacColors || !menuColors) {
+        // At least one color type must be provided
+        if (!flacColors && !menuColors) {
           self.postMessage({
             type: "error",
             id,
-            error: "Missing flacColors or menuColors for patchTheme",
+            error: "Missing flacColors or menuColors for patchTheme (at least one required)",
           });
           return;
         }
