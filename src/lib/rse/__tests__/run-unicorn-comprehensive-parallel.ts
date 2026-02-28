@@ -88,19 +88,35 @@ async function generateAllFirmwaresInParallel(
 					const workerPath = join(process.cwd(), 'src/lib/rse/__tests__/patch-worker.ts');
 					const worker = new Worker(workerPath);
 
+					let resolved = false;
+
 					worker.on('message', (result: { id: string; success: boolean; nopSlideAddr: number; blAddr: number | null; error?: string }) => {
-						if (result.success && result.blAddr !== null) {
-							resolve({ id: result.id, nopSlideAddr: result.nopSlideAddr, blAddr: result.blAddr });
-						} else {
-							reject(new Error(`Worker failed for ${result.id}: ${result.error}`));
+						if (!resolved) {
+							resolved = true;
+							if (result.success && result.blAddr !== null) {
+								resolve({ id: result.id, nopSlideAddr: result.nopSlideAddr, blAddr: result.blAddr });
+							} else {
+								reject(new Error(`Worker failed for ${result.id}: ${result.error}`));
+							}
 						}
-						worker.terminate();
+						// Terminate after a short delay to allow message processing
+						setTimeout(() => worker.terminate(), 10);
 					});
 
-					worker.on('error', reject);
+					worker.on('error', (err) => {
+						if (!resolved) {
+							resolved = true;
+							reject(err);
+						}
+					});
+
 					worker.on('exit', (code) => {
-						if (code !== 0) {
-							reject(new Error(`Worker stopped with exit code ${code}`));
+						if (!resolved) {
+							resolved = true;
+							// Only reject if we haven't already resolved via message
+							if (code !== 0 && code !== null) {
+								reject(new Error(`Worker for ${task.id} stopped with exit code ${code}`));
+							}
 						}
 					});
 
@@ -109,13 +125,17 @@ async function generateAllFirmwaresInParallel(
 				});
 			});
 
-			// Wait for all workers in this batch
-			const batchResults = await Promise.all(workers);
+			// Wait for all workers in this batch (with individual error handling)
+			const batchResults = await Promise.allSettled(workers);
 
-		// Store results
-		for (const result of batchResults) {
-			results.set(result.id, { nopSlideAddr: result.nopSlideAddr, blAddr: result.blAddr });
-		}
+			// Process results and filter out failures
+			for (const result of batchResults) {
+				if (result.status === 'fulfilled') {
+					results.set(result.value.id, { nopSlideAddr: result.value.nopSlideAddr, blAddr: result.value.blAddr });
+				} else {
+					console.error(`  ✗ Task failed: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
+				}
+			}
 
 		completed += batch.length;
 		const elapsedNum = (Date.now() - startTime) / 1000;
@@ -132,7 +152,7 @@ async function generateAllFirmwaresInParallel(
 const PYTHON_PATH = '/nix/store/lc6q15imd72k6a4mpm9zzr3g0yygs4k6-system-path/bin/python3';
 const FIRMWARE_BASE = '/tmp/echo-mini-firmwares';
 const OUTPUT_DIR = '/tmp/unicorn-comprehensive-parallel';
-const MAX_CONCURRENT = 32; // Max number of parallel tests (increased for better CPU utilization)
+const MAX_CONCURRENT = 64; // Max number of parallel tests (increased for better CPU utilization)
 
 // Test colors
 const TEST_COLORS = {
@@ -548,8 +568,8 @@ def hook_code(uc, address, size, user_data):
                 hw1 = low1 | (high1 << 8)
                 hw2 = low2 | (high2 << 8)
 
-                # Verify BL instruction (bits [15:11] of hw2 should be 11011)
-                if (hw1 & 0xF800) == 0xF000 and (hw2 & 0xF800) == 0xF800:
+                # Verify BL instruction (hw1 bits [15:11]=11110, hw2 bits [15:14]=11 and bit [12]=1)
+                if (hw1 & 0xF800) == 0xF000 and (hw2 & 0xD000) == 0xD000:
                     S = (hw1 >> 10) & 1
                     imm10 = hw1 & 0x3FF
                     J1 = (hw2 >> 13) & 1
