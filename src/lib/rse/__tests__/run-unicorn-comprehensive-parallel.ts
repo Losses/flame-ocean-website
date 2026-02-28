@@ -132,7 +132,7 @@ async function generateAllFirmwaresInParallel(
 const PYTHON_PATH = '/nix/store/lc6q15imd72k6a4mpm9zzr3g0yygs4k6-system-path/bin/python3';
 const FIRMWARE_BASE = '/tmp/echo-mini-firmwares';
 const OUTPUT_DIR = '/tmp/unicorn-comprehensive-parallel';
-const MAX_CONCURRENT = 16; // Max number of parallel tests (increased for better CPU utilization)
+const MAX_CONCURRENT = 32; // Max number of parallel tests (increased for better CPU utilization)
 
 // Test colors
 const TEST_COLORS = {
@@ -504,7 +504,7 @@ SYSRAM0_SIZE = 0x50000
 
 # Initialize emulator
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
-mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE)
+mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
 mu.mem_map(SYSRAM0_BASE, SYSRAM0_SIZE, UC_PROT_READ | UC_PROT_WRITE)
 mu.mem_write(FLASH_BASE, data[FLASH_BASE:FLASH_BASE + FLASH_SIZE])
 
@@ -538,16 +538,42 @@ def hook_code(uc, address, size, user_data):
         try:
             instr_bytes = uc.mem_read(address, 4)
             if len(instr_bytes) == 4:
-                # BL instruction: 0xF000 0xFxxx - 0xF800 0xFxxx
-                b1 = instr_bytes[0]
-                b2 = instr_bytes[1]
-                b3 = instr_bytes[2]
-                b4 = instr_bytes[3]
-                if (b1 & 0xF8) == 0xF0 and (b2 & 0xF8) == 0xF0:
-                    offset = ((b1 & 0x07) << 19) | (b2 << 11) | ((b3 & 0x07) << 8) | b4
-                    if offset & 0x80000:
-                        offset -= 0x100000
-                    bl_target_actual = (address & ~1) + 4 + offset
+                # BL instruction in little-endian: [low1, high1, low2, high2]
+                # Format: hw1: 11110 S imm10, hw2: 11 J1 1 J2 imm11
+                low1 = instr_bytes[0]
+                high1 = instr_bytes[1]
+                low2 = instr_bytes[2]
+                high2 = instr_bytes[3]
+
+                hw1 = low1 | (high1 << 8)
+                hw2 = low2 | (high2 << 8)
+
+                # Verify BL instruction (bits [15:11] of hw2 should be 11011)
+                if (hw1 & 0xF800) == 0xF000 and (hw2 & 0xF800) == 0xF800:
+                    S = (hw1 >> 10) & 1
+                    imm10 = hw1 & 0x3FF
+                    J1 = (hw2 >> 13) & 1
+                    J2 = (hw2 >> 11) & 1
+                    imm11 = hw2 & 0x7FF
+
+                    # Calculate I1, I2
+                    I1 = (~(J1 ^ S)) & 1
+                    I2 = (~(J2 ^ S)) & 1
+
+                    # Reconstruct 25-bit offset
+                    # imm25 = {S, I1, I2, imm10, imm11, 1'b0} where imm11 occupies bits [11:1]
+                    imm25 = (S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | (imm11 << 1)
+
+                    # Sign extend to 32 bits
+                    if S:
+                        imm25 |= 0xFE000000
+
+                    # Convert to signed
+                    if imm25 & 0x80000000:
+                        imm25 = imm25 - 0x100000000
+
+                    # BL target = PC + 4 + (imm25 << 1) per ARM ARM
+                    bl_target_actual = (address & ~1) + 4 + (imm25 << 1)
         except:
             pass
 

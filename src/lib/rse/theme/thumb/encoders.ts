@@ -369,7 +369,7 @@ export function decodeBlTarget(fromAddr: number, blBytes: Uint8Array): number {
 	}
 
 	// ARM Thumb BL: target = from + 4 + (imm32 << 1)
-	// The left shift is required per ARM ARM specification
+	// Per ARM ARM, the offset is left-shifted by 1 to form the final byte offset
 	return fromAddr + 4 + (imm32 << 1);
 }
 
