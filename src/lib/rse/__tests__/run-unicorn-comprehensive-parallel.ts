@@ -518,9 +518,9 @@ FLAC_FUNC = ${flacFuncAddr}
 BL_ADDR = ${blAddr}
 EXPECTED_HANDLER = ${nopSlideAddr}
 FLASH_BASE = 0x00000000
-FLASH_SIZE = 0x200000
+FLASH_SIZE = 0x02100000
 SYSRAM0_BASE = 0x03000000
-SYSRAM0_SIZE = 0x50000
+SYSRAM0_SIZE = 0x00100000
 
 # Initialize emulator
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
@@ -592,8 +592,12 @@ def hook_code(uc, address, size, user_data):
                     if imm25 & 0x80000000:
                         imm25 = imm25 - 0x100000000
 
-                    # BL target = PC + 4 + (imm25 << 1) per ARM ARM
-                    bl_target_actual = (address & ~1) + 4 + (imm25 << 1)
+                    # BL target = PC + 4 + imm25 per ARM DDI0403 (NO << 1)
+                    # The imm25 already includes alignment via bit 0 (implicitly 0)
+                    bl_target_actual = (address & ~1) + 4 + imm25
+
+                    # Let Unicorn execute the BL instruction naturally
+                    bl_executed = True
         except:
             pass
 

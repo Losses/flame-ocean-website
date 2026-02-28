@@ -44,8 +44,14 @@ export function encodeBl(fromAddr: number, toAddr: number): Uint8Array {
 		throw new ThumbEncodingError(`BL offset out of range: ${offset}`);
 	}
 
-	// Get 25-bit value (offset >> 1 because Thumb is 16-bit aligned)
-	const imm25 = (offset >> 1) & 0x1FFFFFF;
+	// Get 25-bit value from byte offset
+	// Per ARM DDI0403: imm32 is the byte offset, and imm25 = {S, I1, I2, imm10, imm11, 1'b0}
+	// where bit 0 of imm25 is always 0 (for 2-byte alignment)
+	// Since offset must be even (Thumb alignment), we can directly use it as imm25
+	if (offset & 1) {
+		throw new ThumbEncodingError(`BL offset must be even (Thumb alignment): ${offset}`);
+	}
+	const imm25 = offset & 0x1FFFFFF;
 
 	// Sign bit based on original offset (not imm25)
 	const S = imm25 >> 24 & 1;
@@ -368,9 +374,10 @@ export function decodeBlTarget(fromAddr: number, blBytes: Uint8Array): number {
 		imm32 = imm32 - 0x100000000;
 	}
 
-	// ARM Thumb BL: target = from + 4 + (imm32 << 1)
-	// Per ARM ARM, the offset is left-shifted by 1 to form the final byte offset
-	return fromAddr + 4 + (imm32 << 1);
+	// ARM Thumb BL: target = from + 4 + imm32
+	// Per ARM DDI0403 spec: target = Align(PC, 4) + imm32
+	// The imm32 already includes alignment via bit 0 (implicitly 0 in imm25)
+	return fromAddr + 4 + imm32;
 }
 
 /**
