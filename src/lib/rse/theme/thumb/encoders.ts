@@ -241,13 +241,8 @@ export function encodeMov(rd: number, rm: number): Uint8Array {
 		throw new ThumbEncodingError(`Invalid registers for MOV: R${rd}, R${rm}`);
 	}
 
-	// For low registers, use MOV Rd, Rm
-	if (rd <= 7 && rm <= 7) {
-		const opcode = 0x1c00 | (rm << 3) | rd;
-		return new Uint8Array([opcode & 0xff, (opcode >> 8) & 0xff]);
-	}
-
-	// For high registers, use MOV encoding (Thumb hi-register operations)
+	// Use MOV encoding (Thumb hi-register operations)
+	// This works for ALL registers, not just high registers
 	// Encoding: 0100 0110 H1 H2 Rm[2:0] Rd[2:0]
 	// where H1=1 if Rd >= 8, H2=1 if Rm >= 8
 	const H1 = (rd >= 8) ? 1 : 0;

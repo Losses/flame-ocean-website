@@ -1138,21 +1138,21 @@ export class ThemePatcher {
 		// BEQ offset is in instructions (2-byte each), calculated from PC+4
 		// Note: offsets are adjusted for the 3-instruction prologue (PUSH + MOV + PUSH = 8 bytes)
 
-		// Check theme 0: if R1 == 0, jump to theme_0 (offset 15 instructions)
+		// Check theme 0: if R1 == 0, jump to theme_0 (offset 25 instructions)
 		code.push(0x00, 0x29);  // CMP R1, #0
-		code.push(0x0F, 0xD0);  // BEQ theme_0 (offset = 15)
+		code.push(0x19, 0xD0);  // BEQ theme_0 (offset = 25)
 
-		// Check theme 1: if R1 == 1, jump to theme_1 (offset 11 instructions)
+		// Check theme 1: if R1 == 1, jump to theme_1 (offset 19 instructions)
 		code.push(0x01, 0x29);  // CMP R1, #1
-		code.push(0x0B, 0xD0);  // BEQ theme_1 (offset = 11)
+		code.push(0x13, 0xD0);  // BEQ theme_1 (offset = 19)
 
-		// Check theme 2: if R1 == 2, jump to theme_2 (offset 7 instructions)
+		// Check theme 2: if R1 == 2, jump to theme_2 (offset 13 instructions)
 		code.push(0x02, 0x29);  // CMP R1, #2
-		code.push(0x07, 0xD0);  // BEQ theme_2 (offset = 7)
+		code.push(0x0D, 0xD0);  // BEQ theme_2 (offset = 13)
 
-		// Check theme 3: if R1 == 3, jump to theme_3 (offset 3 instructions)
+		// Check theme 3: if R1 == 3, jump to theme_3 (offset 7 instructions)
 		code.push(0x03, 0x29);  // CMP R1, #3
-		code.push(0x03, 0xD0);  // BEQ theme_3 (offset = 3)
+		code.push(0x07, 0xD0);  // BEQ theme_3 (offset = 7)
 
 		// Default (theme 4): fall through when R1 == 4
 		code.push(...encodeMov(1, 8));  // MOV R1, R8 (MOV with high register)
