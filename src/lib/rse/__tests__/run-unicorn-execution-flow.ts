@@ -160,6 +160,13 @@ print(f"BL instruction: 0x{BL_ADDR:X}")
 print(f"Expected handler: 0x{EXPECTED_HANDLER:X}")
 print(f"Expected color: 0x{EXPECTED_COLOR:X} (theme {THEME_INDEX})")
 
+# ✅ CRITICAL: Test caller-saved register preservation (R4-R8)
+CALLER_R4 = 0x12345678
+CALLER_R5 = 0x87654321
+CALLER_R6 = 0xABCDEF00
+CALLER_R7 = 0xFEDCBA00
+CALLER_R8 = 0x11223344
+
 # Initialize emulator
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
 
@@ -187,12 +194,13 @@ bl_target_actual = 0
 handler_executed = False
 bx_lr_executed = False
 final_r0_value = None
+registers_preserved = True
 instruction_count = 0
 check_next_pc = False
 MAX_INSTRUCTIONS = 1000  # Safety limit
 
 def hook_code(uc, address, size, user_data):
-    global bl_executed, bl_target_actual, handler_executed, bx_lr_executed, final_r0_value, instruction_count, check_next_pc
+    global bl_executed, bl_target_actual, handler_executed, bx_lr_executed, final_r0_value, registers_preserved, instruction_count, check_next_pc
 
     instruction_count += 1
     if instruction_count > MAX_INSTRUCTIONS:
@@ -265,13 +273,42 @@ def hook_code(uc, address, size, user_data):
         handler_executed = True
         print(f"  ✓ Handler entered at 0x{address:X}")
 
-    # Check for BX LR (handler return)
+    # Check for handler return instructions (BX LR or POP {...,PC})
     try:
         instr_bytes = uc.mem_read(address, 2)
-        if instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47:  # BX LR
+
+        # Check for BX LR (0x4770) - little endian: 0x70 0x47
+        is_bx_lr = instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47
+
+        # Check for POP {..., PC} (0xBC/0xBD with bit 7 set in second byte)
+        # Handler uses: POP {R4-R7, PC} = 0xFF 0xBD
+        is_pop_pc = (instr_bytes[0] == 0xFF and instr_bytes[1] == 0xBD)
+
+        if is_bx_lr or is_pop_pc:
             bx_lr_executed = True
+            instr_type = "BX LR" if is_bx_lr else "POP {R4-R7, PC}"
             final_r0_value = uc.reg_read(UC_ARM_REG_R0)
-            print(f"  ✓ BX LR executed, R0 = 0x{final_r0_value & 0xFFFF:X}")
+
+            # ✅ CRITICAL CHECK: Verify R4-R8 are preserved (callee-saved registers)
+            actual_r4 = uc.reg_read(UC_ARM_REG_R4)
+            actual_r5 = uc.reg_read(UC_ARM_REG_R5)
+            actual_r6 = uc.reg_read(UC_ARM_REG_R6)
+            actual_r7 = uc.reg_read(UC_ARM_REG_R7)
+            actual_r8 = uc.reg_read(UC_ARM_REG_R8)
+
+            if (actual_r4 != CALLER_R4 or actual_r5 != CALLER_R5 or
+                actual_r6 != CALLER_R6 or actual_r7 != CALLER_R7 or actual_r8 != CALLER_R8):
+                registers_preserved = False
+                print(f"  ✗ REGISTER CORRUPTION DETECTED!")
+                print(f"    R4: 0x{actual_r4:08X} (expected 0x{CALLER_R4:08X})")
+                print(f"    R5: 0x{actual_r5:08X} (expected 0x{CALLER_R5:08X})")
+                print(f"    R6: 0x{actual_r6:08X} (expected 0x{CALLER_R6:08X})")
+                print(f"    R7: 0x{actual_r7:08X} (expected 0x{CALLER_R7:08X})")
+                print(f"    R8: 0x{actual_r8:08X} (expected 0x{CALLER_R8:08X})")
+            else:
+                print(f"  ✓ Callee-saved registers preserved (R4-R8)")
+
+            print(f"  ✓ {instr_type} executed, R0 = 0x{final_r0_value & 0xFFFF:X}")
             uc.emu_stop()
     except:
         pass
@@ -296,6 +333,14 @@ mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)  # Thumb mode
 mu.reg_write(UC_ARM_REG_SP, 0x03050000)    # RKNanoD SYSRAM0 stack (top of 320KB)
 mu.reg_write(UC_ARM_REG_R0, 0x30000000)    # Destination address (unused by handler)
 mu.reg_write(UC_ARM_REG_R1, THEME_INDEX)   # Theme index
+
+# ✅ CRITICAL: Set caller-saved registers to known values BEFORE calling FLAC function
+mu.reg_write(UC_ARM_REG_R4, CALLER_R4)
+mu.reg_write(UC_ARM_REG_R5, CALLER_R5)
+mu.reg_write(UC_ARM_REG_R6, CALLER_R6)
+mu.reg_write(UC_ARM_REG_R7, CALLER_R7)
+mu.reg_write(UC_ARM_REG_R8, CALLER_R8)
+
 mu.reg_write(UC_ARM_REG_PC, FLAC_FUNC | 1) # Start from FLAC FUNCTION, not handler!
 mu.reg_write(UC_ARM_REG_LR, (FLAC_FUNC + 100) | 1) # Return address
 
@@ -341,6 +386,13 @@ if final_r0_value is not None:
         success = False
 else:
     print(f"⚠ WARNING: Could not verify color value (R0 not captured)")
+
+# ✅ CRITICAL: Verify callee-saved registers were preserved
+if not registers_preserved:
+    print(f"✗ FAIL: Callee-saved registers (R4-R8) were corrupted")
+    success = False
+else:
+    print(f"✓ Callee-saved registers preserved (R4-R8)")
 
 print(f"\\n=== Result ===")
 if success:

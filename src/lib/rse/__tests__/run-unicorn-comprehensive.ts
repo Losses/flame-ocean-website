@@ -383,17 +383,26 @@ mu.mem_write(FLASH_BASE, data[FLASH_BASE:FLASH_BASE + FLASH_SIZE])
 # Expected FLAC colors
 expected_flac = ${JSON.stringify(expectedFlac)}
 
+# ✅ CRITICAL: Test caller-saved register preservation (R4-R8)
+# Set known values BEFORE calling FLAC function
+CALLER_R4 = 0x12345678
+CALLER_R5 = 0x87654321
+CALLER_R6 = 0xABCDEF00
+CALLER_R7 = 0xFEDCBA00
+CALLER_R8 = 0x11223344
+
 # Execution tracking
 bl_executed = False
 bl_target_actual = 0
 handler_executed = False
 bx_lr_executed = False
 flac_results = []
+registers_preserved = True
 instruction_count = 0
 MAX_INSTRUCTIONS = 1000
 
 def hook_code(uc, address, size, user_data):
-    global bl_executed, bl_target_actual, handler_executed, bx_lr_executed, flac_results, instruction_count
+    global bl_executed, bl_target_actual, handler_executed, bx_lr_executed, flac_results, registers_preserved, instruction_count
 
     instruction_count += 1
     if instruction_count > MAX_INSTRUCTIONS:
@@ -451,20 +460,49 @@ def hook_code(uc, address, size, user_data):
         handler_executed = True
         print(f"  ✓ Handler entered at 0x{address:X}")
 
-    # Check for BX LR (handler return)
+    # Check for handler return instructions (BX LR or POP {...,PC})
     try:
         instr_bytes = uc.mem_read(address, 2)
-        if instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47:  # BX LR
+
+        # Check for BX LR (0x4770) - little endian: 0x70 0x47
+        is_bx_lr = instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47
+
+        # Check for POP {..., PC} (0xBC/0xBD with bit 7 set in second byte)
+        # Handler uses: POP {R4-R7, PC} = 0xFF 0xBD
+        is_pop_pc = (instr_bytes[0] == 0xFF and instr_bytes[1] == 0xBD)
+
+        if is_bx_lr or is_pop_pc:
             bx_lr_executed = True
+            instr_type = "BX LR" if is_bx_lr else "POP {R4-R7, PC}"
             r0_value = uc.reg_read(UC_ARM_REG_R0)
             color_value = r0_value & 0xFFFF
+
+            # ✅ CRITICAL CHECK: Verify R4-R8 are preserved (callee-saved registers)
+            actual_r4 = uc.reg_read(UC_ARM_REG_R4)
+            actual_r5 = uc.reg_read(UC_ARM_REG_R5)
+            actual_r6 = uc.reg_read(UC_ARM_REG_R6)
+            actual_r7 = uc.reg_read(UC_ARM_REG_R7)
+            actual_r8 = uc.reg_read(UC_ARM_REG_R8)
+
+            if (actual_r4 != CALLER_R4 or actual_r5 != CALLER_R5 or
+                actual_r6 != CALLER_R6 or actual_r7 != CALLER_R7 or actual_r8 != CALLER_R8):
+                registers_preserved = False
+                print(f"  ✗ REGISTER CORRUPTION DETECTED!")
+                print(f"    R4: 0x{actual_r4:08X} (expected 0x{CALLER_R4:08X})")
+                print(f"    R5: 0x{actual_r5:08X} (expected 0x{CALLER_R5:08X})")
+                print(f"    R6: 0x{actual_r6:08X} (expected 0x{CALLER_R6:08X})")
+                print(f"    R7: 0x{actual_r7:08X} (expected 0x{CALLER_R7:08X})")
+                print(f"    R8: 0x{actual_r8:08X} (expected 0x{CALLER_R8:08X})")
+            else:
+                print(f"  ✓ Callee-saved registers preserved (R4-R8)")
+
             # Get theme index from R1
             theme_idx = uc.reg_read(UC_ARM_REG_R1)
             if 0 <= theme_idx < len(expected_flac):
                 flac_results.append(color_value)
-                print(f"  ✓ BX LR executed, Theme {theme_idx}, R0 = 0x{color_value:X}")
+                print(f"  ✓ {instr_type} executed, Theme {theme_idx}, R0 = 0x{color_value:X}")
             else:
-                print(f"  ✓ BX LR executed, R0 = 0x{color_value:X}")
+                print(f"  ✓ {instr_type} executed, R0 = 0x{color_value:X}")
             uc.emu_stop()
     except:
         pass
@@ -483,11 +521,14 @@ def hook_mem_invalid(uc, access, address, size, value, user_data):
 
 mu.hook_add(UC_HOOK_MEM_READ_UNMAPPED | UC_HOOK_MEM_WRITE_UNMAPPED, hook_mem_invalid)
 
+# Track overall success
+all_success = True
+
 # Emulate FLAC handler for each theme
 for theme_idx, expected_color in enumerate(expected_flac):
     print(f"\\nTesting theme {theme_idx} (expected: 0x{expected_color:X})...")
 
-    # Reset tracking
+    # Reset tracking for each theme
     bl_executed = False
     bl_target_actual = 0
     handler_executed = False
@@ -497,6 +538,14 @@ for theme_idx, expected_color in enumerate(expected_flac):
     # Set up registers
     mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)  # Thumb mode
     mu.reg_write(UC_ARM_REG_SP, 0x03050000)    # RKNanoD SYSRAM0 stack
+
+    # ✅ CRITICAL: Set caller-saved registers to known values BEFORE calling FLAC function
+    mu.reg_write(UC_ARM_REG_R4, CALLER_R4)
+    mu.reg_write(UC_ARM_REG_R5, CALLER_R5)
+    mu.reg_write(UC_ARM_REG_R6, CALLER_R6)
+    mu.reg_write(UC_ARM_REG_R7, CALLER_R7)
+    mu.reg_write(UC_ARM_REG_R8, CALLER_R8)
+
     mu.reg_write(UC_ARM_REG_R1, theme_idx)     # Theme index in R1
     mu.reg_write(UC_ARM_REG_LR, (FLAC_FUNC + 100) | 1)
     mu.reg_write(UC_ARM_REG_PC, FLAC_FUNC | 1) # Start from FLAC FUNCTION!
@@ -507,41 +556,55 @@ for theme_idx, expected_color in enumerate(expected_flac):
     except UcError as e:
         pass
 
-print(f"\\nFLAC results: {flac_results}")
-print(f"Expected FLAC: {expected_flac}")
+    # ✅ Verify results for THIS theme
+    theme_success = True
 
-# Verify execution flow
-success = True
-if not bl_executed:
-    print("✗ FAIL: BL instruction was not executed")
-    success = False
-else:
-    print("✓ BL instruction executed")
+    if not bl_executed:
+        print(f"  ✗ FAIL: BL instruction was not executed")
+        theme_success = False
+    else:
+        print(f"  ✓ BL instruction executed")
 
-if bl_target_actual != EXPECTED_HANDLER:
-    print(f"✗ FAIL: BL precision error (expected 0x{EXPECTED_HANDLER:X}, got 0x{bl_target_actual:X})")
-    success = False
-else:
-    print(f"✓ BL precision verified (0x{EXPECTED_HANDLER:X})")
+    if bl_target_actual != EXPECTED_HANDLER:
+        print(f"  ✗ FAIL: BL precision error (expected 0x{EXPECTED_HANDLER:X}, got 0x{bl_target_actual:X})")
+        theme_success = False
+    else:
+        print(f"  ✓ BL precision verified (0x{EXPECTED_HANDLER:X})")
 
-if not handler_executed:
-    print("⚠ WARNING: Handler entry not detected")
-else:
-    print("✓ Handler executed")
+    if not bx_lr_executed:
+        print(f"  ✗ FAIL: Handler did not return (BX LR not detected)")
+        theme_success = False
+    else:
+        # Get color from R0
+        r0_value = mu.reg_read(UC_ARM_REG_R0)
+        color_value = r0_value & 0xFFFF
+        if color_value == expected_color:
+            print(f"  ✓ Color value correct: 0x{color_value:X}")
+        else:
+            print(f"  ✗ FAIL: Color value incorrect (expected 0x{expected_color:X}, got 0x{color_value:X})")
+            theme_success = False
 
-if not bx_lr_executed:
-    print("⚠ WARNING: BX LR not detected")
-else:
-    print("✓ Handler returned (BX LR)")
+    # ✅ Check register preservation
+    actual_r4 = mu.reg_read(UC_ARM_REG_R4)
+    actual_r5 = mu.reg_read(UC_ARM_REG_R5)
+    actual_r6 = mu.reg_read(UC_ARM_REG_R6)
+    actual_r7 = mu.reg_read(UC_ARM_REG_R7)
+    actual_r8 = mu.reg_read(UC_ARM_REG_R8)
 
-if flac_results != expected_flac:
-    print(f"✗ FAIL: Color values incorrect")
-    success = False
-else:
-    print("✓ All color values correct")
+    if (actual_r4 != CALLER_R4 or actual_r5 != CALLER_R5 or
+        actual_r6 != CALLER_R6 or actual_r7 != CALLER_R7 or actual_r8 != CALLER_R8):
+        print(f"  ✗ FAIL: Callee-saved registers (R4-R8) were corrupted")
+        theme_success = False
+    else:
+        print(f"  ✓ Callee-saved registers preserved (R4-R8)")
+
+    if theme_success:
+        flac_results.append(expected_color)
+    else:
+        all_success = False
 
 print(f"\\n=== Result ===")
-if success:
+if all_success and flac_results == expected_flac:
     print("✅ PASS")
     sys.exit(0)
 else:
@@ -652,26 +715,34 @@ function verifyNopSlideBoundaries(
 
 /**
  * Apply patch using TypeScript patcher
- * Returns: { success: boolean, nopSlideAddr: number }
+ * Returns: { success: boolean, nopSlideAddr: number, blAddr: number | null }
  */
 function applyPatch(
 	firmwarePath: string,
 	options: { flacColors?: number[]; menuColors?: number[] },
 	outputPath: string,
 	flacAddr: number
-): { success: boolean; nopSlideAddr: number } {
+): { success: boolean; nopSlideAddr: number; blAddr: number | null } {
 	try {
 		const firmwareData = readFileSync(firmwarePath);
 		const patcher = new ThemePatcher(firmwareData);
 		const result = patcher.patch(options, outputPath, true);
 
 		if (!result.success) {
-			return { success: false, nopSlideAddr: 0 };
+			return { success: false, nopSlideAddr: 0, blAddr: null };
 		}
 
-		// Read patched firmware and decode BL at FLAC address to find NOP slide
+		// Read patched firmware and find BL instruction
 		const patchedData = readFileSync(outputPath);
-		const nopSlideAddr = decodeBlTarget(patchedData, flacAddr);
+		const blAddr = findBlInFunction(patchedData, flacAddr);
+
+		if (!blAddr) {
+			console.error(`  ⚠ Could not find BL instruction in FLAC function`);
+			return { success: false, nopSlideAddr: 0, blAddr: null };
+		}
+
+		// Decode BL at BL instruction address to find NOP slide (handler address)
+		const nopSlideAddr = decodeBlTarget(patchedData, blAddr);
 
 		// Verify NOP slide boundaries
 		const boundaryCheck = verifyNopSlideBoundaries(patchedData, nopSlideAddr, patchedData.length);
@@ -679,10 +750,10 @@ function applyPatch(
 			console.error(`  ⚠ Boundary check warning: ${boundaryCheck.message}`);
 		}
 
-		return { success: true, nopSlideAddr };
+		return { success: true, nopSlideAddr, blAddr };
 	} catch (error) {
 		console.error(`Patch failed: ${error}`);
-		return { success: false, nopSlideAddr: 0 };
+		return { success: false, nopSlideAddr: 0, blAddr: null };
 	}
 }
 
@@ -881,44 +952,35 @@ async function runComprehensiveTests() {
 
 			// First patch
 			const firstOutputPath = join(OUTPUT_DIR, `${firmware.version}_${scenario.id}_1.IMG`);
-			let firstPatchResult = { success: false, nopSlideAddr: 0 };
+			let firstPatchResult = { success: false, nopSlideAddr: 0, blAddr: null as number | null };
 
 			try {
 				firstPatchResult = applyPatch(firmwarePath, scenario.firstColors, firstOutputPath, firmware.flacAddr);
 
-				if (firstPatchResult.success) {
+				if (firstPatchResult.success && firstPatchResult.blAddr) {
 					console.log(`    ✓ First patch: SUCCESS`);
 
-					// Find BL instruction in patched firmware for BL verification test
-					const patchedData = readFileSync(firstOutputPath);
-					const blAddr = findBlInFunction(patchedData, firmware.flacAddr);
+					// Generate and run BL verification test (complete flow: FLAC function → BL → handler)
+					const script1BLPath = join(OUTPUT_DIR, 'scripts', `test_${firmware.version}_${scenario.id}_1_bl.py`);
+					const script1BL = generateUnicornScriptWithBLVerification(
+						firmware,
+						scenario.name,
+						1,
+						scenario.expectedAfterFirst.flac,
+						firstOutputPath,
+						firmware.flacAddr,
+						firstPatchResult.blAddr,
+						firstPatchResult.nopSlideAddr
+					);
+					writeFileSync(script1BLPath, script1BL);
 
-					if (blAddr) {
-						// Generate and run BL verification test (complete flow: FLAC function → BL → handler)
-						const script1BLPath = join(OUTPUT_DIR, 'scripts', `test_${firmware.version}_${scenario.id}_1_bl.py`);
-						const script1BL = generateUnicornScriptWithBLVerification(
-							firmware,
-							scenario.name,
-							1,
-							scenario.expectedAfterFirst.flac,
-							firstOutputPath,
-							firmware.flacAddr,
-							blAddr,
-							firstPatchResult.nopSlideAddr
-						);
-						writeFileSync(script1BLPath, script1BL);
-
-						const unicorn1BL = runUnicornTest(script1BLPath);
-						if (unicorn1BL.success) {
-							console.log(`    ✓ First patch BL + Flow: VERIFIED`);
-							scenarioResults.firstPatch = true;
-						} else {
-							console.log(`    ✗ First patch BL + Flow: FAILED`);
-							console.log(`      ${unicorn1BL.output.split('\n').slice(-3).join(' ')}`);
-						}
+					const unicorn1BL = runUnicornTest(script1BLPath);
+					if (unicorn1BL.success) {
+						console.log(`    ✓ First patch BL + Flow: VERIFIED`);
+						scenarioResults.firstPatch = true;
 					} else {
-						console.log(`    ✗ Could not find BL instruction for verification`);
-						scenarioResults.firstPatch = false;
+						console.log(`    ✗ First patch BL + Flow: FAILED`);
+						console.log(`      ${unicorn1BL.output.split('\n').slice(-3).join(' ')}`);
 					}
 				} else {
 					console.log(`    ✗ First patch: FAILED`);
@@ -930,12 +992,12 @@ async function runComprehensiveTests() {
 			// Second patch (skip for single-patch scenarios)
 			if (firstPatchResult.success && !scenario.isSinglePatch && 'secondColors' in scenario) {
 				const secondOutputPath = join(OUTPUT_DIR, `${firmware.version}_${scenario.id}_2.IMG`);
-				let secondPatchResult = { success: false, nopSlideAddr: 0 };
+				let secondPatchResult = { success: false, nopSlideAddr: 0, blAddr: null as number | null };
 
 				try {
 					secondPatchResult = applyPatch(firstOutputPath, (scenario as any).secondColors, secondOutputPath, firmware.flacAddr);
 
-					if (secondPatchResult.success) {
+					if (secondPatchResult.success && secondPatchResult.blAddr) {
 						console.log(`    ✓ Second patch: SUCCESS`);
 
 						// CRITICAL: Verify second patch reuses the same NOP slide as first patch
@@ -951,11 +1013,7 @@ async function runComprehensiveTests() {
 							console.log(`    ✓ NOP slide reused: 0x${firstPatchResult.nopSlideAddr.toString(16)}`);
 						}
 
-						// Find BL instruction in patched firmware for BL verification test
-						const patchedData2 = readFileSync(secondOutputPath);
-						const blAddr2 = findBlInFunction(patchedData2, firmware.flacAddr);
-
-						if (blAddr2 && 'expectedAfterSecond' in scenario) {
+						if ('expectedAfterSecond' in scenario) {
 							// Generate and run BL verification test (complete flow: FLAC function → BL → handler)
 							const script2BLPath = join(OUTPUT_DIR, 'scripts', `test_${firmware.version}_${scenario.id}_2_bl.py`);
 							const script2BL = generateUnicornScriptWithBLVerification(
@@ -965,7 +1023,7 @@ async function runComprehensiveTests() {
 								(scenario as any).expectedAfterSecond.flac,
 								secondOutputPath,
 								firmware.flacAddr,
-								blAddr2,
+								secondPatchResult.blAddr,
 								secondPatchResult.nopSlideAddr
 							);
 							writeFileSync(script2BLPath, script2BL);
@@ -980,9 +1038,6 @@ async function runComprehensiveTests() {
 								console.log(`      ${unicorn2BL.output.split('\n').slice(-3).join(' ')}`);
 								scenarioResults.verificationFailed = true;
 							}
-						} else {
-							console.log(`    ✗ Could not find BL instruction for verification`);
-							scenarioResults.verificationFailed = true;
 						}
 					} else {
 						console.log(`    ✗ Second patch: FAILED`);
