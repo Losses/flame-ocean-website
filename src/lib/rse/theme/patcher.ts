@@ -5,7 +5,7 @@
  * Uses detection, NOP slide finding, and instruction encoding to patch.
  */
 
-import { encodeBl, encodeMovw, encodeMovt, decodeBlTarget } from './thumb/encoders.js';
+import { encodeBl, encodeMovw, encodeMovt, decodeBlTarget, encodePush, encodePop, encodeMov } from './thumb/encoders.js';
 import { fileIO } from '../utils/file-io.js';
 import { NopSlideFinder } from './nop-slide.js';
 import { CodeReferenceAnalyzer, type LandingPoint, type NopSlideAnalysis } from './code-reference-analyzer.js';
@@ -1114,11 +1114,11 @@ export class ThemePatcher {
 		// CRITICAL: Must save callee-saved registers (R4-R8) and LR
 		// because we're about to modify them!
 		// PUSH {R4-R7, LR}
-		code.push(0xFF, 0xB4);  // PUSH {R4-R7, LR} (bits 0-3 = R4-R7, bit 4 = LR)
+		code.push(...encodePush([4, 5, 6, 7, 14]));  // PUSH {R4-R7, LR}
 
 		// Move R8 to R3, then push R3 (since R8 can't be pushed directly with PUSH)
-		code.push(0x58, 0x46);  // MOV R3, R8 (high register MOV)
-		code.push(0x08, 0xB4);  // PUSH {R3}
+		code.push(...encodeMov(3, 8));  // MOV R3, R8 (high register MOV)
+		code.push(...encodePush([3]));  // PUSH {R3}
 
 		// Load colors into R4-R8 using MOVW+MOVT pairs
 		for (let i = 0; i < colors.length; i++) {
@@ -1155,39 +1155,39 @@ export class ThemePatcher {
 		code.push(0x03, 0xD0);  // BEQ theme_3 (offset = 3)
 
 		// Default (theme 4): fall through when R1 == 4
-		code.push(0x49, 0x46);  // MOV R1, R8 (MOV with high register)
+		code.push(...encodeMov(1, 8));  // MOV R1, R8 (MOV with high register)
 		// Restore registers and return
-		code.push(0x08, 0xBC);  // POP {R3}
-		code.push(0x43, 0x46);  // MOV R8, R3
-		code.push(0xFF, 0xBD);  // POP {R4-R7, PC}
+		code.push(...encodePop([3]));  // POP {R3}
+		code.push(...encodeMov(8, 3));  // MOV R8, R3 (restore R8)
+		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
 
 		// theme_3:
-		code.push(0x41, 0x46);  // MOV R1, R7
+		code.push(...encodeMov(1, 7));  // MOV R1, R7
 		// Restore registers and return
-		code.push(0x08, 0xBC);  // POP {R3}
-		code.push(0x43, 0x46);  // MOV R8, R3
-		code.push(0xFF, 0xBD);  // POP {R4-R7, PC}
+		code.push(...encodePop([3]));  // POP {R3}
+		code.push(...encodeMov(8, 3));  // MOV R8, R3
+		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
 
 		// theme_2:
-		code.push(0x39, 0x46);  // MOV R1, R6
+		code.push(...encodeMov(1, 6));  // MOV R1, R6
 		// Restore registers and return
-		code.push(0x08, 0xBC);  // POP {R3}
-		code.push(0x43, 0x46);  // MOV R8, R3
-		code.push(0xFF, 0xBD);  // POP {R4-R7, PC}
+		code.push(...encodePop([3]));  // POP {R3}
+		code.push(...encodeMov(8, 3));  // MOV R8, R3
+		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
 
 		// theme_1:
-		code.push(0x31, 0x46);  // MOV R1, R5
+		code.push(...encodeMov(1, 5));  // MOV R1, R5
 		// Restore registers and return
-		code.push(0x08, 0xBC);  // POP {R3}
-		code.push(0x43, 0x46);  // MOV R8, R3
-		code.push(0xFF, 0xBD);  // POP {R4-R7, PC}
+		code.push(...encodePop([3]));  // POP {R3}
+		code.push(...encodeMov(8, 3));  // MOV R8, R3
+		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
 
 		// theme_0:
-		code.push(0x29, 0x46);  // MOV R1, R4
+		code.push(...encodeMov(1, 4));  // MOV R1, R4
 		// Restore registers and return
-		code.push(0x08, 0xBC);  // POP {R3}
-		code.push(0x43, 0x46);  // MOV R8, R3
-		code.push(0xFF, 0xBD);  // POP {R4-R7, PC}
+		code.push(...encodePop([3]));  // POP {R3}
+		code.push(...encodeMov(8, 3));  // MOV R8, R3
+		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
 
 		return new Uint8Array(code);
 	}
