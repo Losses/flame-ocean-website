@@ -13,12 +13,126 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import { spawn } from 'child_process';
 import { join } from 'path';
+import { Worker } from 'worker_threads';
 import { ThemePatcher } from '../theme/patcher.js';
+
+// Helper: wait for a file to exist with timeout
+async function waitForFile(filePath: string, timeoutMs: number = 30000): Promise<void> {
+	const startTime = Date.now();
+	while (!existsSync(filePath)) {
+		if (Date.now() - startTime > timeoutMs) {
+			throw new Error(`Timeout waiting for file: ${filePath}`);
+		}
+		await new Promise(resolve => setTimeout(resolve, 100));
+	}
+}
+
+/**
+ * Generate all firmware patches in parallel using worker threads
+ */
+async function generateAllFirmwaresInParallel(
+	firmwareInfo: Array<{ version: string; file: string; subdir: string; flacAddr: number; groundTruth: { flacColors: number[]; menuColors: number[] } | null }>
+): Promise<Map<string, { nopSlideAddr: number; blAddr: number }>> {
+
+	// Build all patching tasks
+	const allTasks: Array<{
+		id: string;
+		firmwarePath: string;
+		colors: { flacColors?: number[]; menuColors?: number[] };
+		outputPath: string;
+		flacAddr: number;
+	}> = [];
+
+	for (const firmware of firmwareInfo) {
+		if (!firmware.groundTruth) continue;
+
+		const firmwarePath = join(FIRMWARE_BASE, firmware.subdir, firmware.file);
+		const scenarios = buildScenariosForFirmware(firmware.groundTruth);
+
+		for (const scenario of scenarios) {
+			// First patch
+			allTasks.push({
+				id: `${firmware.version}_${scenario.id}_1`,
+				firmwarePath,
+				colors: scenario.firstColors,
+				outputPath: join(OUTPUT_DIR, `${firmware.version}_${scenario.id}_1.IMG`),
+				flacAddr: firmware.flacAddr
+			});
+
+			// Second patch (if not single-patch)
+			if (scenario.secondColors !== null) {
+				allTasks.push({
+					id: `${firmware.version}_${scenario.id}_2`,
+					firmwarePath,
+					colors: scenario.secondColors as { flacColors?: number[]; menuColors?: number[] },
+					outputPath: join(OUTPUT_DIR, `${firmware.version}_${scenario.id}_2.IMG`),
+					flacAddr: firmware.flacAddr
+				});
+			}
+		}
+	}
+
+	console.log(`\n=== Generating ${allTasks.length} firmware files in parallel ===`);
+	console.log(`Workers: ${MAX_CONCURRENT}`);
+
+	const results = new Map<string, { nopSlideAddr: number; blAddr: number }>();
+	let completed = 0;
+	let startTime = Date.now();
+
+		// Process tasks in batches
+		for (let i = 0; i < allTasks.length; i += MAX_CONCURRENT) {
+			const batch = allTasks.slice(i, Math.min(i + MAX_CONCURRENT, allTasks.length));
+			const workers = batch.map(task => {
+				return new Promise<{ id: string; nopSlideAddr: number; blAddr: number }>((resolve, reject) => {
+					// Use absolute path for worker
+					const workerPath = join(process.cwd(), 'src/lib/rse/__tests__/patch-worker.ts');
+					const worker = new Worker(workerPath);
+
+					worker.on('message', (result: { id: string; success: boolean; nopSlideAddr: number; blAddr: number | null; error?: string }) => {
+						if (result.success && result.blAddr !== null) {
+							resolve({ id: result.id, nopSlideAddr: result.nopSlideAddr, blAddr: result.blAddr });
+						} else {
+							reject(new Error(`Worker failed for ${result.id}: ${result.error}`));
+						}
+						worker.terminate();
+					});
+
+					worker.on('error', reject);
+					worker.on('exit', (code) => {
+						if (code !== 0) {
+							reject(new Error(`Worker stopped with exit code ${code}`));
+						}
+					});
+
+					// Send task to worker
+					worker.postMessage(task);
+				});
+			});
+
+			// Wait for all workers in this batch
+			const batchResults = await Promise.all(workers);
+
+		// Store results
+		for (const result of batchResults) {
+			results.set(result.id, { nopSlideAddr: result.nopSlideAddr, blAddr: result.blAddr });
+		}
+
+		completed += batch.length;
+		const elapsedNum = (Date.now() - startTime) / 1000;
+		const elapsed = elapsedNum.toFixed(1);
+		const rate = (completed / elapsedNum).toFixed(1);
+		console.log(`  Progress: ${completed}/${allTasks.length} (${(completed * 100 / allTasks.length).toFixed(0)}%) - ${elapsed}s - ${rate} firmware/s`);
+	}
+
+	console.log(`\n✓ All ${allTasks.length} firmware files generated in ${((Date.now() - startTime) / 1000).toFixed(1)}s\n`);
+
+	return results;
+}
 
 const PYTHON_PATH = '/nix/store/lc6q15imd72k6a4mpm9zzr3g0yygs4k6-system-path/bin/python3';
 const FIRMWARE_BASE = '/tmp/echo-mini-firmwares';
 const OUTPUT_DIR = '/tmp/unicorn-comprehensive-parallel';
-const MAX_CONCURRENT = 8; // Max number of parallel tests
+const MAX_CONCURRENT = 16; // Max number of parallel tests (increased for better CPU utilization)
 
 // Test colors
 const TEST_COLORS = {
@@ -758,7 +872,10 @@ async function runComprehensiveTests() {
 		}
 	}
 
-	// Collect all test cases
+	// Generate all firmware files in parallel using worker threads
+	const firmwareResults = await generateAllFirmwaresInParallel(FIRMWARE_INFO);
+
+	// Collect all test cases (now only Python tests, no patching)
 	const allTestCases: Array<{
 		id: string;
 		firmwareVersion: string;
@@ -776,63 +893,92 @@ async function runComprehensiveTests() {
 		const scenarios = buildScenariosForFirmware(firmware.groundTruth);
 
 		for (const scenario of scenarios) {
-			// First patch
 			const firstOutputPath = join(OUTPUT_DIR, `${firmware.version}_${scenario.id}_1.IMG`);
 			const script1BLPath = join(scriptsDir, `test_${firmware.version}_${scenario.id}_1_bl.py`);
 			const log1Path = join(logsDir, `test_${firmware.version}_${scenario.id}_1_bl.log`);
 
-			allTestCases.push({
-				id: `${firmware.version}_${scenario.id}_1`,
-				firmwareVersion: firmware.version,
-				scenarioName: scenario.name,
-				patchNum: 1,
-				test: async () => {
-					const firstPatchResult = applyPatch(firmwarePath, scenario.firstColors, firstOutputPath, firmware.flacAddr);
+			// Get pre-generated firmware info
+			const firstFirmwareInfo = firmwareResults.get(`${firmware.version}_${scenario.id}_1`);
+			if (!firstFirmwareInfo) {
+				console.error(`  ✗ Missing firmware info for ${firmware.version}_${scenario.id}_1`);
+				continue;
+			}
 
-					if (!firstPatchResult.success || !firstPatchResult.blAddr) {
-						return { success: false };
+			// Single-patch scenarios: run first patch and test
+			if (scenario.isSinglePatch) {
+				allTestCases.push({
+					id: `${firmware.version}_${scenario.id}_1`,
+					firmwareVersion: firmware.version,
+					scenarioName: scenario.name,
+					patchNum: 1,
+					test: async () => {
+						// Firmware already generated, just run Python test
+						const script1BL = generateUnicornScriptWithBLVerification(
+							firmware,
+							scenario.name,
+							1,
+							scenario.expectedAfterFirst.flac,
+							firstOutputPath,
+							firmware.flacAddr,
+							firstFirmwareInfo.blAddr,
+							firstFirmwareInfo.nopSlideAddr
+						);
+						writeFileSync(script1BLPath, script1BL);
+
+						const unicorn1BL = await runUnicornTestAsync(script1BLPath, log1Path);
+						return {
+							success: unicorn1BL.success
+						};
 					}
-
-					const script1BL = generateUnicornScriptWithBLVerification(
-						firmware,
-						scenario.name,
-						1,
-						scenario.expectedAfterFirst.flac,
-						firstOutputPath,
-						firmware.flacAddr,
-						firstPatchResult.blAddr,
-						firstPatchResult.nopSlideAddr
-					);
-					writeFileSync(script1BLPath, script1BL);
-
-					const unicorn1BL = await runUnicornTestAsync(script1BLPath, log1Path);
-					return {
-						success: unicorn1BL.success,
-						patchResult: firstPatchResult
-					};
-				}
-			});
-
-			// Second patch (if not single-patch)
-			if (scenario.secondColors !== null) {
+				});
+			} else {
+				// Two-patch scenarios: run BOTH patches sequentially, then test both
 				const secondOutputPath = join(OUTPUT_DIR, `${firmware.version}_${scenario.id}_2.IMG`);
 				const script2BLPath = join(scriptsDir, `test_${firmware.version}_${scenario.id}_2_bl.py`);
 				const log2Path = join(logsDir, `test_${firmware.version}_${scenario.id}_2_bl.log`);
 
+				// Get pre-generated firmware info for second patch
+				const secondFirmwareInfo = firmwareResults.get(`${firmware.version}_${scenario.id}_2`);
+				if (!secondFirmwareInfo) {
+					console.error(`  ✗ Missing firmware info for ${firmware.version}_${scenario.id}_2`);
+					continue;
+				}
+
+				// First patch test case
+				allTestCases.push({
+					id: `${firmware.version}_${scenario.id}_1`,
+					firmwareVersion: firmware.version,
+					scenarioName: scenario.name,
+					patchNum: 1,
+					test: async () => {
+						// Firmware already generated, just run Python test
+						const script1BL = generateUnicornScriptWithBLVerification(
+							firmware,
+							scenario.name,
+							1,
+							scenario.expectedAfterFirst.flac,
+							firstOutputPath,
+							firmware.flacAddr,
+							firstFirmwareInfo.blAddr,
+							firstFirmwareInfo.nopSlideAddr
+						);
+						writeFileSync(script1BLPath, script1BL);
+
+						const unicorn1BL = await runUnicornTestAsync(script1BLPath, log1Path);
+						return {
+							success: unicorn1BL.success
+						};
+					}
+				});
+
+				// Second patch test case
 				allTestCases.push({
 					id: `${firmware.version}_${scenario.id}_2`,
 					firmwareVersion: firmware.version,
 					scenarioName: scenario.name,
 					patchNum: 2,
 					test: async () => {
-						// Type assertion: we know secondColors is not null here
-						const secondColors = scenario.secondColors as { flacColors?: number[]; menuColors?: number[] };
-						const secondPatchResult = applyPatch(firstOutputPath, secondColors, secondOutputPath, firmware.flacAddr);
-
-						if (!secondPatchResult.success || !secondPatchResult.blAddr) {
-							return { success: false };
-						}
-
+						// Firmware already generated, just run Python test
 						const script2BL = generateUnicornScriptWithBLVerification(
 							firmware,
 							scenario.name,
@@ -840,15 +986,14 @@ async function runComprehensiveTests() {
 							scenario.expectedAfterSecond!.flac,
 							secondOutputPath,
 							firmware.flacAddr,
-							secondPatchResult.blAddr,
-							secondPatchResult.nopSlideAddr
+							secondFirmwareInfo.blAddr,
+							secondFirmwareInfo.nopSlideAddr
 						);
 						writeFileSync(script2BLPath, script2BL);
 
 						const unicorn2BL = await runUnicornTestAsync(script2BLPath, log2Path);
 						return {
-							success: unicorn2BL.success,
-							patchResult: secondPatchResult
+							success: unicorn2BL.success
 						};
 					}
 				});
