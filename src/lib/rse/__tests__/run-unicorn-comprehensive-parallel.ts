@@ -537,12 +537,13 @@ function findBlInFunction(firmwareData: Uint8Array, funcAddr: number): number | 
 		const addr = funcAddr + offset;
 		if (addr + 4 > firmwareData.length) break;
 
-		const b1 = firmwareData[addr];
-		const b2 = firmwareData[addr + 1];
-		const b3 = firmwareData[addr + 2];
-		const b4 = firmwareData[addr + 3];
+		// BL instruction in little-endian: [low1, high1, low2, high2]
+		// high1 byte (addr+1): bits [15:11] should be 11110 for BL
+		// high2 byte (addr+3): bits [15:14] should be 11 for BL
+		const high1 = firmwareData[addr + 1];
+		const high2 = firmwareData[addr + 3];
 
-		if ((b1 & 0xF8) === 0xF0 && (b2 & 0xF8) === 0xF0) {
+		if ((high1 & 0xF8) === 0xF0 && (high2 & 0xF0) >= 0x80) {
 			return addr;
 		}
 	}
@@ -550,15 +551,9 @@ function findBlInFunction(firmwareData: Uint8Array, funcAddr: number): number | 
 }
 
 function decodeBlTarget(firmwareData: Uint8Array, blAddr: number): number {
-	const b1 = firmwareData[blAddr];
-	const b2 = firmwareData[blAddr + 1];
-	const b3 = firmwareData[blAddr + 2];
-	const b4 = firmwareData[blAddr + 3];
-
-	let offset = ((b1 & 0x07) << 19) | (b2 << 11) | ((b3 & 0x07) << 8) | b4;
-	if (offset & 0x80000) offset -= 0x100000;
-
-	return (blAddr & ~1) + 4 + offset;
+	const blBytes = firmwareData.slice(blAddr, blAddr + 4);
+	const { decodeBlTarget: decodeFromEncoders } = require('../theme/thumb/encoders.js');
+	return decodeFromEncoders(blAddr, blBytes);
 }
 
 function verifyNopSlideBoundaries(firmwareData: Uint8Array, nopSlideAddr: number, firmwareSize: number): { safe: boolean; message: string } {
