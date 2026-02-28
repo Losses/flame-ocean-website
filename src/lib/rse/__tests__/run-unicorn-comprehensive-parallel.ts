@@ -672,20 +672,33 @@ for theme_idx, expected_color in enumerate(expected_flac):
 
     try:
         mu.emu_start(FLAC_FUNC | 1, (FLAC_FUNC + 1000) | 1, 0, 1000)
-    except UcError:
-        pass
+    except UcError as e:
+        print(f"Theme {theme_idx}: Unicorn error: {e}")
+        all_success = False
+        continue
 
     theme_success = True
-    if not bl_executed or bl_target_actual != EXPECTED_HANDLER:
+
+    # Check BL execution
+    if not bl_executed:
+        print(f"Theme {theme_idx}: ✗ BL instruction not executed")
         theme_success = False
+    elif bl_target_actual != EXPECTED_HANDLER:
+        print(f"Theme {theme_idx}: ✗ BL target mismatch: expected 0x{EXPECTED_HANDLER:X}, got 0x{bl_target_actual:X}")
+        theme_success = False
+
+    # Check handler return
     if not bx_lr_executed:
+        print(f"Theme {theme_idx}: ✗ Handler did not return (no BX LR/POP PC)")
         theme_success = False
     else:
         r0_value = mu.reg_read(UC_ARM_REG_R0)
         color_value = r0_value & 0xFFFF
         if color_value != expected_color:
+            print(f"Theme {theme_idx}: ✗ Color mismatch: expected 0x{expected_color:04X}, got 0x{color_value:04X}")
             theme_success = False
 
+    # Check register preservation
     actual_r4 = mu.reg_read(UC_ARM_REG_R4)
     actual_r5 = mu.reg_read(UC_ARM_REG_R5)
     actual_r6 = mu.reg_read(UC_ARM_REG_R6)
@@ -694,6 +707,17 @@ for theme_idx, expected_color in enumerate(expected_flac):
 
     if (actual_r4 != CALLER_R4 or actual_r5 != CALLER_R5 or
         actual_r6 != CALLER_R6 or actual_r7 != CALLER_R7 or actual_r8 != CALLER_R8):
+        print(f"Theme {theme_idx}: ✗ Register corruption")
+        if actual_r4 != CALLER_R4:
+            print(f"    R4: got 0x{actual_r4:X}, expected 0x{CALLER_R4:X}")
+        if actual_r5 != CALLER_R5:
+            print(f"    R5: got 0x{actual_r5:X}, expected 0x{CALLER_R5:X}")
+        if actual_r6 != CALLER_R6:
+            print(f"    R6: got 0x{actual_r6:X}, expected 0x{CALLER_R6:X}")
+        if actual_r7 != CALLER_R7:
+            print(f"    R7: got 0x{actual_r7:X}, expected 0x{CALLER_R7:X}")
+        if actual_r8 != CALLER_R8:
+            print(f"    R8: got 0x{actual_r8:X}, expected 0x{CALLER_R8:X}")
         theme_success = False
 
     if theme_success:
