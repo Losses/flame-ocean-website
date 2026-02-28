@@ -89,18 +89,16 @@ async function generateAllFirmwaresInParallel(
 					const worker = new Worker(workerPath);
 
 					let resolved = false;
+					let workerResult: { id: string; nopSlideAddr: number; blAddr: number } | null = null;
 
 					worker.on('message', (result: { id: string; success: boolean; nopSlideAddr: number; blAddr: number | null; error?: string }) => {
-						if (!resolved) {
+						if (result.success && result.blAddr !== null) {
+							workerResult = { id: result.id, nopSlideAddr: result.nopSlideAddr, blAddr: result.blAddr };
+						} else {
 							resolved = true;
-							if (result.success && result.blAddr !== null) {
-								resolve({ id: result.id, nopSlideAddr: result.nopSlideAddr, blAddr: result.blAddr });
-							} else {
-								reject(new Error(`Worker failed for ${result.id}: ${result.error}`));
-							}
+							reject(new Error(`Worker failed for ${result.id}: ${result.error}`));
+							worker.terminate();
 						}
-						// Terminate after a short delay to allow message processing
-						setTimeout(() => worker.terminate(), 10);
 					});
 
 					worker.on('error', (err) => {
@@ -112,12 +110,15 @@ async function generateAllFirmwaresInParallel(
 
 					worker.on('exit', (code) => {
 						if (!resolved) {
-							resolved = true;
-							// Only reject if we haven't already resolved via message
-							if (code !== 0 && code !== null) {
+							if (workerResult) {
+								resolved = true;
+								resolve(workerResult);
+							} else if (code !== 0 && code !== null) {
+								resolved = true;
 								reject(new Error(`Worker for ${task.id} stopped with exit code ${code}`));
 							}
 						}
+						// Worker has exited, memory should be released
 					});
 
 					// Send task to worker
@@ -152,7 +153,7 @@ async function generateAllFirmwaresInParallel(
 const PYTHON_PATH = '/nix/store/lc6q15imd72k6a4mpm9zzr3g0yygs4k6-system-path/bin/python3';
 const FIRMWARE_BASE = '/tmp/echo-mini-firmwares';
 const OUTPUT_DIR = '/tmp/unicorn-comprehensive-parallel';
-const MAX_CONCURRENT = 64; // Max number of parallel tests (increased for better CPU utilization)
+const MAX_CONCURRENT = 32; // Quick BEQ fix verification: serial execution
 
 // Test colors
 const TEST_COLORS = {
