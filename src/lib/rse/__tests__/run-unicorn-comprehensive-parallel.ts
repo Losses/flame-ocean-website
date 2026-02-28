@@ -31,7 +31,7 @@ async function waitForFile(filePath: string, timeoutMs: number = 30000): Promise
  * Generate all firmware patches in parallel using worker threads
  */
 async function generateAllFirmwaresInParallel(
-	firmwareInfo: Array<{ version: string; file: string; subdir: string; flacAddr: number; groundTruth: { flacColors: number[]; menuColors: number[] } | null }>
+	firmwareInfo: Array<{ version: string; file: string; subdir: string; flacAddr?: number; groundTruth: { flacColors: number[]; menuColors: number[] } | null }>
 ): Promise<Map<string, { nopSlideAddr: number; blAddr: number }>> {
 
 	// Build all patching tasks
@@ -44,7 +44,7 @@ async function generateAllFirmwaresInParallel(
 	}> = [];
 
 	for (const firmware of firmwareInfo) {
-		if (!firmware.groundTruth) continue;
+		if (!firmware.groundTruth || !firmware.flacAddr) continue;
 
 		const firmwarePath = join(FIRMWARE_BASE, firmware.subdir, firmware.file);
 		const scenarios = buildScenariosForFirmware(firmware.groundTruth);
@@ -174,17 +174,33 @@ function extractGroundTruth(firmwarePath: string): { flacColors: number[]; menuC
 	return { flacColors, menuColors };
 }
 
-// Firmware versions with FLAC function addresses
+// Discover FLAC function address dynamically
+function discoverFlacFunctionAddress(firmwarePath: string): number {
+	const firmwareData = readFileSync(firmwarePath);
+	const patcher = new ThemePatcher(firmwareData);
+
+	// Use the analyze method to get function addresses
+	const analysis = patcher.analyze();
+
+	const flacFunc = analysis.themeFunctions.find(f => f.type === 'flac');
+	if (!flacFunc) {
+		throw new Error(`FLAC function not found in ${firmwarePath}`);
+	}
+
+	return flacFunc.funcAddr;  // Use funcAddr, not address
+}
+
+// Firmware versions (dynamic discovery - addresses discovered at runtime)
 const FIRMWARE_INFO = [
-	{ version: 'V1.8.0', file: 'HIFIEC80.IMG', flacAddr: 0x84DC2, subdir: 'ECHO MINI V1.8.0/ECHO MINI V1.8.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.4.0', file: 'HIFIEC40.IMG', flacAddr: 0x86508, subdir: 'ECHO MINI V2.4.0/ECHO MINI V2.4.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.5.0', file: 'HIFIEC50.IMG', flacAddr: 0x865AC, subdir: 'ECHO MINI V2.5.0/ECHO MINI V2.5.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.6.0', file: 'HIFIEC60.IMG', flacAddr: 0x8669C, subdir: 'ECHO MINI V2.6.0/ECHO MINI V2.6.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.7.0', file: 'HIFIEC70.IMG', flacAddr: 0x867A8, subdir: 'ECHO MINI V2.7.0/ECHO MINI V2.7.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.8.0', file: 'HIFIEC80.IMG', flacAddr: 0x8692C, subdir: 'ECHO MINI V2.8.0/ECHO MINI V2.8.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V3.0.0', file: 'HIFIEC00.IMG', flacAddr: 0x86958, subdir: 'ECHO MINI V3.0.0/ECHO MINI V3.0.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V3.1.0', file: 'HIFIEC10.IMG', flacAddr: 0x86CB0, subdir: 'ECHO MINI V3.1.0/ECHO MINI V3.1.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V3.2.0', file: 'HIFIEC20.IMG', flacAddr: 0x86CFC, subdir: 'ECHO MINI V3.2.0/ECHO MINI V3.2.0', groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V1.8.0', file: 'HIFIEC80.IMG', subdir: 'ECHO MINI V1.8.0/ECHO MINI V1.8.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V2.4.0', file: 'HIFIEC40.IMG', subdir: 'ECHO MINI V2.4.0/ECHO MINI V2.4.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V2.5.0', file: 'HIFIEC50.IMG', subdir: 'ECHO MINI V2.5.0/ECHO MINI V2.5.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V2.6.0', file: 'HIFIEC60.IMG', subdir: 'ECHO MINI V2.6.0/ECHO MINI V2.6.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V2.7.0', file: 'HIFIEC70.IMG', subdir: 'ECHO MINI V2.7.0/ECHO MINI V2.7.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V2.8.0', file: 'HIFIEC80.IMG', subdir: 'ECHO MINI V2.8.0/ECHO MINI V2.8.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V3.0.0', file: 'HIFIEC00.IMG', subdir: 'ECHO MINI V3.0.0/ECHO MINI V3.0.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V3.1.0', file: 'HIFIEC10.IMG', subdir: 'ECHO MINI V3.1.0/ECHO MINI V3.1.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V3.2.0', file: 'HIFIEC20.IMG', subdir: 'ECHO MINI V3.2.0/ECHO MINI V3.2.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
 ];
 
 // Test scenarios
@@ -886,9 +902,11 @@ async function runComprehensiveTests() {
 
 		try {
 			firmware.groundTruth = extractGroundTruth(firmwarePath);
-			console.log(`  ✓ ${firmware.version}: Ground truth extracted`);
+			const flacAddr = discoverFlacFunctionAddress(firmwarePath);
+			(firmware as any).flacAddr = flacAddr;  // Store discovered address
+			console.log(`  ✓ ${firmware.version}: Ground truth extracted, FLAC@0x${flacAddr.toString(16).toUpperCase()}`);
 		} catch (error) {
-			console.error(`  ✗ ${firmware.version}: Failed to extract ground truth`);
+			console.error(`  ✗ ${firmware.version}: Failed to extract ground truth - ${(error as Error).message}`);
 		}
 	}
 
