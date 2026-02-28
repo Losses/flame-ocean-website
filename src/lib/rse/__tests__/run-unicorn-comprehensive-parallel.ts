@@ -81,7 +81,10 @@ async function generateAllFirmwaresInParallel(
 
 		// Process tasks in batches
 		for (let i = 0; i < allTasks.length; i += MAX_CONCURRENT) {
+			const batchIndex = i / MAX_CONCURRENT;
 			const batch = allTasks.slice(i, Math.min(i + MAX_CONCURRENT, allTasks.length));
+			console.log(`\n[Batch ${batchIndex + 1}] Processing ${batch.length} tasks (tasks ${i + 1}-${i + batch.length})...`);
+
 			const workers = batch.map(task => {
 				return new Promise<{ id: string; nopSlideAddr: number; blAddr: number }>((resolve, reject) => {
 					// Use absolute path for worker
@@ -92,8 +95,13 @@ async function generateAllFirmwaresInParallel(
 					let workerResult: { id: string; nopSlideAddr: number; blAddr: number } | null = null;
 
 					worker.on('message', (result: { id: string; success: boolean; nopSlideAddr: number; blAddr: number | null; error?: string }) => {
+						console.log(`  [Worker] ${result.id}: ${result.success ? 'SUCCESS' : 'FAILED'}`);
 						if (result.success && result.blAddr !== null) {
 							workerResult = { id: result.id, nopSlideAddr: result.nopSlideAddr, blAddr: result.blAddr };
+							// Terminate worker immediately after receiving result
+							worker.terminate();
+							resolved = true;
+							resolve(workerResult);
 						} else {
 							resolved = true;
 							reject(new Error(`Worker failed for ${result.id}: ${result.error}`));
@@ -102,6 +110,7 @@ async function generateAllFirmwaresInParallel(
 					});
 
 					worker.on('error', (err) => {
+						console.error(`  [Worker ERROR] ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
 						if (!resolved) {
 							resolved = true;
 							reject(err);
@@ -109,13 +118,21 @@ async function generateAllFirmwaresInParallel(
 					});
 
 					worker.on('exit', (code) => {
+						console.log(`  [Worker EXIT] ${task.id}: code=${code}, resolved=${resolved}, hasResult=${workerResult !== null}`);
 						if (!resolved) {
 							if (workerResult) {
 								resolved = true;
 								resolve(workerResult);
-							} else if (code !== 0 && code !== null) {
+							} else {
+								// Worker exited without sending a result
 								resolved = true;
-								reject(new Error(`Worker for ${task.id} stopped with exit code ${code}`));
+								if (code === 0) {
+									reject(new Error(`Worker for ${task.id} exited successfully without sending result`));
+								} else if (code !== null) {
+									reject(new Error(`Worker for ${task.id} stopped with exit code ${code}`));
+								} else {
+									reject(new Error(`Worker for ${task.id} terminated abnormally`));
+								}
 							}
 						}
 						// Worker has exited, memory should be released
@@ -126,8 +143,12 @@ async function generateAllFirmwaresInParallel(
 				});
 			});
 
+			console.log(`[Batch ${batchIndex + 1}] All ${batch.length} workers started, waiting for completion...`);
+
 			// Wait for all workers in this batch (with individual error handling)
 			const batchResults = await Promise.allSettled(workers);
+
+			console.log(`[Batch ${batchIndex + 1}] All workers completed`);
 
 			// Process results and filter out failures
 			for (const result of batchResults) {
@@ -822,11 +843,34 @@ function runUnicornTestAsync(scriptPath: string, logPath: string): Promise<{ suc
 	return new Promise((resolve) => {
 		const output: string[] = [];
 		const errors: string[] = [];
+		let resolved = false;
+
+		const cleanup = (result: { success: boolean; output: string }) => {
+			if (!resolved) {
+				resolved = true;
+				try {
+					writeFileSync(logPath, result.output);
+				} catch (e) {
+					// Ignore write errors
+				}
+				clearTimeout(timeoutHandle);
+				resolve(result);
+			}
+		};
 
 		const child = spawn(PYTHON_PATH, [scriptPath], {
 			cwd: process.cwd(),
 			timeout: 30000
 		});
+
+		// Add Promise-level timeout as backup (35 seconds)
+		const timeoutHandle = setTimeout(() => {
+			child.kill('SIGKILL');
+			cleanup({
+				success: false,
+				output: `TIMEOUT after 35s\n\nPartial output:\n${output.join('')}\n\nErrors:\n${errors.join('')}`
+			});
+		}, 35000);
 
 		child.stdout.on('data', (data) => {
 			const text = data.toString();
@@ -838,30 +882,29 @@ function runUnicornTestAsync(scriptPath: string, logPath: string): Promise<{ suc
 			errors.push(text);
 		});
 
-		child.on('close', (code) => {
+		// Use 'exit' instead of 'close' - it always fires
+		child.on('exit', (_code, signal) => {
 			const fullOutput = output.join('') + errors.join('');
+			const success = fullOutput.includes('✅ PASS');
 
-			// Write to individual log file
-			try {
-				writeFileSync(logPath, fullOutput);
-			} catch (e) {
-				// Ignore write errors
+			if (signal === 'SIGKILL' || signal === 'SIGTERM') {
+				cleanup({
+					success: false,
+					output: fullOutput || `Process killed by signal ${signal}`
+				});
+			} else {
+				cleanup({
+					success,
+					output: fullOutput
+				});
 			}
-
-			resolve({
-				success: fullOutput.includes('✅ PASS'),
-				output: fullOutput
-			});
 		});
 
 		child.on('error', (error) => {
-			const errorOutput = error.message;
-			try {
-				writeFileSync(logPath, errorOutput);
-			} catch (e) {
-				// Ignore write errors
-			}
-			resolve({ success: false, output: errorOutput });
+			cleanup({
+				success: false,
+				output: error.message
+			});
 		});
 	});
 }

@@ -1134,60 +1134,57 @@ export class ThemePatcher {
 
 		// Select color based on R1 (theme index 0-4)
 		// Return the color in R1 (since STRH R1, [R0, #0] stores R1)
-		// Use simple cascading checks: if R1 matches, branch to that theme's handler
-		// BEQ offset is in instructions (2-byte each), calculated from PC+4
-		// Note: offsets are adjusted for the 3-instruction prologue (PUSH + MOV + PUSH = 8 bytes)
+		//
+		// Code structure:
+		//   CMP R1, #0; BEQ theme_0
+		//   CMP R1, #1; BEQ theme_1
+		//   CMP R1, #2; BEQ theme_2
+		//   CMP R1, #3; BEQ theme_3
+		//   ; fall through to theme_4
+		// theme_4: MOV R1,R8; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
+		// theme_3: MOV R1,R7; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
+		// theme_2: MOV R1,R6; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
+		// theme_1: MOV R1,R5; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
+		// theme_0: MOV R1,R4; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
+		//
+		// Each theme section is 8 bytes (4 instructions)
 
-		// Check theme 0: if R1 == 0, jump to theme_0 (offset 25 instructions)
-		code.push(0x00, 0x29);  // CMP R1, #0
-		code.push(0x19, 0xD0);  // BEQ theme_0 (offset = 25)
+		// Record BEQ positions for later patching
+		const beqPositions: Array<{ index: number; cmpAddr: number }> = [];
 
-		// Check theme 1: if R1 == 1, jump to theme_1 (offset 19 instructions)
-		code.push(0x01, 0x29);  // CMP R1, #1
-		code.push(0x13, 0xD0);  // BEQ theme_1 (offset = 19)
+		// Generate CMP/BEQ pairs for themes 0-3
+		for (let i = 0; i < 4; i++) {
+			const cmpAddr = code.length;
+			code.push(0x00 | i, 0x29);  // CMP R1, #i
+			code.push(0x00, 0xD0);  // BEQ (placeholder offset, will patch later)
+			beqPositions.push({ index: i, cmpAddr });
+		}
 
-		// Check theme 2: if R1 == 2, jump to theme_2 (offset 13 instructions)
-		code.push(0x02, 0x29);  // CMP R1, #2
-		code.push(0x0D, 0xD0);  // BEQ theme_2 (offset = 13)
+		// Generate theme sections in reverse order (theme_4 first, then theme_3, ..., theme_0)
+		const themeSectionStarts: number[] = [];
+		for (let theme = 4; theme >= 0; theme--) {
+			themeSectionStarts[theme] = code.length;
+			const reg = 4 + theme; // R8, R7, R6, R5, R4
+			code.push(...encodeMov(1, reg));  // MOV R1, R{reg}
+			code.push(...encodePop([3]));  // POP {R3}
+			code.push(...encodeMov(8, 3));  // MOV R8, R3
+			code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
+		}
 
-		// Check theme 3: if R1 == 3, jump to theme_3 (offset 7 instructions)
-		code.push(0x03, 0x29);  // CMP R1, #3
-		code.push(0x07, 0xD0);  // BEQ theme_3 (offset = 7)
+		// Now patch BEQ offsets
+		// BEQ offset formula: target = Align(PC, 4) + (offset << 1)
+		// where PC = BEQ_address + 4
+		// Therefore: offset = (target - Align(PC, 4)) >> 1
+		for (const { index, cmpAddr } of beqPositions) {
+			const beqAddr = cmpAddr + 2;
+			const pc = beqAddr + 4;
+			const alignedPc = pc & ~3;
+			const target = themeSectionStarts[index];
+			const offset = (target - alignedPc) >> 1;
 
-		// Default (theme 4): fall through when R1 == 4
-		code.push(...encodeMov(1, 8));  // MOV R1, R8 (MOV with high register)
-		// Restore registers and return
-		code.push(...encodePop([3]));  // POP {R3}
-		code.push(...encodeMov(8, 3));  // MOV R8, R3 (restore R8)
-		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
-
-		// theme_3:
-		code.push(...encodeMov(1, 7));  // MOV R1, R7
-		// Restore registers and return
-		code.push(...encodePop([3]));  // POP {R3}
-		code.push(...encodeMov(8, 3));  // MOV R8, R3
-		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
-
-		// theme_2:
-		code.push(...encodeMov(1, 6));  // MOV R1, R6
-		// Restore registers and return
-		code.push(...encodePop([3]));  // POP {R3}
-		code.push(...encodeMov(8, 3));  // MOV R8, R3
-		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
-
-		// theme_1:
-		code.push(...encodeMov(1, 5));  // MOV R1, R5
-		// Restore registers and return
-		code.push(...encodePop([3]));  // POP {R3}
-		code.push(...encodeMov(8, 3));  // MOV R8, R3
-		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
-
-		// theme_0:
-		code.push(...encodeMov(1, 4));  // MOV R1, R4
-		// Restore registers and return
-		code.push(...encodePop([3]));  // POP {R3}
-		code.push(...encodeMov(8, 3));  // MOV R8, R3
-		code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
+			// Patch BEQ offset (byte at position beqAddr + 1 from code start)
+			code[beqAddr] = offset & 0xFF;
+		}
 
 		return new Uint8Array(code);
 	}
