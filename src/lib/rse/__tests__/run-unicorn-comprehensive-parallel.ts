@@ -718,7 +718,8 @@ for theme_idx, expected_color in enumerate(expected_flac):
     mu.reg_write(UC_ARM_REG_R7, CALLER_R7)
     mu.reg_write(UC_ARM_REG_R8, CALLER_R8)
     mu.reg_write(UC_ARM_REG_R1, theme_idx)
-    mu.reg_write(UC_ARM_REG_LR, (FLAC_FUNC + 100) | 1)
+    # BL instruction is at FLAC_FUNC + 8, so return address is FLAC_FUNC + 12
+    mu.reg_write(UC_ARM_REG_LR, (FLAC_FUNC + 12) | 1)
     mu.reg_write(UC_ARM_REG_PC, FLAC_FUNC | 1)
 
     try:
@@ -769,6 +770,22 @@ for theme_idx, expected_color in enumerate(expected_flac):
     actual_pc = mu.reg_read(UC_ARM_REG_PC)
     actual_sp = mu.reg_read(UC_ARM_REG_SP)
     print(f"Theme {theme_idx}: After execution, PC=0x{actual_pc:X}, SP=0x{actual_sp:X}")
+
+    # Debug: check LR value (should be FLAC_FUNC + 12)
+    actual_lr = mu.reg_read(UC_ARM_REG_LR)
+    print(f"  LR=0x{actual_lr:X}, expected=0x{(FLAC_FUNC + 12):X}")
+
+    # Debug: check what's on the stack (at current SP, should contain garbage/old values)
+    try:
+        stack_data = mu.mem_read(actual_sp, 20)
+        stack_values = []
+        for i in range(0, min(20, len(stack_data)), 4):
+            val = stack_data[i] | (stack_data[i+1] << 8) | (stack_data[i+2] << 16) | (stack_data[i+3] << 24)
+            stack_values.append(f"0x{val:08X}")
+        if stack_values:
+            print(f"  Stack at SP: {' '.join(stack_values)}")
+    except:
+        pass
 
     if (actual_r4 != CALLER_R4 or actual_r5 != CALLER_R5 or
         actual_r6 != CALLER_R6 or actual_r7 != CALLER_R7 or actual_r8 != CALLER_R8):
