@@ -94,6 +94,15 @@ async function generateAllFirmwaresInParallel(
 					let resolved = false;
 					let workerResult: { id: string; nopSlideAddr: number; blAddr: number } | null = null;
 
+					// Add timeout to prevent hanging (60 seconds per task)
+					const timeoutHandle = setTimeout(() => {
+						if (!resolved) {
+							resolved = true;
+							worker.terminate();
+							reject(new Error(`Worker for ${task.id} timed out after 60s`));
+						}
+					}, 60000);
+
 					worker.on('message', (result: { id: string; success: boolean; nopSlideAddr: number; blAddr: number | null; error?: string }) => {
 						console.log(`  [Worker] ${result.id}: ${result.success ? 'SUCCESS' : 'FAILED'}`);
 						if (result.success && result.blAddr !== null) {
@@ -101,9 +110,11 @@ async function generateAllFirmwaresInParallel(
 							// Terminate worker immediately after receiving result
 							worker.terminate();
 							resolved = true;
+							clearTimeout(timeoutHandle);
 							resolve(workerResult);
 						} else {
 							resolved = true;
+							clearTimeout(timeoutHandle);
 							reject(new Error(`Worker failed for ${result.id}: ${result.error}`));
 							worker.terminate();
 						}
@@ -113,6 +124,7 @@ async function generateAllFirmwaresInParallel(
 						console.error(`  [Worker ERROR] ${task.id}: ${err instanceof Error ? err.message : String(err)}`);
 						if (!resolved) {
 							resolved = true;
+							clearTimeout(timeoutHandle);
 							reject(err);
 						}
 					});
@@ -122,10 +134,12 @@ async function generateAllFirmwaresInParallel(
 						if (!resolved) {
 							if (workerResult) {
 								resolved = true;
+								clearTimeout(timeoutHandle);
 								resolve(workerResult);
 							} else {
 								// Worker exited without sending a result
 								resolved = true;
+								clearTimeout(timeoutHandle);
 								if (code === 0) {
 									reject(new Error(`Worker for ${task.id} exited successfully without sending result`));
 								} else if (code !== null) {
@@ -173,8 +187,10 @@ async function generateAllFirmwaresInParallel(
 
 const PYTHON_PATH = '/nix/store/lc6q15imd72k6a4mpm9zzr3g0yygs4k6-system-path/bin/python3';
 const FIRMWARE_BASE = '/tmp/echo-mini-firmwares';
-const OUTPUT_DIR = '/tmp/unicorn-comprehensive-parallel';
-const MAX_CONCURRENT = 8; // Reduced load to prevent power issues
+// Add timestamp to output directory for better tracking
+const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+const OUTPUT_DIR = `/tmp/unicorn-comprehensive-parallel-${timestamp}`;
+const MAX_CONCURRENT = 4; // Reduced from 8 to prevent memory issues and worker hangs
 
 // Test colors
 const TEST_COLORS = {
@@ -680,6 +696,10 @@ def hook_code(uc, address, size, user_data):
                     # The imm25 already includes alignment via bit 0 (implicitly 0)
                     bl_target_actual = (address & ~1) + 4 + imm25
 
+                    # Debug: Check LR value before BL executes
+                    lr_before_bl = uc.reg_read(UC_ARM_REG_LR)
+                    print(f"  BL at 0x{address:X}: LR before=0x{lr_before_bl:X}, target=0x{bl_target_actual:X}")
+
                     # Let Unicorn execute the BL instruction naturally
                     bl_executed = True
         except:
@@ -695,6 +715,12 @@ def hook_code(uc, address, size, user_data):
         if is_bx_lr or is_pop_pc:
             bx_lr_executed = True
             instr_type = "BX LR" if is_bx_lr else "POP {R4-R7, PC}"
+
+            # Debug: Check PC and LR before the return instruction executes
+            pc_before_return = uc.reg_read(UC_ARM_REG_PC)
+            lr_before_return = uc.reg_read(UC_ARM_REG_LR)
+            print(f"  {instr_type} at 0x{address:X}: PC=0x{pc_before_return:X}, LR=0x{lr_before_return:X}")
+
             # Don't stop here! Let the instruction execute first.
             # We'll check PC and registers after emulation completes.
     except:
@@ -773,7 +799,8 @@ for theme_idx, expected_color in enumerate(expected_flac):
 
     # Debug: check LR value (should be FLAC_FUNC + 12)
     actual_lr = mu.reg_read(UC_ARM_REG_LR)
-    print(f"  LR=0x{actual_lr:X}, expected=0x{(FLAC_FUNC + 12):X}")
+    expected_lr = FLAC_FUNC + 12
+    print(f"  LR=0x{actual_lr:X}, expected=0x{expected_lr:X}")
 
     # Debug: check what's on the stack (at current SP, should contain garbage/old values)
     try:
