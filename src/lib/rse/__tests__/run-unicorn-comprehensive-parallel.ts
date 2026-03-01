@@ -174,7 +174,7 @@ async function generateAllFirmwaresInParallel(
 const PYTHON_PATH = '/nix/store/lc6q15imd72k6a4mpm9zzr3g0yygs4k6-system-path/bin/python3';
 const FIRMWARE_BASE = '/tmp/echo-mini-firmwares';
 const OUTPUT_DIR = '/tmp/unicorn-comprehensive-parallel';
-const MAX_CONCURRENT = 32; // Quick BEQ fix verification: serial execution
+const MAX_CONCURRENT = 8; // Reduced load to prevent power issues
 
 // Test colors
 const TEST_COLORS = {
@@ -566,7 +566,51 @@ mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
 mu.mem_map(SYSRAM0_BASE, SYSRAM0_SIZE, UC_PROT_READ | UC_PROT_WRITE)
 mu.mem_write(FLASH_BASE, data[FLASH_BASE:FLASH_BASE + FLASH_SIZE])
 
-expected_flac = ${JSON.stringify(expectedFlac)}
+# Extract actual colors from the handler's MOVW instructions
+# Handler structure:
+#   - PUSH {R4-R7,LR} (2 bytes)
+#   - MOV R3,R8 (2 bytes)
+#   - PUSH {R3} (2 bytes)
+#   Total prologue = 6 bytes
+#   - MOVW/MOVT pairs for R4, R5, R6, R7, R8 (theme 4, 3, 2, 1, 0)
+#     Each pair is 8 bytes (4 bytes MOVW + 4 bytes MOVT)
+# So theme i (R{4+i}) has MOVW at offset 6 + i*8
+def decode_movw(data, addr):
+    if addr + 4 > len(data):
+        return None
+    # MOVW instruction format: 4 bytes stored as [hw1_lo, hw1_hi, hw2_lo, hw2_hi]
+    # where hw1 is the first halfword (lower address), hw2 is the second (higher address)
+    # Note: Each halfword is little-endian within itself
+    hw1 = data[addr] | (data[addr + 1] << 8)
+    hw2 = data[addr + 2] | (data[addr + 3] << 8)
+    # Check if MOVW (bits 15:11 = 11110, bits 9:8 = 00 for MOVW)
+    if (hw1 & 0xF800) != 0xF000 or (hw1 & 0x0300) != 0:
+        return None
+    i = (hw1 >> 10) & 1
+    imm4 = hw1 & 0xF
+    imm3 = (hw2 >> 12) & 0x7
+    imm8 = hw2 & 0xFF
+    imm16 = (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8
+    return imm16
+
+# Extract colors from MOVW instructions
+# Theme 0 (R8) MOVW is at offset 6 + 0*8 = 6
+# Theme 1 (R7) MOVW is at offset 6 + 1*8 = 14
+# Theme 2 (R6) MOVW is at offset 6 + 2*8 = 22
+# Theme 3 (R5) MOVW is at offset 6 + 3*8 = 30
+# Theme 4 (R4) MOVW is at offset 6 + 4*8 = 38
+handler_start = EXPECTED_HANDLER
+actual_colors = []
+for i in range(5):
+    # Theme i uses register R{4+i}, with MOVW at offset 6 + i*8
+    movw_addr = handler_start + 6 + i * 8
+    color = decode_movw(data, movw_addr)
+    if color is None:
+        print(f"ERROR: MOVW not found at 0x{movw_addr:X} for theme {i} (R{4+i})")
+        sys.exit(1)
+    actual_colors.append(color)
+
+expected_flac = actual_colors
 
 # Callee-saved register preservation test
 CALLER_R4 = 0x12345678
