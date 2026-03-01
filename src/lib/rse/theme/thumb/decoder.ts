@@ -95,6 +95,7 @@ export class ThumbDecoder {
 
 	/**
 	 * Check if instruction is 32-bit
+	 * DDI0403 A5.1: bits[15:11] of 0b11101, 0b11110, or 0b11111
 	 */
 	private is32Bit(hw: number): boolean {
 		return (hw & 0xf800) === 0xe800 || (hw & 0xf800) === 0xf000 || (hw & 0xf800) === 0xf800;
@@ -131,10 +132,11 @@ export class ThumbDecoder {
 		if (op === 0b01001) return this.decodeLdrLit(addr, hw, raw);
 		if ((hw >> 12) === 0b0101) return this.decodeLdstReg(addr, hw, raw);
 		if ((hw >> 13) === 0b011) return this.decodeLdstWord(addr, hw, raw);
-		if ((hw >> 13) === 0b100) return this.decodeLdstHalf(addr, hw, raw);
-		if ((hw >> 13) === 0b1001) return this.decodeLdstSp(addr, hw, raw);
+		if ((hw >> 12) === 0b1000) return this.decodeLdstHalf(addr, hw, raw);
+		if ((hw >> 12) === 0b1001) return this.decodeLdstSp(addr, hw, raw);
 		if ((hw >> 12) === 0b1010) return this.decodeLoadAddr(addr, hw, raw);
 		if ((hw >> 12) === 0b1011) return this.decodeMisc(addr, hw, raw);
+		if ((hw >> 12) === 0b1100) return this.decodeLdmStm(addr, hw, raw);
 		if ((hw >> 12) === 0b1101) return this.decodeCondBranch(addr, hw, raw);
 		if ((hw >> 11) === 0b11100) return this.decodeUncondBranch(addr, hw, raw);
 
@@ -256,7 +258,7 @@ export class ThumbDecoder {
 		const ops: Record<number, string> = {
 			0: 'ANDS', 1: 'EORS', 2: 'LSLS', 3: 'LSRS', 4: 'ASRS', 5: 'ADCS',
 			6: 'SBCS', 7: 'RORS', 8: 'TST', 9: 'RSBS', 10: 'CMP', 11: 'CMN',
-			12: 'ORRS', 14: 'BICS', 15: 'MVNS'
+			12: 'ORRS', 13: 'MULS', 14: 'BICS', 15: 'MVNS'
 		};
 
 		const mnem = ops[op] ?? '???';
@@ -268,8 +270,8 @@ export class ThumbDecoder {
 			'SBCS': InstructionType.SBC, 'RORS': InstructionType.ROR,
 			'TST': InstructionType.TST, 'RSBS': InstructionType.RSB,
 			'CMP': InstructionType.CMP, 'CMN': InstructionType.CMN,
-			'ORRS': InstructionType.ORR, 'BICS': InstructionType.AND,
-			'MVNS': InstructionType.MVN
+			'ORRS': InstructionType.ORR, 'MULS': InstructionType.MUL,
+			'BICS': InstructionType.BIC, 'MVNS': InstructionType.MVN
 		};
 
 		const itype = typeMap[mnem] ?? InstructionType.UNKNOWN;
@@ -277,8 +279,12 @@ export class ThumbDecoder {
 		// TST, CMP, CMN don't write to destination
 		if (mnem === 'TST' || mnem === 'CMP' || mnem === 'CMN') {
 			return createInstruction(addr, raw, mnem, `R${rdn}, R${rm}`, itype, { rn: rdn, rm });
-		} else if (mnem === 'MVNS') {
-			return createInstruction(addr, raw, mnem, `R${rdn}, R${rm}`, itype, { rd: rdn, rm });
+		} else if (mnem === 'RSBS') {
+			// RSBS Rd, Rn, #0
+			return createInstruction(addr, raw, mnem, `R${rdn}, R${rm}, #0`, itype, { rd: rdn, rm });
+		} else if (mnem === 'MULS') {
+			// MULS Rd, Rn, Rd
+			return createInstruction(addr, raw, mnem, `R${rdn}, R${rm}, R${rdn}`, itype, { rd: rdn, rm });
 		} else {
 			return createInstruction(addr, raw, mnem, `R${rdn}, R${rm}`, itype, { rd: rdn, rm });
 		}
@@ -290,7 +296,7 @@ export class ThumbDecoder {
 		const op = (hw >> 8) & 0x3;
 		const d = (hw >> 7) & 0x1;
 		const rm = (hw >> 3) & 0xf;
-		const rdn = (d << 4) | (hw & 0x7);
+		const rdn = (d << 3) | (hw & 0x7);
 
 		if (op === 0) {
 			// ADD high registers
@@ -335,13 +341,14 @@ export class ThumbDecoder {
 		const opA = (hw >> 9) & 0x7;
 
 		const ops = ['STR', 'STRH', 'STRB', 'LDRSB', 'LDR', 'LDRH', 'LDRB', 'LDRSH'];
+		const types = [
+			InstructionType.STR, InstructionType.STRH, InstructionType.STRB, InstructionType.LDRSB,
+			InstructionType.LDR, InstructionType.LDRH, InstructionType.LDRB, InstructionType.LDRSH
+		];
 		const mnem = ops[opA] ?? '???';
+		const itype = types[opA] ?? InstructionType.UNKNOWN;
 
-		if (mnem.startsWith('STR')) {
-			return createInstruction(addr, raw, mnem, `R${rt}, [R${rn}, R${rm}]`, InstructionType.STRH, { rd: rt, rn, rm });
-		} else {
-			return createInstruction(addr, raw, mnem, `R${rt}, [R${rn}, R${rm}]`, InstructionType.LDR, { rd: rt, rn, rm });
-		}
+		return createInstruction(addr, raw, mnem, `R${rt}, [R${rn}, R${rm}]`, itype, { rd: rt, rn, rm });
 	}
 
 	// ===== Load/Store Word =====
@@ -355,9 +362,12 @@ export class ThumbDecoder {
 		const offset = b ? imm5 : imm5 * 4;
 		const mnem = (l ? 'LDR' : 'STR') + (b ? 'B' : '');
 
+		let itype = l ? InstructionType.LDR : InstructionType.STR;
+		if (b) itype = l ? InstructionType.LDRB : InstructionType.STRB;
+
 		return createInstruction(
 			addr, raw, mnem, `R${rt}, [R${rn}, #${offset}]`,
-			l ? InstructionType.LDR : InstructionType.STRH, { rd: rt, rn, imm: offset }
+			itype, { rd: rt, rn, imm: offset }
 		);
 	}
 
@@ -370,10 +380,11 @@ export class ThumbDecoder {
 		const rt = hw & 0x7;
 		const offset = imm5 * 2;
 		const mnem = l ? 'LDRH' : 'STRH';
+		const itype = l ? InstructionType.LDRH : InstructionType.STRH;
 
 		return createInstruction(
 			addr, raw, mnem, `R${rt}, [R${rn}, #${offset}]`,
-			l ? InstructionType.LDR : InstructionType.STRH, { rd: rt, rn, imm: offset }
+			itype, { rd: rt, rn, imm: offset }
 		);
 	}
 
@@ -385,10 +396,11 @@ export class ThumbDecoder {
 		const imm8 = hw & 0xff;
 		const offset = imm8 * 4;
 		const mnem = l ? 'LDR' : 'STR';
+		const itype = l ? InstructionType.LDR : InstructionType.STR;
 
 		return createInstruction(
 			addr, raw, mnem, `R${rt}, [SP, #${offset}]`,
-			l ? InstructionType.LDR : InstructionType.STRH, { rd: rt, imm: offset }
+			itype, { rd: rt, imm: offset }
 		);
 	}
 
@@ -399,9 +411,16 @@ export class ThumbDecoder {
 		const rd = (hw >> 8) & 0x7;
 		const imm8 = hw & 0xff;
 		const offset = imm8 * 4;
-		const base = sp ? 'SP' : 'PC';
-
-		return createInstruction(addr, raw, 'ADR', `R${rd}, ${base}+${offset}`, InstructionType.ADD, { rd, imm: offset });
+		
+		if (sp) {
+			// ADD Rd, SP, #imm
+			return createInstruction(addr, raw, 'ADD', `R${rd}, SP, #${offset}`, InstructionType.ADD, { rd, imm: offset });
+		} else {
+			// ADR Rd, PC, #imm
+			const pcAligned = (addr + 4) & ~3;
+			const target = pcAligned + offset;
+			return createInstruction(addr, raw, 'ADR', `R${rd}, [PC, #${offset}]`, InstructionType.ADR, { rd, imm: target });
+		}
 	}
 
 	// ===== Miscellaneous Instructions =====
@@ -442,7 +461,7 @@ export class ThumbDecoder {
 
 		// BKPT
 		if ((hw & 0xff00) === 0xbe00) {
-			return createInstruction(addr, raw, 'BKPT', `#${hw & 0xff}`, InstructionType.NOP, { imm: hw & 0xff });
+			return createInstruction(addr, raw, 'BKPT', `#${hw & 0xff}`, InstructionType.BKPT, { imm: hw & 0xff });
 		}
 
 		// IT / Hints
@@ -454,7 +473,13 @@ export class ThumbDecoder {
 				// Hints
 				const hints: Record<number, string> = { 0: 'NOP', 1: 'YIELD', 2: 'WFE', 3: 'WFI', 4: 'SEV' };
 				const hint = hints[firstcond] ?? '???';
-				return createInstruction(addr, raw, hint, '', InstructionType.NOP);
+				let itype = InstructionType.NOP;
+				if (hint === 'WFI') itype = InstructionType.WFI;
+				else if (hint === 'WFE') itype = InstructionType.WFE;
+				else if (hint === 'YIELD') itype = InstructionType.YIELD;
+				else if (hint === 'SEV') itype = InstructionType.SEV;
+				
+				return createInstruction(addr, raw, hint, '', itype);
 			} else {
 				// IT instruction
 				const condName = this.getCondName(firstcond);
@@ -465,10 +490,12 @@ export class ThumbDecoder {
 		// CBZ / CBNZ
 		if ((hw & 0xf500) === 0xb100) {
 			const rn = hw & 0x7;
-			const offset = ((hw >> 3) & 0x1f) * 2 + 4;
+			const i = (hw >> 9) & 0x1;
+			const imm5 = (hw >> 3) & 0x1f;
+			const imm32 = (i << 6) | (imm5 << 1);
 			const isCbz = !(hw & 0x800);
 			const mnem = isCbz ? 'CBZ' : 'CBNZ';
-			const target = addr + offset;
+			const target = addr + 4 + imm32;
 			return createInstruction(
 				addr, raw, mnem, `R${rn}, 0x${target.toString(16).toUpperCase().padStart(5, '0')}`,
 				isCbz ? InstructionType.CBZ : InstructionType.CBNZ, { rn, branchTarget: target }
@@ -476,6 +503,22 @@ export class ThumbDecoder {
 		}
 
 		return this.createUnknown(addr, raw);
+	}
+
+	// ===== Load/Store Multiple =====
+
+	private decodeLdmStm(addr: number, hw: number, raw: Uint8Array): Instruction {
+		const l = (hw >> 11) & 0x1;
+		const rn = (hw >> 8) & 0x7;
+		const mnem = l ? 'LDM' : 'STM';
+		const regList: string[] = [];
+		for (let i = 0; i < 8; i++) {
+			if (hw & (1 << i)) regList.push(`R${i}`);
+		}
+		return createInstruction(
+			addr, raw, mnem, `R${rn}!, {${regList.join(', ')}}`,
+			l ? InstructionType.POP : InstructionType.PUSH, { rn }
+		);
 	}
 
 	// ===== Conditional Branch =====
@@ -486,12 +529,12 @@ export class ThumbDecoder {
 
 		// UDF
 		if (cond === 14) {
-			return createInstruction(addr, raw, 'UDF', `#${imm8}`, InstructionType.NOP, { imm: imm8 });
+			return createInstruction(addr, raw, 'UDF', `#${imm8}`, InstructionType.UDF, { imm: imm8 });
 		}
 
 		// SVC
 		if (cond === 15) {
-			return createInstruction(addr, raw, 'SVC', `#${imm8}`, InstructionType.NOP, { imm: imm8 });
+			return createInstruction(addr, raw, 'SVC', `#${imm8}`, InstructionType.SVC, { imm: imm8 });
 		}
 
 		// Conditional branch
@@ -531,9 +574,9 @@ export class ThumbDecoder {
 	private decode32Bit(addr: number, hw1: number, hw2: number): Instruction {
 		const raw = new Uint8Array([hw1 & 0xff, hw1 >> 8, hw2 & 0xff, hw2 >> 8]);
 
-		// STMDB / PUSH.W
-		if ((hw1 & 0xff00) === 0xe900) {
-			return this.decodeStmdb(addr, hw1, hw2, raw);
+		// STMDB / PUSH.W / LDMDB / POP.W
+		if ((hw1 & 0xff00) === 0xe900 || (hw1 & 0xff00) === 0xe800) {
+			return this.decodeLdmStm32(addr, hw1, hw2, raw);
 		}
 
 		// MOVW
@@ -546,19 +589,19 @@ export class ThumbDecoder {
 			return this.decodeMovt(addr, hw1, hw2, raw);
 		}
 
-		// MOV.W immediate
-		if ((hw1 & 0xfbf0) === 0xf04f) {
+		// MOV.W immediate (T2 encoding using ThumbExpandImm)
+		if ((hw1 & 0xfbef) === 0xf04f) {
 			return this.decodeMovW(addr, hw1, hw2, raw);
 		}
 
-		// CMP.W immediate
+		// CMP.W immediate (T2 encoding using ThumbExpandImm)
 		if ((hw1 & 0xfbf0) === 0xf1b0) {
 			return this.decodeCmpW(addr, hw1, hw2, raw);
 		}
 
-		// LDRB.W literal
-		if (hw1 === 0xf890) {
-			return this.decodeLdrbLit(addr, hw1, hw2, raw);
+		// LDRB.W literal (T1: 1111 1000 x 001 1111)
+		if ((hw1 & 0xff7f) === 0xf81f || (hw1 & 0xff7f) === 0xf89f) {
+			return this.decodeLdrbLit32(addr, hw1, hw2, raw);
 		}
 
 		// STRH.W
@@ -571,7 +614,9 @@ export class ThumbDecoder {
 			if ((hw2 & 0xd000) === 0xd000) {
 				return this.decodeBl(addr, hw1, hw2, raw);
 			} else if ((hw2 & 0xd000) === 0x8000) {
-				return this.decodeB32(addr, hw1, hw2, raw);
+				return this.decodeB32Cond(addr, hw1, hw2, raw);
+			} else if ((hw2 & 0xd000) === 0x9000) {
+				return this.decodeB32Uncond(addr, hw1, hw2, raw);
 			}
 		}
 
@@ -581,8 +626,8 @@ export class ThumbDecoder {
 		);
 	}
 
-	private decodeStmdb(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
-		const m = (hw1 >> 5) & 1;
+	private decodeLdmStm32(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
+		const l = (hw1 >> 4) & 1; // Bit 20 of 32-bit instruction
 		const rn = hw1 & 0xf;
 		const regList: string[] = [];
 
@@ -593,12 +638,13 @@ export class ThumbDecoder {
 		}
 
 		if (rn === 13) {
-			// PUSH.W
-			if (m && !regList.includes('LR')) regList.push('LR');
-			return createInstruction(addr, raw, 'PUSH.W', `{${regList.join(', ')}}`, InstructionType.PUSH, { size: 4 });
+			// PUSH.W / POP.W
+			const mnem = l ? 'POP.W' : 'PUSH.W';
+			return createInstruction(addr, raw, mnem, `{${regList.join(', ')}}`, l ? InstructionType.POP : InstructionType.PUSH, { size: 4 });
 		}
 
-		return createInstruction(addr, raw, 'STMDB', `R${rn}!, {${regList.join(', ')}}`, InstructionType.PUSH, { size: 4 });
+		const mnem = l ? 'LDMDB' : 'STMDB';
+		return createInstruction(addr, raw, mnem, `R${rn}!, {${regList.join(', ')}}`, l ? InstructionType.POP : InstructionType.PUSH, { rn, size: 4 });
 	}
 
 	private decodeMovw(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
@@ -607,7 +653,7 @@ export class ThumbDecoder {
 		const imm3 = (hw2 >> 12) & 0x7;
 		const rd = (hw2 >> 8) & 0xf;
 		const imm8 = hw2 & 0xff;
-		const imm16 = (i << 11) | (imm4 << 12) | (imm3 << 8) | imm8;
+		const imm16 = (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8;
 
 		return createInstruction(
 			addr, raw, 'MOVW', `R${rd}, #0x${imm16.toString(16).padStart(4, '0').toUpperCase()}`,
@@ -621,7 +667,7 @@ export class ThumbDecoder {
 		const imm3 = (hw2 >> 12) & 0x7;
 		const rd = (hw2 >> 8) & 0xf;
 		const imm8 = hw2 & 0xff;
-		const imm16 = (i << 11) | (imm4 << 12) | (imm3 << 8) | imm8;
+		const imm16 = (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8;
 
 		return createInstruction(
 			addr, raw, 'MOVT', `R${rd}, #0x${imm16.toString(16).padStart(4, '0').toUpperCase()}`,
@@ -631,7 +677,11 @@ export class ThumbDecoder {
 
 	private decodeMovW(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
 		const rd = (hw2 >> 8) & 0xf;
-		const imm = hw2 & 0xff;
+		const i_bit = (hw1 >> 10) & 1;
+		const imm3 = (hw2 >> 12) & 0x7;
+		const imm8 = hw2 & 0xff;
+		const imm12 = (i_bit << 11) | (imm3 << 8) | imm8;
+		const imm = this.thumbExpandImm(imm12);
 		return createInstruction(
 			addr, raw, 'MOV.W', `R${rd}, #0x${imm.toString(16).padStart(2, '0').toUpperCase()}`,
 			InstructionType.MOVS, { rd, imm, size: 4 }
@@ -640,17 +690,24 @@ export class ThumbDecoder {
 
 	private decodeCmpW(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
 		const rn = hw1 & 0xf;
-		const imm = hw2 & 0xff;
+		const i_bit = (hw1 >> 10) & 1;
+		const imm3 = (hw2 >> 12) & 0x7;
+		const imm8 = hw2 & 0xff;
+		const imm12 = (i_bit << 11) | (imm3 << 8) | imm8;
+		const imm = this.thumbExpandImm(imm12);
 		return createInstruction(
 			addr, raw, 'CMP.W', `R${rn}, #0x${imm.toString(16).padStart(2, '0').toUpperCase()}`,
 			InstructionType.CMP, { rn, imm, size: 4 }
 		);
 	}
 
-	private decodeLdrbLit(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
+	private decodeLdrbLit32(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
 		const rt = (hw2 >> 12) & 0xf;
-		const offset = hw2 & 0xfff;
-		const target = addr + 4 + offset;
+		const imm12 = hw2 & 0xfff;
+		const u = (hw1 >> 7) & 1;
+		const offset = u ? imm12 : -imm12;
+		const pcAligned = (addr + 4) & ~3;
+		const target = pcAligned + offset;
 		return createInstruction(
 			addr, raw, 'LDRB.W', `R${rt}, [PC, #${offset}]`,
 			InstructionType.LDRB, { rd: rt, imm: target, size: 4 }
@@ -677,22 +734,40 @@ export class ThumbDecoder {
 		const i1 = ~(j1 ^ s) & 1;
 		const i2 = ~(j2 ^ s) & 1;
 
-		// Construct imm32 with imm11 at bits [11:1] (shifted left by 1)
 		let imm32 = (s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1);
-		if (s) {
-			imm32 = imm32 | 0xfe000000;
-		}
+		// Sign-extend 25-bit value to 32-bit signed
+		imm32 = (imm32 << 7) >> 7;
 
-		// Convert to signed 32-bit
-		if (imm32 & 0x80000000) {
-			imm32 = imm32 - 0x100000000;
-		}
-
-		const target = addr + 4 + (imm32 << 1);
+		const target = addr + 4 + imm32;
 		return createInstruction(addr, raw, 'BL', `0x${target.toString(16).toUpperCase().padStart(5, '0')}`, InstructionType.BL, { branchTarget: target, size: 4 });
 	}
 
-	private decodeB32(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
+	private decodeB32Cond(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
+		const s = (hw1 >> 10) & 1;
+		const cond = (hw1 >> 6) & 0xf;
+		const imm6 = hw1 & 0x3f;
+		const j1 = (hw2 >> 13) & 1;
+		const j2 = (hw2 >> 11) & 1;
+		const imm11 = hw2 & 0x7ff;
+
+		let imm32 = (s << 20) | (j2 << 19) | (j1 << 18) | (imm6 << 12) | (imm11 << 1);
+		// Sign-extend 21-bit value to 32-bit signed
+		imm32 = (imm32 << 11) >> 11;
+
+		const target = addr + 4 + imm32;
+		const condName = this.getCondName(cond);
+		
+		let itype = InstructionType.B;
+		if (cond === 0) itype = InstructionType.BEQ;
+		else if (cond === 1) itype = InstructionType.BNE;
+
+		return createInstruction(
+			addr, raw, `B${condName}.W`, `0x${target.toString(16).toUpperCase().padStart(5, '0')}`,
+			itype, { cond, branchTarget: target, size: 4 }
+		);
+	}
+
+	private decodeB32Uncond(addr: number, hw1: number, hw2: number, raw: Uint8Array): Instruction {
 		const s = (hw1 >> 10) & 1;
 		const imm10 = hw1 & 0x3ff;
 		const j1 = (hw2 >> 13) & 1;
@@ -702,18 +777,37 @@ export class ThumbDecoder {
 		const i1 = ~(j1 ^ s) & 1;
 		const i2 = ~(j2 ^ s) & 1;
 
-		let imm32 = (s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 11) | imm11;
-		if (s) {
-			imm32 = imm32 | 0xfe000000;
-		}
+		let imm32 = (s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1);
+		// Sign-extend 25-bit value to 32-bit signed
+		imm32 = (imm32 << 7) >> 7;
 
-		// Convert to signed 32-bit
-		if (imm32 & 0x80000000) {
-			imm32 = imm32 - 0x100000000;
-		}
+		const target = addr + 4 + imm32;
+		return createInstruction(
+			addr, raw, 'B.W', `0x${target.toString(16).toUpperCase().padStart(5, '0')}`,
+			InstructionType.B, { branchTarget: target, size: 4 }
+		);
+	}
 
-		const target = addr + 4 + (imm32 << 1);
-		return createInstruction(addr, raw, 'B.W', `0x${target.toString(16).toUpperCase().padStart(5, '0')}`, InstructionType.B, { branchTarget: target, size: 4 });
+	/**
+	 * ThumbExpandImm: Decode a 12-bit modified immediate constant
+	 * DDI0403 A5.3.1
+	 */
+	private thumbExpandImm(imm12: number): number {
+		const top2 = (imm12 >> 10) & 0x3;
+		if (top2 === 0) {
+			const op = (imm12 >> 8) & 0x3;
+			const abyte = imm12 & 0xff;
+			switch (op) {
+				case 0: return abyte;
+				case 1: return (abyte << 16) | abyte;
+				case 2: return (abyte << 24) | (abyte << 8);
+				case 3: return (abyte << 24) | (abyte << 16) | (abyte << 8) | abyte;
+			}
+		}
+		// ROR encoding: 1:xxxxxxx rotated
+		const unrotated = 0x80 | (imm12 & 0x7f);
+		const rotation = (imm12 >> 7) & 0x1f;
+		return (unrotated >>> rotation) | (unrotated << (32 - rotation));
 	}
 
 	// ===== Utility Functions =====
@@ -761,11 +855,12 @@ export class ThumbDecoder {
 
 /**
  * Check if instruction at address is a MOVW instruction
+ * DDI0403 A6.3.2 T3: hw1 = 11110 i 10 0100 imm4
  */
 export function isMovwInstruction(data: Uint8Array, addr: number): boolean {
 	if (addr + 4 > data.length) return false;
-	const hw = data[addr] | (data[addr + 1] << 8);
-	return (hw & 0xfbf0) === 0xf240;
+	const hw1 = data[addr] | (data[addr + 1] << 8);
+	return (hw1 & 0xfbf0) === 0xf240;
 }
 
 /**
@@ -781,5 +876,5 @@ export function readMovwImmediate(data: Uint8Array, addr: number): number {
 	const imm3 = (hw2 >> 12) & 0x7;
 	const imm8 = hw2 & 0xff;
 
-	return (i << 11) | (imm4 << 12) | (imm3 << 8) | imm8;
+	return (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8;
 }

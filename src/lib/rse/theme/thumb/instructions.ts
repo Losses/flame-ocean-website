@@ -27,6 +27,7 @@ export enum InstructionType {
 	TEQ = 'TEQ',
 	CMP = 'CMP',
 	CMN = 'CMN',
+	MUL = 'MUL',
 
 	// Branches
 	B = 'B',
@@ -36,7 +37,8 @@ export enum InstructionType {
 	BEQ = 'BEQ',
 	BNE = 'BNE',
 	CBZ = 'CBZ',
-	CBNZ = 'CBZ',
+	CBNZ = 'CBNZ',
+	BIC = 'BIC',
 
 	// Conditional execution
 	IT = 'IT',

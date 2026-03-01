@@ -2,7 +2,6 @@
  * ARM Thumb Instruction Encoders
  *
  * Functions to encode ARM Thumb instructions for patching firmware.
- * Ported from theme_patcher.py encode functions.
  */
 
 import { EncodingError } from '../errors.js';
@@ -81,14 +80,14 @@ export function encodeBl(fromAddr: number, toAddr: number): Uint8Array {
 /**
  * Encode a 16-bit B instruction for ARM Thumb
  *
- * Format: 11000 imm11
+ * Format: 11100 imm11
  *
- * Range: ±2048 bytes
+ * Range: -2048 to +2046 bytes
  */
 export function encodeB16bit(fromAddr: number, toAddr: number): Uint8Array {
 	const offset = toAddr - (fromAddr + 4);
 
-	// B range is ±2048 bytes
+	// B range is -2048 to +2046 bytes
 	if (offset > 2046 || offset < -2048) {
 		throw new ThumbEncodingError(`B offset out of range: ${offset}`);
 	}
@@ -102,8 +101,9 @@ export function encodeB16bit(fromAddr: number, toAddr: number): Uint8Array {
 /**
  * Encode a MOVW instruction for ARM Thumb
  *
- * MOVW Rd, #imm16
- * Format: 11110 i 0100 imm4 | 0 imm3 Rd imm8
+ * MOVW Rd, #imm16 (move wide)
+ * DDI0403 A6.3.2 T3: hw1 = 11110 i 10 0100 imm4, hw2 = 0 imm3 Rd imm8
+ * Base opcode 0xF240 (bits [9:8] = 10, bit[7:4] = 0100, bit[3:0] = imm4)
  */
 export function encodeMovw(reg: number, imm16: number): Uint8Array {
 	if (reg < 0 || reg > 15) {
@@ -118,7 +118,9 @@ export function encodeMovw(reg: number, imm16: number): Uint8Array {
 	const imm3 = (imm16 >> 8) & 0x7;
 	const imm8 = imm16 & 0xff;
 
+	// hw1 = 11110 i 10 0100 imm4 = 0xF240 | (i << 10) | imm4
 	const hw1 = 0xf240 | (i << 10) | imm4;
+	// hw2 = 0 imm3 Rd imm8
 	const hw2 = (imm3 << 12) | (reg << 8) | imm8;
 
 	return new Uint8Array([hw1 & 0xff, (hw1 >> 8) & 0xff, hw2 & 0xff, (hw2 >> 8) & 0xff]);
@@ -127,8 +129,9 @@ export function encodeMovw(reg: number, imm16: number): Uint8Array {
 /**
  * Encode a MOVT instruction for ARM Thumb
  *
- * MOVT Rd, #imm16 (move top halfword to register)
- * Format: 11110 i 1100 imm4 | 0 imm3 Rd imm8
+ * MOVT Rd, #imm16 (move top)
+ * DDI0403 A6.3.2 T1: hw1 = 11110 i 10 1100 imm4, hw2 = 0 imm3 Rd imm8
+ * Base opcode 0xF2C0 (bits [9:8] = 11, bit[7:4] = 1100, bit[3:0] = imm4)
  */
 export function encodeMovt(reg: number, imm16: number): Uint8Array {
 	if (reg < 0 || reg > 15) {
@@ -143,7 +146,9 @@ export function encodeMovt(reg: number, imm16: number): Uint8Array {
 	const imm3 = (imm16 >> 8) & 0x7;
 	const imm8 = imm16 & 0xff;
 
+	// hw1 = 11110 i 10 1100 imm4 = 0xF2C0 | (i << 10) | imm4
 	const hw1 = 0xf2c0 | (i << 10) | imm4;
+	// hw2 = 0 imm3 Rd imm8
 	const hw2 = (imm3 << 12) | (reg << 8) | imm8;
 
 	return new Uint8Array([hw1 & 0xff, (hw1 >> 8) & 0xff, hw2 & 0xff, (hw2 >> 8) & 0xff]);
@@ -167,6 +172,9 @@ export function encodePush(regs: number[]): Uint8Array {
 	for (const r of regs) {
 		if (r < 0 || r > 14) {
 			throw new ThumbEncodingError(`Invalid register for PUSH: R${r}`);
+		}
+		if (r >= 8 && r <= 13) {
+			throw new ThumbEncodingError(`Register R${r} not supported in 16-bit PUSH encoding (only R0-R7 and LR)`);
 		}
 	}
 
@@ -196,6 +204,9 @@ export function encodePop(regs: number[]): Uint8Array {
 	for (const r of regs) {
 		if (r < 0 || r > 15) {
 			throw new ThumbEncodingError(`Invalid register for POP: R${r}`);
+		}
+		if (r >= 8 && r <= 14) {
+			throw new ThumbEncodingError(`Register R${r} not supported in 16-bit POP encoding (only R0-R7 and PC)`);
 		}
 	}
 
@@ -235,19 +246,20 @@ export function encodeBx(reg: number): Uint8Array {
  * Encode a MOV (register) instruction for ARM Thumb
  *
  * MOV Rd, Rm (with high registers support)
+ *
+ * Encoding: 0100 0110 D Rm[3:0] Rd[2:0]
+ * where D = Rd[3] (high bit of destination register)
  */
 export function encodeMov(rd: number, rm: number): Uint8Array {
 	if (rd < 0 || rd > 15 || rm < 0 || rm > 15) {
 		throw new ThumbEncodingError(`Invalid registers for MOV: R${rd}, R${rm}`);
 	}
 
-	// Use MOV encoding (Thumb hi-register operations)
-	// This works for ALL registers, not just high registers
-	// Encoding: 0100 0110 H1 H2 Rm[2:0] Rd[2:0]
-	// where H1=1 if Rd >= 8, H2=1 if Rm >= 8
-	const H1 = (rd >= 8) ? 1 : 0;
-	const H2 = (rm >= 8) ? 1 : 0;
-	const opcode = 0x4600 | (H1 << 7) | (H2 << 6) | ((rm & 0x7) << 3) | (rd & 0x7);
+	// MOV (register) T1 encoding:
+	// 0100 0110 D Rm[3:0] Rd[2:0]
+	// D = Rd[3], the high bit of the destination register number
+	const D = (rd >> 3) & 1;
+	const opcode = 0x4600 | (D << 7) | ((rm & 0xf) << 3) | (rd & 0x7);
 	return new Uint8Array([opcode & 0xff, (opcode >> 8) & 0xff]);
 }
 
@@ -260,24 +272,26 @@ export function encodeStrh(rt: number, rn: number, offset: number): Uint8Array {
 	if (rt < 0 || rt > 15 || rn < 0 || rn > 15) {
 		throw new ThumbEncodingError(`Invalid registers for STRH: R${rt}, R${rn}`);
 	}
-	if (offset < 0 || offset > 1020 || offset % 2 !== 0) {
+	if (offset < 0 || offset > 0xfff || offset % 2 !== 0) {
 		throw new ThumbEncodingError(`Invalid offset for STRH: ${offset}`);
 	}
 
-	// Check if we can use 5-bit immediate encoding (offset / 2)
-	if (offset <= 62 && rn <= 7) {
+	// Check if we can use 16-bit T1 encoding: 5-bit immediate (offset / 2), low regs only
+	if (offset <= 62 && rn <= 7 && rt <= 7) {
 		const opcode = 0x8000 | ((offset / 2) << 6) | (rn << 3) | rt;
 		return new Uint8Array([opcode & 0xff, (opcode >> 8) & 0xff]);
 	}
 
-	// Otherwise need to use STRH.W (32-bit)
+	// Otherwise use STRH.W (32-bit T2 encoding)
 	return encodeStrhWide(rt, rn, offset);
 }
 
 /**
  * Encode a STRH.W instruction (32-bit) for ARM Thumb
  *
- * STRH.W Rt, [Rn, #imm]
+ * STRH.W Rt, [Rn, #imm12]
+ * DDI0403 STRH (immediate) T2: hw1 = 1111 1000 1010 Rn, hw2 = Rt imm12
+ * Base hw1 = 0xF8A0
  */
 export function encodeStrhWide(rt: number, rn: number, offset: number): Uint8Array {
 	if (rt < 0 || rt > 15 || rn < 0 || rn > 15) {
@@ -287,8 +301,10 @@ export function encodeStrhWide(rt: number, rn: number, offset: number): Uint8Arr
 		throw new ThumbEncodingError(`Invalid offset for STRH.W: ${offset}`);
 	}
 
-	const hw1 = 0xf820 | (rn & 0xf);
-	const hw2 = (0xc << 12) | (rt << 12) | offset;
+	// hw1 = 1111 1000 1010 Rn = 0xF8A0 | Rn
+	const hw1 = 0xf8a0 | (rn & 0xf);
+	// hw2 = Rt[15:12] | imm12[11:0]
+	const hw2 = (rt << 12) | (offset & 0xfff);
 
 	return new Uint8Array([hw1 & 0xff, (hw1 >> 8) & 0xff, hw2 & 0xff, (hw2 >> 8) & 0xff]);
 }
@@ -296,9 +312,7 @@ export function encodeStrhWide(rt: number, rn: number, offset: number): Uint8Arr
 /**
  * Encode a NOP instruction for ARM Thumb
  *
- * NOP can be encoded as:
- * - 16-bit: MOV R8, R8 (0x46c0)
- * - 16-bit: NOP hint in IT block (0xbf00)
+ * NOP hint: 0xBF00
  */
 export function encodeNop(): Uint8Array {
 	return new Uint8Array([0x00, 0xbf]);
@@ -369,9 +383,6 @@ export function decodeBlTarget(fromAddr: number, blBytes: Uint8Array): number {
 		imm32 = imm32 - 0x100000000;
 	}
 
-	// ARM Thumb BL: target = from + 4 + imm32
-	// Per ARM DDI0403 spec: target = Align(PC, 4) + imm32
-	// The imm32 already includes alignment via bit 0 (implicitly 0 in imm25)
 	return fromAddr + 4 + imm32;
 }
 
