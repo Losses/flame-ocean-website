@@ -459,8 +459,9 @@ def decode_movw(data, addr):
     hw1 = data[addr] | (data[addr + 1] << 8)
     hw2 = data[addr + 2] | (data[addr + 3] << 8)
 
-    # Check if MOVW (bits 15:11 = 11110, bits 9:8 = 00 for MOVW)
-    if (hw1 & 0xF800) != 0xF000 or (hw1 & 0x0400) != 0:
+    # Check if MOVW (DDI0403 A6.3.2 T3: hw1 = 11110(i)1(imm4), hw2 = xxxx(imm3)xxxx(rd)xxxx(imm8))
+    # Base opcode: 0xF240, with i bit at position 10, imm4 at bits [3:0]
+    if (hw1 & 0xFBF0) != 0xF240:
         return None
 
     # Decode according to actual ARM ARM MOVW encoding
@@ -583,8 +584,9 @@ def decode_movw(data, addr):
     # Note: Each halfword is little-endian within itself
     hw1 = data[addr] | (data[addr + 1] << 8)
     hw2 = data[addr + 2] | (data[addr + 3] << 8)
-    # Check if MOVW (bits 15:11 = 11110, bits 9:8 = 00 for MOVW)
-    if (hw1 & 0xF800) != 0xF000 or (hw1 & 0x0300) != 0:
+    # Check if MOVW (DDI0403 A6.3.2 T3: hw1 = 11110(i)1(imm4), hw2 = xxxx(imm3)xxxx(rd)xxxx(imm8))
+    # Base opcode: 0xF240, with i bit at position 10, imm4 at bits [3:0]
+    if (hw1 & 0xFBF0) != 0xF240:
         return None
     i = (hw1 >> 10) & 1
     imm4 = hw1 & 0xF
@@ -687,31 +689,14 @@ def hook_code(uc, address, size, user_data):
     try:
         instr_bytes = uc.mem_read(address, 2)
         is_bx_lr = instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47
-        is_pop_pc = instr_bytes[0] == 0xFF and instr_bytes[1] == 0xBD
+        # POP {R4-R7, PC} = 0xBDF0 -> little-endian: 0xF0 0xBD
+        is_pop_pc = instr_bytes[0] == 0xF0 and instr_bytes[1] == 0xBD
 
         if is_bx_lr or is_pop_pc:
             bx_lr_executed = True
             instr_type = "BX LR" if is_bx_lr else "POP {R4-R7, PC}"
-            r0_value = uc.reg_read(UC_ARM_REG_R0)
-            color_value = r0_value & 0xFFFF
-
-            # Check R4-R8 preservation
-            actual_r4 = uc.reg_read(UC_ARM_REG_R4)
-            actual_r5 = uc.reg_read(UC_ARM_REG_R5)
-            actual_r6 = uc.reg_read(UC_ARM_REG_R6)
-            actual_r7 = uc.reg_read(UC_ARM_REG_R7)
-            actual_r8 = uc.reg_read(UC_ARM_REG_R8)
-
-            if (actual_r4 != CALLER_R4 or actual_r5 != CALLER_R5 or
-                actual_r6 != CALLER_R6 or actual_r7 != CALLER_R7 or actual_r8 != CALLER_R8):
-                registers_preserved = False
-            else:
-                print(f"✓ Callee-saved registers preserved (R4-R8)")
-
-            theme_idx = uc.reg_read(UC_ARM_REG_R1)
-            if 0 <= theme_idx < len(expected_flac):
-                flac_results.append(color_value)
-            uc.emu_stop()
+            # Don't stop here! Let the instruction execute first.
+            # We'll check PC and registers after emulation completes.
     except:
         pass
 
@@ -758,10 +743,19 @@ for theme_idx, expected_color in enumerate(expected_flac):
         print(f"Theme {theme_idx}: ✗ Handler did not return (no BX LR/POP PC)")
         theme_success = False
     else:
-        r0_value = mu.reg_read(UC_ARM_REG_R0)
-        color_value = r0_value & 0xFFFF
+        # Handler returns color in R1 (not R0!)
+        r1_value = mu.reg_read(UC_ARM_REG_R1)
+        color_value = r1_value & 0xFFFF
         if color_value != expected_color:
             print(f"Theme {theme_idx}: ✗ Color mismatch: expected 0x{expected_color:04X}, got 0x{color_value:04X}")
+            theme_success = False
+        else:
+            print(f"Theme {theme_idx}: ✓ Color value correct: 0x{color_value:04X}")
+
+        # Check if PC returned to FLAC function (not stuck in handler)
+        final_pc = mu.reg_read(UC_ARM_REG_PC)
+        if final_pc < FLAC_FUNC or final_pc >= FLAC_FUNC + 100:
+            print(f"Theme {theme_idx}: ✗ PC did not return to FLAC function: PC=0x{final_pc:X}")
             theme_success = False
 
     # Check register preservation
@@ -770,6 +764,11 @@ for theme_idx, expected_color in enumerate(expected_flac):
     actual_r6 = mu.reg_read(UC_ARM_REG_R6)
     actual_r7 = mu.reg_read(UC_ARM_REG_R7)
     actual_r8 = mu.reg_read(UC_ARM_REG_R8)
+
+    # Debug: check PC and SP
+    actual_pc = mu.reg_read(UC_ARM_REG_PC)
+    actual_sp = mu.reg_read(UC_ARM_REG_SP)
+    print(f"Theme {theme_idx}: After execution, PC=0x{actual_pc:X}, SP=0x{actual_sp:X}")
 
     if (actual_r4 != CALLER_R4 or actual_r5 != CALLER_R5 or
         actual_r6 != CALLER_R6 or actual_r7 != CALLER_R7 or actual_r8 != CALLER_R8):
