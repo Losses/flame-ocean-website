@@ -1157,10 +1157,10 @@ export class ThemePatcher {
 			const cmpAddr = code.length;
 			code.push(0x00 | i, 0x29);  // CMP R1, #i
 			// BEQ placeholder: will patch later
-			// ARM Thumb Bcond encoding: 1101 imm8[7:4] 00 imm8[3:0] cond
-			// For BEQ: cond = 1110 (EQ)
-			// Little-endian bytes: [imm8[3:0]|0xE0] [imm8[7:4]<<4 | 0x0D]
-			code.push(0x00, 0x0E);  // BEQ placeholder (imm8=0)
+			// ARM Thumb B<cond> T1 encoding: 1101 cccc iiiiiiii
+			// High byte: 0xD0 | cond (where cond=0 for EQ)
+			// Low byte: imm8 (signed offset in halfwords)
+			code.push(0x00, 0xD0);  // BEQ placeholder (imm8=0, cond=0 for EQ)
 			beqPositions.push({ index: i, cmpAddr });
 		}
 
@@ -1186,12 +1186,12 @@ export class ThemePatcher {
 			const target = themeSectionStarts[index];
 			const offset = (target - alignedPc) >> 1;
 
-			// BEQ encoding in little-endian:
-			// Low byte: imm8[3:0] | 0xE0 (cond = 1110 for EQ)
-			// High byte: (imm8[7:4] << 4) | 0x0D
+			// BEQ encoding in little-endian (ARM Thumb B<cond> T1):
+			// Low byte: imm8 (signed offset in halfwords)
+			// High byte: 0xD0 | cond (where cond=0 for EQ)
 			const imm8 = offset & 0xFF;
-			code[beqAddr] = (imm8 & 0x0F) | 0xE0;             // Low byte
-			code[beqAddr + 1] = ((imm8 >> 4) << 4) | 0x0D;      // High byte
+			code[beqAddr] = imm8;           // Low byte: imm8
+			code[beqAddr + 1] = 0xD0 | 0x0;  // High byte: 0xD0 | cond (EQ=0)
 		}
 
 		return new Uint8Array(code);
