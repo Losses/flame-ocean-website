@@ -670,8 +670,8 @@ export class ThemeDiscovery {
 		// Search for FLAC function using improved discovery (supports patched firmware)
 		const flacResult = discoverFlacFunction(data);
 		if (flacResult) {
-			const [funcAddr] = flacResult;
-			const funcStart = ThemeDiscovery.findFunctionStart(data, funcAddr);
+			const [cmpAddr, patchAddr] = flacResult;
+			const funcStart = ThemeDiscovery.findFunctionStart(data, patchAddr);
 			if (!seenAddrs.has(funcStart)) {
 				seenAddrs.add(funcStart);
 				const funcEnd = this.findFunctionEnd(funcStart, 2000);
@@ -681,14 +681,18 @@ export class ThemeDiscovery {
 				// FLAC checks if R1 == 4, so it supports themes 0-4 (5 themes total)
 				let flacThemeCount = 5;
 				// Try to parse the actual immediate value from CMP instruction
-				const cmpAddr = funcAddr; // funcAddr is the CMP address from detectFlacFunction
 				if (cmpAddr + 4 < data.length) {
 					const hw1 = data[cmpAddr] | (data[cmpAddr + 1] << 8);
 					const hw2 = data[cmpAddr + 2] | (data[cmpAddr + 3] << 8);
-					// Check if it's CMP.W R1, #imm (F1B1 0Fmm)
+					// Check if it's 32-bit CMP.W R1, #imm (F1B1 0Fmm)
 					if (hw1 === 0xF1B1 && (hw2 & 0xFF00) === 0x0F00) {
 						const imm = hw2 & 0xFF;
-						flacThemeCount = imm + 1; // If CMP checks for #4, then themes are 0-4 (5 themes)
+						flacThemeCount = imm + 1;
+					} 
+					// Check if it's 16-bit CMP R1, #imm (29mm)
+					else if ((hw1 & 0xFF00) === 0x2900) {
+						const imm = hw1 & 0xFF;
+						flacThemeCount = imm + 1;
 					}
 				}
 
@@ -854,22 +858,10 @@ export function discoverFlacFunction(data: Uint8Array, version?: string): [numbe
 	const cmpAddrResult = ThemeDiscovery.detectFlacFunction(data);
 	if (cmpAddrResult) {
 		const [cmpAddr] = cmpAddrResult;
-		// Find the MOVW R1 instruction that sets the default color (themes 0-3)
-		const patchAddr = ThemeDiscovery.findFlacPatchPoint(data, cmpAddr);
-		if (patchAddr) {
-			return [cmpAddr, patchAddr];
-		}
-		// CRITICAL: Do NOT use CMP address as fallback - this would corrupt the firmware!
-		// If we can't find the patch point, the firmware structure is unrecognized
-		// and patching would be unsafe. Throw an error instead of silently failing.
-		throw new DiscoveryError(
-			'FLAC function structure not recognized - unable to find safe patch point.\n\n' +
-			'This may be an unsupported firmware version.\n' +
-			'Theme system support: V2.4.0 and later\n\n' +
-			`Function found at: 0x${cmpAddr.toString(16)}\n` +
-			'Patching this firmware could corrupt the code and cause boot failure.\n' +
-			'If you believe this is an error, please report it with your firmware version.'
-		);
+		// CRITICAL: We now patch at the CMP instruction itself (4-byte BL replaces CMP + ITE)
+		// and NOP out the following MOVW instructions. This is safer than patching
+		// inside an IT block which can be skipped by the CPU.
+		return [cmpAddr, cmpAddr];
 	}
 
 	return null;

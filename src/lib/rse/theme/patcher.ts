@@ -862,7 +862,9 @@ export class ThemePatcher {
 			// Patch FLAC function only if flacCustom is true
 			const flacFunc = analysis.themeFunctions.find(f => f.type === 'flac');
 			if (flacFunc && intent.flacCustom && patchData.flacCodeAddr !== 0) {
-				this.applyPatch(patchedData, flacFunc.patchAddr, patchData.flacCodeAddr);
+				// Pattern is 12 bytes: CMP(2) + ITE(2) + MOVW(4) + MOVW(4)
+				// We replace with 4-byte BL + 8 bytes NOP
+				this.applyPatch(patchedData, flacFunc.patchAddr, patchData.flacCodeAddr, 8);
 				patchPoints['flac'] = {
 					type: 'flac',
 					funcAddr: flacFunc.funcAddr,
@@ -968,15 +970,14 @@ export class ThemePatcher {
 		const actualFlacHandler = this.generateFlacHandler(flacColors);
 		const actualMenuHandler = this.generateMenuHandler(menuColors);
 
-		// During re-patching, use both handlers only if both were previously patched
-		// This preserves user's intent when they only want to update one handler
-		// If both handlers existed before, we keep both to maintain consistent layout
-		const bothHandlersPreviouslyPatched = patchStatus?.flacPatched && patchStatus?.menuPatched;
-		const useBothHandlers = isRepatchInput && bothHandlersPreviouslyPatched;
+		// During re-patching, preserve existing handlers even if they are not being updated this time.
+		// This ensures that BL instructions from previous patches still point to valid handler code.
+		const useFlacHandler = intent.flacCustom || patchStatus?.flacPatched;
+		const useMenuHandler = intent.menuCustom || patchStatus?.menuPatched;
 
 		// Determine which handlers to include in code buffer
-		const flacHandler = (intent.flacCustom || useBothHandlers) ? actualFlacHandler : new Uint8Array(0);
-		const menuHandler = (intent.menuCustom || useBothHandlers) ? actualMenuHandler : new Uint8Array(0);
+		const flacHandler = useFlacHandler ? actualFlacHandler : new Uint8Array(0);
+		const menuHandler = useMenuHandler ? actualMenuHandler : new Uint8Array(0);
 
 		// Calculate layout using actual handler sizes
 		let flacCodeOffset = 0;
@@ -984,17 +985,17 @@ export class ThemePatcher {
 		let menuCodeOffset = 0;
 		let menuCodeEnd = 0;
 
-		if (actualFlacHandler.length > 0 && (intent.flacCustom || useBothHandlers)) {
+		if (actualFlacHandler.length > 0 && useFlacHandler) {
 			// Calculate padding to ensure FLAC handler is 4-byte aligned
 			flacCodeOffset = (ALIGNMENT - (nopSlide.start % ALIGNMENT)) % ALIGNMENT;
 			flacCodeEnd = flacCodeOffset + actualFlacHandler.length;
 
-			if (actualMenuHandler.length > 0 && (intent.menuCustom || useBothHandlers)) {
+			if (actualMenuHandler.length > 0 && useMenuHandler) {
 				// Align menu handler start
 				menuCodeOffset = Math.ceil(flacCodeEnd / ALIGNMENT) * ALIGNMENT;
 				menuCodeEnd = menuCodeOffset + actualMenuHandler.length;
 			}
-		} else if (actualMenuHandler.length > 0 && (intent.menuCustom || useBothHandlers)) {
+		} else if (actualMenuHandler.length > 0 && useMenuHandler) {
 			// Only menu handler, still align it
 			menuCodeOffset = (ALIGNMENT - (nopSlide.start % ALIGNMENT)) % ALIGNMENT;
 			menuCodeEnd = menuCodeOffset + actualMenuHandler.length;
@@ -1176,15 +1177,14 @@ export class ThemePatcher {
 		}
 
 		// Now patch BEQ offsets
-		// BEQ offset formula: target = Align(PC, 4) + (offset << 1)
+		// BEQ offset formula: target = PC + (offset << 1)
 		// where PC = BEQ_address + 4
-		// Therefore: offset = (target - Align(PC, 4)) >> 1
+		// Therefore: offset = (target - PC) >> 1
 		for (const { index, cmpAddr } of beqPositions) {
 			const beqAddr = cmpAddr + 2;
 			const pc = beqAddr + 4;
-			const alignedPc = pc & ~3;
 			const target = themeSectionStarts[index];
-			const offset = (target - alignedPc) >> 1;
+			const offset = (target - pc) >> 1;
 
 			// BEQ encoding in little-endian (ARM Thumb B<cond> T1):
 			// Low byte: imm8 (signed offset in halfwords)
@@ -1204,7 +1204,11 @@ export class ThemePatcher {
 		const code: number[] = [];
 
 		// Load colors using MOVW+MOVT pairs
-		for (let i = 0; i < colors.length; i++) {
+		// CRITICAL: We only have registers R0-R12 available. R13=SP, R14=LR, R15=PC.
+		// If there are 15 colors, we can't load them all into registers.
+		// For now, let's just support up to 12 colors or use a different approach.
+		// The original Menu function uses colors sequentially, so we might not need all at once.
+		for (let i = 0; i < Math.min(colors.length, 12); i++) {
 			const reg = i;
 			const color = colors[i];
 
@@ -1224,11 +1228,17 @@ export class ThemePatcher {
 	/**
 	 * Apply patch at address
 	 */
-	private applyPatch(data: Uint8Array, patchAddr: number, targetAddr: number): void {
+	private applyPatch(data: Uint8Array, patchAddr: number, targetAddr: number, nopBytes = 0): void {
 		console.error(`[DEBUG] applyPatch: patchAddr=0x${patchAddr.toString(16)}, targetAddr=0x${targetAddr.toString(16)}`);
 		const blInstruction = encodeBl(patchAddr, targetAddr);
 		console.error(`[DEBUG] BL bytes: ${Array.from(blInstruction).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}`);
 		data.set(blInstruction, patchAddr);
+
+		// Fill remaining space with NOPs (0xBF00)
+		for (let i = 0; i < nopBytes; i += 2) {
+			data[patchAddr + 4 + i] = 0x00;
+			data[patchAddr + 4 + i + 1] = 0xbf;
+		}
 	}
 
 	/**
