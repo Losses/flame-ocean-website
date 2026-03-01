@@ -107,38 +107,41 @@ describe('MOVW/MOVT Encoders', () => {
 describe('BL Encoder/Decoder', () => {
 	it('should encode BL with positive offset', () => {
 		const fromAddr = 0x1000;
-		const toAddr = 0x1008; // offset = 4
+		const toAddr = 0x1008;
 		const encoded = encodeBl(fromAddr, toAddr);
 
 		// Verify it's a valid BL instruction
 		const decoder = new ThumbDecoder(encoded);
 		const insn = decoder.decode(0);
 		expect(insn.mnemonic).toBe('BL');
-		// branchTarget is the raw signed offset (imm32)
-		// from=0x1000 to=0x1008, offset = toAddr - (fromAddr+4) = 4
-		expect(insn.branchTarget).toBe(4);
+		// When decoding at offset 0, branchTarget = 0 + 4 + imm32
+		// where imm32 = toAddr - (fromAddr + 4) = 4
+		// So branchTarget = 0 + 4 + 4 = 8 = toAddr - fromAddr
+		expect(insn.branchTarget).toBe(toAddr - fromAddr);
 	});
 
 	it('should encode BL with large offset', () => {
 		const fromAddr = 0x1000;
-		const toAddr = 0x2000; // offset = 0xFFC
+		const toAddr = 0x2000;
 		const encoded = encodeBl(fromAddr, toAddr);
 
 		const decoder = new ThumbDecoder(encoded);
 		const insn = decoder.decode(0);
 		expect(insn.mnemonic).toBe('BL');
-		expect(insn.branchTarget).toBe(0xFFC);
+		// branchTarget = toAddr - fromAddr = 0x2000 - 0x1000 = 0x1000
+		expect(insn.branchTarget).toBe(toAddr - fromAddr);
 	});
 
 	it('should encode BL with negative offset', () => {
 		const fromAddr = 0x2000;
-		const toAddr = 0x1000; // offset = -0x1004
+		const toAddr = 0x1000;
 		const encoded = encodeBl(fromAddr, toAddr);
 
 		const decoder = new ThumbDecoder(encoded);
 		const insn = decoder.decode(0);
 		expect(insn.mnemonic).toBe('BL');
-		expect(insn.branchTarget).toBe(-0x1004);
+		// branchTarget = toAddr - fromAddr = 0x1000 - 0x2000 = -0x1000
+		expect(insn.branchTarget).toBe(toAddr - fromAddr);
 	});
 
 	it('encoder and decoder should be symmetric for BL', () => {
@@ -154,9 +157,9 @@ describe('BL Encoder/Decoder', () => {
 			const decoder = new ThumbDecoder(encoded);
 			const insn = decoder.decode(0);
 
-			// Calculate expected relative offset
-			const expectedOffset = to - (from + 4);
-			expect(insn.branchTarget).toBe(expectedOffset);
+			// When decoding at offset 0, branchTarget = to - from
+			// This represents the relative offset encoded in the instruction
+			expect(insn.branchTarget).toBe(to - from);
 		}
 	});
 });
