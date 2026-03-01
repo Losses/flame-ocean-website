@@ -869,6 +869,7 @@ export class ThemePatcher {
 					type: 'flac',
 					funcAddr: flacFunc.funcAddr,
 					patchAddr: flacFunc.patchAddr,
+					targetAddr: patchData.flacCodeAddr,
 					originalBytes: this.bytesToHex(this.data.slice(flacFunc.patchAddr, flacFunc.patchAddr + 4)),
 					newBytes: this.bytesToHex(patchedData.slice(flacFunc.patchAddr, flacFunc.patchAddr + 4))
 				};
@@ -882,6 +883,7 @@ export class ThemePatcher {
 					type: 'menu',
 					funcAddr: menuFunc.funcAddr,
 					patchAddr: menuFunc.patchAddr,
+					targetAddr: patchData.menuCodeAddr,
 					originalBytes: this.bytesToHex(this.data.slice(menuFunc.patchAddr, menuFunc.patchAddr + 4)),
 					newBytes: this.bytesToHex(patchedData.slice(menuFunc.patchAddr, menuFunc.patchAddr + 4))
 				};
@@ -1101,54 +1103,23 @@ export class ThemePatcher {
 	 * Uses explicit branches (NOT IT blocks) because Unicorn doesn't support IT blocks properly.
 	 *
 	 * Code structure:
-	 * - Load all 5 colors into R4-R8
-	 * - CMP R1, #4
-	 * - BEQ theme_4 (forward branch if equal)
-	 * - MOV R0, R4 (themes 0-3)
-	 * - B end (unconditional branch to BX LR)
-	 * - theme_4: MOV R0, R8
-	 * - end: BX LR
+	 *   PUSH {R4, LR}
+	 *   CMP R1, #0; BEQ theme_0
+	 *   CMP R1, #1; BEQ theme_1
+	 *   CMP R1, #2; BEQ theme_2
+	 *   CMP R1, #3; BEQ theme_3
+	 *   ; fall through to theme_4
+	 * theme_4: MOVW R1, #color4; POP {R4, PC}
+	 * theme_3: MOVW R1, #color3; POP {R4, PC}
+	 * theme_2: MOVW R1, #color2; POP {R4, PC}
+	 * theme_1: MOVW R1, #color1; POP {R4, PC}
+	 * theme_0: MOVW R1, #color0; POP {R4, PC}
 	 */
 	private generateFlacHandler(colors: number[]): Uint8Array {
 		const code: number[] = [];
 
-		// CRITICAL: Must save callee-saved registers (R4-R8) and LR
-		// because we're about to modify them!
-		// PUSH {R4-R7, LR}
-		code.push(...encodePush([4, 5, 6, 7, 14]));  // PUSH {R4-R7, LR}
-
-		// Move R8 to R3, then push R3 (since R8 can't be pushed directly with PUSH)
-		code.push(...encodeMov(3, 8));  // MOV R3, R8 (high register MOV)
-		code.push(...encodePush([3]));  // PUSH {R3}
-
-		// Load colors into R4-R8 using MOVW+MOVT pairs
-		for (let i = 0; i < colors.length; i++) {
-			const reg = 4 + i; // R4-R8
-			const color = colors[i];
-
-			// MOVW R{i}, #color_low
-			code.push(...encodeMovw(reg, color & 0xffff));
-
-			// MOVT R{i}, #color_high
-			code.push(...encodeMovt(reg, (color >> 16) & 0xffff));
-		}
-
-		// Select color based on R1 (theme index 0-4)
-		// Return the color in R1 (since STRH R1, [R0, #0] stores R1)
-		//
-		// Code structure:
-		//   CMP R1, #0; BEQ theme_0
-		//   CMP R1, #1; BEQ theme_1
-		//   CMP R1, #2; BEQ theme_2
-		//   CMP R1, #3; BEQ theme_3
-		//   ; fall through to theme_4
-		// theme_4: MOV R1,R8; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
-		// theme_3: MOV R1,R7; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
-		// theme_2: MOV R1,R6; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
-		// theme_1: MOV R1,R5; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
-		// theme_0: MOV R1,R4; POP {R3}; MOV R8,R3; POP {R4-R7,PC}
-		//
-		// Each theme section is 8 bytes (4 instructions)
+		// Save callee-saved R4 and LR
+		code.push(...encodePush([4, 14]));  // PUSH {R4, LR}
 
 		// Record BEQ positions for later patching
 		const beqPositions: Array<{ index: number; cmpAddr: number }> = [];
@@ -1157,11 +1128,8 @@ export class ThemePatcher {
 		for (let i = 0; i < 4; i++) {
 			const cmpAddr = code.length;
 			code.push(0x00 | i, 0x29);  // CMP R1, #i
-			// BEQ placeholder: will patch later
-			// ARM Thumb B<cond> T1 encoding: 1101 cccc iiiiiiii
-			// High byte: 0xD0 | cond (where cond=0 for EQ)
-			// Low byte: imm8 (signed offset in halfwords)
-			code.push(0x00, 0xD0);  // BEQ placeholder (imm8=0, cond=0 for EQ)
+			// BEQ placeholder (cond=0 for EQ)
+			code.push(0x00, 0xD0);
 			beqPositions.push({ index: i, cmpAddr });
 		}
 
@@ -1169,29 +1137,27 @@ export class ThemePatcher {
 		const themeSectionStarts: number[] = [];
 		for (let theme = 4; theme >= 0; theme--) {
 			themeSectionStarts[theme] = code.length;
-			const reg = 4 + theme; // R8, R7, R6, R5, R4
-			code.push(...encodeMov(1, reg));  // MOV R1, R{reg}
-			code.push(...encodePop([3]));  // POP {R3}
-			code.push(...encodeMov(8, 3));  // MOV R8, R3
-			code.push(...encodePop([4, 5, 6, 7, 15]));  // POP {R4-R7, PC}
+			const color = colors[theme];
+			
+			// Load color into R1 (since STRH R1, [R0] is what we're replacing)
+			// We can use R4 as temp if needed, but MOVW/MOVT can target R1 directly
+			code.push(...encodeMovw(1, color & 0xffff));
+			code.push(...encodeMovt(1, (color >> 16) & 0xffff));
+			
+			// Restore R4 and return
+			code.push(...encodePop([4, 15]));  // POP {R4, PC}
 		}
 
 		// Now patch BEQ offsets
-		// BEQ offset formula: target = PC + (offset << 1)
-		// where PC = BEQ_address + 4
-		// Therefore: offset = (target - PC) >> 1
 		for (const { index, cmpAddr } of beqPositions) {
 			const beqAddr = cmpAddr + 2;
 			const pc = beqAddr + 4;
 			const target = themeSectionStarts[index];
 			const offset = (target - pc) >> 1;
 
-			// BEQ encoding in little-endian (ARM Thumb B<cond> T1):
-			// Low byte: imm8 (signed offset in halfwords)
-			// High byte: 0xD0 | cond (where cond=0 for EQ)
 			const imm8 = offset & 0xFF;
-			code[beqAddr] = imm8;           // Low byte: imm8
-			code[beqAddr + 1] = 0xD0 | 0x0;  // High byte: 0xD0 | cond (EQ=0)
+			code[beqAddr] = imm8;
+			code[beqAddr + 1] = 0xD0;
 		}
 
 		return new Uint8Array(code);

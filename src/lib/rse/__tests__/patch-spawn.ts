@@ -23,6 +23,8 @@ interface PatchResult {
 	success: boolean;
 	nopSlideAddr: number;
 	blAddr: number | null;
+	flacCodeAddr: number;
+	menuCodeAddr: number;
 	error?: string;
 }
 
@@ -46,6 +48,8 @@ async function main() {
 			success: false,
 			nopSlideAddr: 0,
 			blAddr: null,
+			flacCodeAddr: 0,
+			menuCodeAddr: 0,
 			error: `Failed to read task file: ${error instanceof Error ? error.message : String(error)}`
 		};
 		console.log(JSON.stringify(result));
@@ -63,6 +67,8 @@ async function main() {
 				success: false,
 				nopSlideAddr: 0,
 				blAddr: null,
+				flacCodeAddr: 0,
+				menuCodeAddr: 0,
 				error: 'Patching failed'
 			};
 			console.log(JSON.stringify(patchResult));
@@ -70,7 +76,7 @@ async function main() {
 		}
 
 		// Determine which BL address to use based on what was patched
-		const blAddr = task.colors.flacColors && task.colors.flacColors.length > 0
+		const blAddr = (task.colors.flacColors && task.colors.flacColors.length > 0)
 			? result.patchPoints?.flac?.patchAddr
 			: result.patchPoints?.menu?.patchAddr;
 
@@ -80,6 +86,8 @@ async function main() {
 				success: false,
 				nopSlideAddr: 0,
 				blAddr: null,
+				flacCodeAddr: 0,
+				menuCodeAddr: 0,
 				error: 'BL address not found in patch result'
 			};
 			console.log(JSON.stringify(patchResult));
@@ -111,7 +119,9 @@ async function main() {
 			id: task.id,
 			success: true,
 			nopSlideAddr,
-			blAddr
+			blAddr,
+			flacCodeAddr: result.patchPoints?.flac?.targetAddr || 0,
+			menuCodeAddr: result.patchPoints?.menu?.targetAddr || 0
 		};
 
 		// Clean up task JSON file
@@ -129,6 +139,8 @@ async function main() {
 			success: false,
 			nopSlideAddr: 0,
 			blAddr: null,
+			flacCodeAddr: 0,
+			menuCodeAddr: 0,
 			error: error instanceof Error ? error.message : String(error)
 		};
 		console.log(JSON.stringify(patchResult));

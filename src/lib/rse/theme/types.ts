@@ -221,6 +221,8 @@ export interface PatchPoint {
 	readonly funcAddr: number;
 	/** Patch address (where BL is inserted) */
 	readonly patchAddr: number;
+	/** Target address (where BL branches to) */
+	readonly targetAddr: number;
 	/** Original bytes as hex string */
 	readonly originalBytes: string;
 	/** New bytes as hex string */
