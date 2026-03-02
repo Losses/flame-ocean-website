@@ -109,11 +109,37 @@ export class ThemePatcher {
 		const menuAddr = menuResult ? menuResult[1] : null;
 		const patchStatus = this.detector.detectPatchStatus(flacAddr, menuAddr);
 
+		// Compatibility check
+		let compatibility: 'supported' | 'experimental' | 'deprecated' | 'unsupported' = 'supported';
+		let supportMessage = '';
+
+		// 1. Check by address heuristic (Threshold for V2.4.0+ is around 0x86000)
+		const flacFunc = themeFunctions.find(f => f.type === 'flac');
+		if (flacFunc && flacFunc.funcAddr < 0x86000) {
+			compatibility = 'unsupported';
+			supportMessage = 'This firmware version (detected as V1.8.0 or older) is not supported for theme patching due to safety concerns and different memory layout.';
+		}
+
+		// 2. Check by explicit version string if provided
+		if (this.version !== 'Unknown') {
+			const versionMatch = this.version.match(/V(\d+)\.(\d+)\.(\d+)/);
+			if (versionMatch) {
+				const major = parseInt(versionMatch[1], 10);
+				const minor = parseInt(versionMatch[2], 10);
+				if (major < 2 || (major === 2 && minor < 4)) {
+					compatibility = 'unsupported';
+					supportMessage = `Version ${this.version} is not supported. Theme patching requires V2.4.0 or later.`;
+				}
+			}
+		}
+
 		return {
 			version: this.version,
 			themeFunctions,
 			nopSlides,
-			canPatch: themeFunctions.length > 0 && nopSlides.length > 0,
+			canPatch: themeFunctions.length > 0 && nopSlides.length > 0 && compatibility !== 'unsupported',
+			compatibility,
+			supportMessage,
 			patchStatus
 		};
 	}
@@ -725,6 +751,12 @@ export class ThemePatcher {
 				// Determine why patching failed
 				const hasThemeFunctions = analysis.themeFunctions.length > 0;
 				const hasNopSlides = analysis.nopSlides.length > 0;
+
+				if (analysis.compatibility === 'unsupported') {
+					throw new CompatibilityError(
+						analysis.supportMessage || 'This firmware version is not supported for theme patching.'
+					);
+				}
 
 				if (!hasThemeFunctions) {
 					throw new CompatibilityError(

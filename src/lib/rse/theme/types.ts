@@ -292,6 +292,10 @@ export interface PatchAnalysisResult {
 	nopSlides: NopSlide[];
 	/** Whether firmware can be patched */
 	canPatch: boolean;
+	/** Compatibility level */
+	compatibility: 'supported' | 'experimental' | 'deprecated' | 'unsupported';
+	/** Optional message explaining support status */
+	supportMessage?: string;
 	/** Patch detection status */
 	patchStatus: {
 		readonly isPatched: boolean;
