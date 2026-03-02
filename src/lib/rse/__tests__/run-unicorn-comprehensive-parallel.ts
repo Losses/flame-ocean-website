@@ -364,13 +364,13 @@ function buildScenariosForFirmware(groundTruth: { flacColors: number[]; menuColo
 
 		// Build expected results (handle partial color objects)
 		const expectedAfterFirst = {
-			flac: 'flacColors' in firstColors ? firstColors.flacColors : groundTruth.flacColors,
-			menu: 'menuColors' in firstColors ? firstColors.menuColors : groundTruth.menuColors
+			flac: 'flacColors' in firstColors ? (firstColors as any).flacColors : groundTruth.flacColors,
+			menu: 'menuColors' in firstColors ? (firstColors as any).menuColors : groundTruth.menuColors
 		};
 
 		const expectedAfterSecond = {
-			flac: 'flacColors' in secondColors ? secondColors.flacColors : expectedAfterFirst.flac,
-			menu: 'menuColors' in secondColors ? secondColors.menuColors : expectedAfterFirst.menu
+			flac: 'flacColors' in secondColors ? (secondColors as any).flacColors : expectedAfterFirst.flac,
+			menu: 'menuColors' in secondColors ? (secondColors as any).menuColors : expectedAfterFirst.menu
 		};
 
 		return {
@@ -388,8 +388,8 @@ function buildScenariosForFirmware(groundTruth: { flacColors: number[]; menuColo
 		const firstColors = template.getFirstColors();
 
 		const expectedAfterFirst = {
-			flac: 'flacColors' in firstColors ? firstColors.flacColors : groundTruth.flacColors,
-			menu: 'menuColors' in firstColors ? firstColors.menuColors : groundTruth.menuColors
+			flac: 'flacColors' in firstColors ? (firstColors as any).flacColors : groundTruth.flacColors,
+			menu: 'menuColors' in firstColors ? (firstColors as any).menuColors : groundTruth.menuColors
 		};
 
 		return {
@@ -663,15 +663,6 @@ function findBlInFunction(firmwareData: Uint8Array, funcAddr: number): number | 
 	return null;
 }
 
-function discoverFlacFunctionAddress(firmwarePath: string): number {
-	const firmwareData = readFileSync(firmwarePath);
-	const patcher = new ThemePatcher(firmwareData);
-	const analysis = patcher.analyze();
-	const flacFunc = analysis.themeFunctions.find(f => f.type === 'flac');
-	if (!flacFunc) throw new Error(`FLAC function not found in ${firmwarePath}`);
-	return flacFunc.funcAddr;
-}
-
 /**
  * Run a Python Unicorn test script and capture its output
  */
@@ -784,7 +775,7 @@ async function runComprehensiveTests() {
 			if (!scenario.isSinglePatch) {
 				const secondFirmwareInfo = firmwareResults.get(`${firmware.version}_${scenario.id}_2`);
 				if (!secondFirmwareInfo) continue;
-				const secondColors = scenario.secondOp === 'menu-only' ? scenario.expectedAfterSecond!.menu : scenario.expectedAfterSecond!.flac;
+				const secondColors = (scenario as any).secondOp === 'menu-only' ? scenario.expectedAfterSecond!.menu : scenario.expectedAfterSecond!.flac;
 				allTestCases.push({
 					id: `${firmware.version}_${scenario.id}_2`,
 					firmwareVersion: firmware.version,
