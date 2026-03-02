@@ -35,11 +35,17 @@ export class NopSlideFinder {
 	private readonly data: Readonly<Uint8Array>;
 	private readonly codeAnalyzer: CodeReferenceAnalyzer;
 	private readonly MIN_SLIDE_SIZE = 256;  // Minimum 256 bytes for safety (alignment + metadata)
+	private readonly scanStart: number;
+	private readonly scanEnd: number;
 
-	constructor(firmwareData: Uint8Array) {
+	constructor(firmwareData: Uint8Array, options: { scanStart?: number; scanEnd?: number } = {}) {
 		this.data = firmwareData;
+		this.scanStart = options.scanStart ?? 0;
+		this.scanEnd = options.scanEnd ?? firmwareData.length;
+		
 		this.codeAnalyzer = new CodeReferenceAnalyzer(firmwareData, {
-			scanEnd: Math.min(firmwareData.length, 0x1000000),
+			scanStart: this.scanStart,
+			scanEnd: Math.min(this.scanEnd, 0x1000000), // Code analyzer scan limit
 			analyzeOnConstruct: false
 		});
 	}
@@ -74,8 +80,8 @@ export class NopSlideFinder {
 	 */
 	findAllSlides(): NopSlide[] {
 		const slides: NopSlide[] = [];
-		let i = 0;
-		const n = this.data.length;
+		let i = this.scanStart;
+		const n = Math.min(this.data.length, this.scanEnd);
 
 		while (i < n) {
 			// Look for zero bytes
