@@ -267,19 +267,9 @@ export class ThemePatcher {
 		let menuColors: number[] = [];
 		if (menuFunc) {
 			// getColorsForFunction returns: [T0_R1, T0_R2, T0_R3, T1_R1, T1_R2, T1_R3, ...]
-			// Patcher expects: [T0_R1, T1_R1, T2_R1, T3_R1, T4_R1, T0_R2, T1_R2, T2_R2, T3_R2, T4_R2, ...]
-			// We need to transform from interleaved-by-theme to interleaved-by-register
+			// We keep this order for simplicity.
 			const rawColors = extractor.getColorsForFunction('menu');
-			const themeCount = menuFunc.themeCount ?? 5;
-
-			// rawColors has 15 values: [T0_R1, T0_R2, T0_R3, T1_R1, T1_R2, T1_R3, T2_R1, T2_R2, T2_R3, T3_R1, T3_R2, T3_R3, T4_R1, T4_R2, T4_R3]
-			// Transform to: [T0_R1, T1_R1, T2_R1, T3_R1, T4_R1, T0_R2, T1_R2, T2_R2, T3_R2, T4_R2, T0_R3, T1_R3, T2_R3, T3_R3, T4_R3]
-			for (let regIdx = 0; regIdx < 3; regIdx++) {
-				for (let themeId = 0; themeId < themeCount; themeId++) {
-					const srcIdx = themeId * 3 + regIdx;
-					menuColors.push(rawColors[srcIdx]);
-				}
-			}
+			menuColors = Array.from(rawColors);
 		} else {
 			throw new ThemeError('Menu function not found in firmware');
 		}
@@ -1170,18 +1160,16 @@ export class ThemePatcher {
 		const code: number[] = [];
 
 		// Load colors using MOVW+MOVT pairs
-		// CRITICAL: We only have registers R0-R12 available. R13=SP, R14=LR, R15=PC.
-		// If there are 15 colors, we can't load them all into registers.
-		// For now, let's just support up to 12 colors or use a different approach.
-		// The original Menu function uses colors sequentially, so we might not need all at once.
-		for (let i = 0; i < Math.min(colors.length, 12); i++) {
-			const reg = i;
+		// CRITICAL: We load Theme 0 colors into R1, R2, R3 as expected by the Menu functions.
+		// Theme 0 colors are at indices 0, 1, 2 in the non-interleaved colors array.
+		for (let i = 0; i < Math.min(colors.length, 3); i++) {
+			const reg = 1 + i; // R1, R2, R3
 			const color = colors[i];
 
-			// MOVW R{i}, #color_low
+			// MOVW R{reg}, #color_low
 			code.push(...encodeMovw(reg, color & 0xffff));
 
-			// MOVT R{i}, #color_high
+			// MOVT R{reg}, #color_high
 			code.push(...encodeMovt(reg, (color >> 16) & 0xffff));
 		}
 
