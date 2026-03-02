@@ -244,15 +244,15 @@ function discoverFlacFunctionAddress(firmwarePath: string): number {
 
 // Firmware versions (dynamic discovery - addresses discovered at runtime)
 const FIRMWARE_INFO = [
-	{ version: 'V1.8.0', file: 'HIFIEC80.IMG', subdir: 'ECHO MINI V1.8.0/ECHO MINI V1.8.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.4.0', file: 'HIFIEC40.IMG', subdir: 'ECHO MINI V2.4.0/ECHO MINI V2.4.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.5.0', file: 'HIFIEC50.IMG', subdir: 'ECHO MINI V2.5.0/ECHO MINI V2.5.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.6.0', file: 'HIFIEC60.IMG', subdir: 'ECHO MINI V2.6.0/ECHO MINI V2.6.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.7.0', file: 'HIFIEC70.IMG', subdir: 'ECHO MINI V2.7.0/ECHO MINI V2.7.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V2.8.0', file: 'HIFIEC80.IMG', subdir: 'ECHO MINI V2.8.0/ECHO MINI V2.8.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V3.0.0', file: 'HIFIEC00.IMG', subdir: 'ECHO MINI V3.0.0/ECHO MINI V3.0.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V3.1.0', file: 'HIFIEC10.IMG', subdir: 'ECHO MINI V3.1.0/ECHO MINI V3.1.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
-	{ version: 'V3.2.0', file: 'HIFIEC20.IMG', subdir: 'ECHO MINI V3.2.0/ECHO MINI V3.2.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null },
+	{ version: 'V1.8.0', file: 'HIFIEC80.IMG', subdir: 'ECHO MINI V1.8.0/ECHO MINI V1.8.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false }, // Now patchable!
+	{ version: 'V2.4.0', file: 'HIFIEC40.IMG', subdir: 'ECHO MINI V2.4.0/ECHO MINI V2.4.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false },
+	{ version: 'V2.5.0', file: 'HIFIEC50.IMG', subdir: 'ECHO MINI V2.5.0/ECHO MINI V2.5.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false },
+	{ version: 'V2.6.0', file: 'HIFIEC60.IMG', subdir: 'ECHO MINI V2.6.0/ECHO MINI V2.6.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false },
+	{ version: 'V2.7.0', file: 'HIFIEC70.IMG', subdir: 'ECHO MINI V2.7.0/ECHO MINI V2.7.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false },
+	{ version: 'V2.8.0', file: 'HIFIEC80.IMG', subdir: 'ECHO MINI V2.8.0/ECHO MINI V2.8.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false },
+	{ version: 'V3.0.0', file: 'HIFIEC00.IMG', subdir: 'ECHO MINI V3.0.0/ECHO MINI V3.0.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false },
+	{ version: 'V3.1.0', file: 'HIFIEC10.IMG', subdir: 'ECHO MINI V3.1.0/ECHO MINI V3.1.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false },
+	{ version: 'V3.2.0', file: 'HIFIEC20.IMG', subdir: 'ECHO MINI V3.2.0/ECHO MINI V3.2.0', flacAddr: 0, groundTruth: null as { flacColors: number[]; menuColors: number[] } | null, shouldFail: false },
 ];
 
 // Test scenarios
@@ -627,6 +627,8 @@ test_range = range(len(expected_flac)) if is_flac else range(1)
 for theme_idx in test_range:
     expected_color = expected_flac[theme_idx]
     STACK_BASE = 0x03050000
+    # Set known values for callee-saved registers to detect corruption
+    CALLER_R4, CALLER_R5, CALLER_R6, CALLER_R7, CALLER_R8 = 0x12345678, 0x87654321, 0xABCDEF00, 0xFEDCBA00, 0x11223344
     stackFrame = [CALLER_R4, RETURN_ADDR] if is_flac else []
     import struct
     for i in range(len(stackFrame)):
@@ -635,6 +637,10 @@ for theme_idx in test_range:
     mu.reg_write(UC_ARM_REG_SP, STACK_BASE - len(stackFrame) * 4)
     mu.reg_write(UC_ARM_REG_LR, RETURN_ADDR)
     mu.reg_write(UC_ARM_REG_R4, CALLER_R4)
+    mu.reg_write(UC_ARM_REG_R5, CALLER_R5)
+    mu.reg_write(UC_ARM_REG_R6, CALLER_R6)
+    mu.reg_write(UC_ARM_REG_R7, CALLER_R7)
+    mu.reg_write(UC_ARM_REG_R8, CALLER_R8)
     mu.reg_write(UC_ARM_REG_R1, theme_idx)
     mu.reg_write(UC_ARM_REG_PC, (FLAC_FUNC if is_flac else BL_ADDR) | 1)
     mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)
@@ -646,6 +652,10 @@ for theme_idx in test_range:
     if not bl_executed: all_success = False
     if (mu.reg_read(UC_ARM_REG_R1) & 0xFFFF) != expected_color: all_success = False
     if mu.reg_read(UC_ARM_REG_R4) != CALLER_R4: all_success = False
+    if mu.reg_read(UC_ARM_REG_R5) != CALLER_R5: all_success = False
+    if mu.reg_read(UC_ARM_REG_R6) != CALLER_R6: all_success = False
+    if mu.reg_read(UC_ARM_REG_R7) != CALLER_R7: all_success = False
+    if mu.reg_read(UC_ARM_REG_R8) != CALLER_R8: all_success = False
 
 if all_success: print("✅ PASS"); sys.exit(0)
 else: print("❌ FAIL"); sys.exit(1)
@@ -745,6 +755,28 @@ async function runComprehensiveTests() {
 	}
 
 	const firmwareResults = await generateAllFirmwaresInParallel(FIRMWARE_INFO);
+
+	// Negative testing: Verify that V1.8.0 (and any other shouldFail) actually failed patching
+	console.log('\n=== Verifying Expected Failures ===');
+	let negativeTestsPassed = 0;
+	let negativeTestsTotal = 0;
+	for (const firmware of FIRMWARE_INFO) {
+		if (firmware.shouldFail) {
+			const scenarios = buildScenariosForFirmware(firmware.groundTruth!);
+			for (const scenario of scenarios) {
+				negativeTestsTotal++;
+				const result = firmwareResults.get(`${firmware.version}_${scenario.id}_1`);
+				if (!result) {
+					negativeTestsPassed++;
+					// We don't log every single one to avoid noise, just a summary later or if it UNEXPECTEDLY passed
+				} else {
+					console.error(`  ✗ FAIL: ${firmware.version} ${scenario.id} was expected to fail patching but SUCCEEDED`);
+				}
+			}
+		}
+	}
+	console.log(`  ✓ Negative testing: ${negativeTestsPassed}/${negativeTestsTotal} failed as expected`);
+
 	const allTestCases: Array<{ id: string; firmwareVersion: string; scenarioName: string; patchNum: 1 | 2; test: () => Promise<any>; }> = [];
 
 	for (const firmware of FIRMWARE_INFO) {
