@@ -11,7 +11,7 @@ import { NopSlideFinder } from './nop-slide.js';
 import { CodeReferenceAnalyzer, type LandingPoint, type NopSlideAnalysis } from './code-reference-analyzer.js';
 import { PatchDetector } from './detector.js';
 import { createPatchMetadata, writePatchMetadata } from './metadata.js';
-import { discoverFlacFunction, discoverMenuFunction, findFunctionStart, discoverPatchesBySignature } from './discovery.js';
+import { discoverFlacFunction, discoverMenuFunction, findFunctionStart } from './discovery.js';
 import { ThemeColorExtractor } from './extractor.js';
 import { patchSwitchCaseFunction } from './switch-case-patcher.js';
 import {
@@ -882,11 +882,14 @@ export class ThemePatcher {
 	 * theme_1: MOVW R1, #color1; POP {R4, PC}
 	 * theme_0: MOVW R1, #color0; POP {R4, PC}
 	 */
-	private generateFlacHandler(colors: number[], returnAddr: number): Uint8Array {
+	private generateFlacHandler(colors: number[], _returnAddr: number): Uint8Array {
 		const code: number[] = [];
 
-		// Save callee-saved R4 and LR
-		code.push(...encodePush([4, 14]));  // PUSH {R4, LR}
+		// Save callee-saved registers R4-R8 and LR
+		// Per ARM AAPCS calling convention, R4-R11 must be preserved by callee
+		code.push(...encodePush([4, 5, 6, 7, 14]));  // PUSH {R4-R7, LR}
+		code.push(...encodeMov(3, 8));                // MOV R3, R8 (save R8 to temp register)
+		code.push(...encodePush([3]));                // PUSH {R3}
 
 		// Record BEQ positions for later patching
 		const beqPositions: Array<{ index: number; cmpAddr: number }> = [];
@@ -905,13 +908,15 @@ export class ThemePatcher {
 		for (let theme = 4; theme >= 0; theme--) {
 			themeSectionStarts[theme] = code.length;
 			const color = colors[theme];
-			
+
 			// Load color into R1
 			code.push(...encodeMovw(1, color & 0xffff));
 			code.push(...encodeMovt(1, (color >> 16) & 0xffff));
-			
-			// Restore R4 and return
-			code.push(...encodePop([4, 15]));  // POP {R4, PC}
+
+			// Restore callee-saved registers and return
+			code.push(...encodePop([3]));                // POP {R3}
+			code.push(...encodeMov(8, 3));               // MOV R8, R3 (restore R8)
+			code.push(...encodePop([4, 5, 6, 7, 15]));   // POP {R4-R7, PC}
 		}
 
 		// Now patch BEQ offsets

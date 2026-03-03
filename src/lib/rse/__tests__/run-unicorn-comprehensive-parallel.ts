@@ -590,16 +590,21 @@ actual_colors = []
 num_colors = 5 if is_flac else 3
 for i in range(num_colors):
     if is_flac:
-        # Theme section offset calculation:
-        #   PUSH {R4, LR} (2 bytes)
+        # Theme section offset calculation (FIXED for R4-R8 preservation):
+        #   PUSH {R4-R7, LR} (2 bytes)
+        #   MOV R3, R8 (2 bytes)
+        #   PUSH {R3} (2 bytes)
         #   4 * (CMP R1, #i; BEQ theme_i) (4 * 4 = 16 bytes)
-        # Theme i MOVW/MOVT at offset 2 + 16 + (4 - i) * 10 (reverse order)
-        movw_addr = HANDLER_START + 18 + (4 - i) * 10
+        #   Total before themes: 2 + 2 + 2 + 16 = 22 bytes
+        # Theme sections in reverse order (theme_4 first, theme_0 last):
+        #   Each theme: MOVW (4) + MOVT (4) + POP (2) + MOV (2) + POP (2) = 14 bytes
+        # Theme i MOVW/MOVT at offset 22 + (4 - i) * 14
+        movw_addr = HANDLER_START + 22 + (4 - i) * 14
     else:
         # Menu handler starts with MOVW/MOVT pairs immediately (0 offset)
         # We load R1, R2, R3 correctly
         movw_addr = HANDLER_START + i * 8
-        
+
     color = decode_movw(data, movw_addr)
     if color is None:
         print(f"ERROR: MOVW not found at 0x{movw_addr:X} for theme/index {i}")
