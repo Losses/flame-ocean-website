@@ -370,6 +370,96 @@ export class LanguagePatcher {
 	}
 
 	/**
+	 * Synchronous version of knockDownLanguage for use in patching workflows
+	 *
+	 * This version skips Unicorn verification since it's not needed for the patching use case.
+	 */
+	knockDownLanguageSync(options: Omit<LanguageKnockDownOptions, 'verifyWithUnicorn'>): LanguageKnockDownResult {
+		const {
+			languageIndex,
+			createBackup = true,
+			dryRun = false
+		} = options;
+
+		// Validate language index
+		if (!isValidLanguageIndex(languageIndex)) {
+			throw new InvalidLanguageIndexError(languageIndex, LANGUAGE_CONSTANTS.MAX_LANGUAGES);
+		}
+
+		// Check protection
+		if (isLanguageProtected(languageIndex)) {
+			const langInfo = this.extractor.getLanguage(languageIndex);
+			throw new ProtectedLanguageError(languageIndex, langInfo?.name ?? 'Unknown');
+		}
+
+		// Get language info
+		const langInfo = this.extractor.getLanguage(languageIndex);
+		if (!langInfo) {
+			throw new LanguageError(`Language ${languageIndex} not found`);
+		}
+
+		// Create backup if requested
+		let backup: Uint8Array | undefined;
+		if (createBackup) {
+			backup = this.createBackup();
+		}
+
+		// Calculate space to be freed
+		const nameEntrySize = LANGUAGE_CONSTANTS.ENTRY_SIZE;
+		const poolSize = LANGUAGE_CONSTANTS.POOL_SPACING;
+		const totalFreedBytes = nameEntrySize + poolSize;
+
+		const modifications: AddressModification[] = [];
+		const systemInfo = this.extractor.getSystemInfo();
+
+		try {
+			if (!dryRun) {
+				// Step 1: Rearrange language name table
+				this.rearrangeNameTable(languageIndex, modifications);
+
+				// Step 2: Rearrange menu string pools
+				this.rearrangeMenuPools(languageIndex, modifications);
+
+				// Step 3: Update language count check
+				this.updateLanguageCountCheck(modifications);
+
+				// Step 4: Clear freed space at the end
+				this.clearFreedSpace(languageIndex, modifications);
+			}
+
+			// Calculate new language count
+			const newLanguageCount = (systemInfo?.languageCount ?? LANGUAGE_CONSTANTS.MAX_LANGUAGES) - 1;
+
+			return {
+				success: true,
+				languageIndex,
+				languageName: langInfo.name,
+				freedBytes: totalFreedBytes,
+				newLanguageCount,
+				modifications,
+				backup,
+				error: undefined
+			};
+		} catch (error) {
+			// Rollback on error
+			if (backup) {
+				this.data = new Uint8Array(backup);
+			}
+
+			return {
+				success: false,
+				languageIndex,
+				languageName: langInfo.name,
+				freedBytes: 0,
+				newLanguageCount: systemInfo?.languageCount ?? LANGUAGE_CONSTANTS.MAX_LANGUAGES,
+				modifications: [],
+				backup,
+				error: error instanceof Error ? error.message : String(error)
+			};
+		}
+	}
+
+	/**
 	 * Rearrange language name table after deletion
 	 */
 	private rearrangeNameTable(deletedIndex: number, modifications: AddressModification[]): void {

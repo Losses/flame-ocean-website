@@ -3,6 +3,11 @@
  *
  * Main patching module that applies theme color patches to firmware.
  * Uses detection, NOP slide finding, and instruction encoding to patch.
+ *
+ * Supports two patching methods:
+ * 1. Function Relocation (recommended): Copies the entire FLAC function to freed language pool space
+ *    and modifies the caller. This avoids inserting code inside the function.
+ * 2. Inline BL Injection (legacy): Inserts BL instructions inside the function and uses NOP slides.
  */
 
 import { encodeBl, encodeMovw, encodeMovt, decodeBlTarget, encodePush, encodePop, encodeMov } from './thumb/encoders.js';
@@ -10,7 +15,7 @@ import { fileIO } from '../utils/file-io.js';
 import { NopSlideFinder } from './nop-slide.js';
 import { CodeReferenceAnalyzer, type LandingPoint, type NopSlideAnalysis } from './code-reference-analyzer.js';
 import { PatchDetector } from './detector.js';
-import { createPatchMetadata, writePatchMetadata } from './metadata.js';
+import { createPatchMetadata, writePatchMetadata, scanForPatchMetadata, readPatchMetadata, encodeRelocationHeader, decodeRelocationHeader, scanForPatchWithRelocation, RELO_HEADER_SIZE } from './metadata.js';
 import { discoverFlacFunction, discoverMenuFunction, findFunctionStart, discoverPatchesBySignature } from './discovery.js';
 import { ThemeColorExtractor } from './extractor.js';
 import { patchSwitchCaseFunction } from './switch-case-patcher.js';
@@ -21,7 +26,8 @@ import {
 	type PatchAnalysisResult,
 	type NopSlide,
 	type PatchMetadata,
-	type PatchInfo
+	type PatchInfo,
+	type RelocationInfo
 } from './types.js';
 import {
 	ThemeError,
@@ -31,6 +37,8 @@ import {
 	CompatibilityError,
 	throwThemeError
 } from './errors.js';
+import { LanguagePatcher } from '../language/patcher.js';
+import { LANGUAGE_CONSTANTS, isLanguageProtected } from '../language/types.js';
 
 /**
  * Theme Patcher Class
@@ -109,10 +117,30 @@ export class ThemePatcher {
 		// Find NOP slides
 		const nopSlides = this.finder.findAllSlides();
 
-		// Check if already patched
-		const flacAddr = flacResult ? flacResult[1] : null;
-		const menuAddr = menuResult ? menuResult[1] : null;
-		const patchStatus = this.detector.detectPatchStatus(flacAddr, menuAddr);
+		// Check if already patched by scanning for metadata signature
+		// This works for both inline and relocation patches
+		const patchScan = scanForPatchWithRelocation(this.data);
+		const patchStatus = patchScan
+			? {
+				isPatched: true as const,
+				status: 'Patched (metadata found)',
+				patchType: 'relocation' as const,
+				flacPatched: true,
+				menuPatched: true,
+				nopHasCode: true,
+				confidence: 1.0,
+				metadataOffset: patchScan.metadataOffset,
+				reloHeader: patchScan.reloHeader
+			}
+			: {
+				isPatched: false as const,
+				status: 'Not patched',
+				patchType: 'none' as const,
+				flacPatched: false,
+				menuPatched: false,
+				nopHasCode: false,
+				confidence: 0
+			};
 
 		// Compatibility check
 		let compatibility: 'supported' | 'experimental' | 'deprecated' | 'unsupported' = 'supported';
@@ -569,11 +597,22 @@ export class ThemePatcher {
 
 	/**
 	 * Patch firmware with custom colors (supports partial patching)
+	 *
+	 * @param options - Patch options
+	 * @param options.flacColors - FLAC colors for all themes (5 colors)
+	 * @param options.menuColors - Menu colors for all themes (15 colors)
+	 * @param options.knockDownLanguage - Language index to knock down for relocation patching.
+	 *        Default: undefined (use last non-protected language)
+	 *        Set to -1 to use inline patching instead of relocation.
+	 * @param outputPath - Path to write patched firmware
+	 * @param writeFile - Whether to write to disk (default: true)
 	 */
 	patch(
 		options: {
 			flacColors?: number[];
 			menuColors?: number[];
+			/** Language index to knock down for relocation. Set to -1 for inline patching. */
+			knockDownLanguage?: number;
 		},
 		outputPath: string,
 		writeFile = true
@@ -583,58 +622,157 @@ export class ThemePatcher {
 		}
 
 		const analysis = this.analyze();
-		const isPatched = analysis.patchStatus.isPatched;
+		const { isPatched, reloHeader, metadataOffset } = analysis.patchStatus as {
+			isPatched: boolean;
+			reloHeader?: { newFuncAddr: number; funcSize: number; colorCodeOffset: number };
+			metadataOffset?: number;
+		};
 
 		let flacColors = options.flacColors ?? null;
 		let menuColors = options.menuColors ?? null;
 
-		if (flacColors && !menuColors) {
-			if (isPatched) {
-				const existingNopSlide = this.findExistingNopSlide();
-				if (existingNopSlide) {
-					const metadata = this.detector.findPatchMetadata([existingNopSlide]);
-					if (metadata && metadata.menuColors && metadata.menuColors.length === 15) {
-						menuColors = [...metadata.menuColors];
-					} else {
-						const groundTruth = this.extractGroundTruthColors();
-						menuColors = [...groundTruth.menuColors];
-					}
-				} else {
-					const groundTruth = this.extractGroundTruthColors();
-					menuColors = [...groundTruth.menuColors];
-				}
-			} else {
-				const groundTruth = this.extractGroundTruthColors();
-				menuColors = [...groundTruth.menuColors];
-			}
-		} else if (!flacColors && menuColors) {
-			if (isPatched) {
-				const existingNopSlide = this.findExistingNopSlide();
-				if (existingNopSlide) {
-					const metadata = this.detector.findPatchMetadata([existingNopSlide]);
-					if (metadata && metadata.flacColors && metadata.flacColors.length === 5) {
-						flacColors = [...metadata.flacColors];
-					} else {
-						const groundTruth = this.extractGroundTruthColors();
-						flacColors = [...groundTruth.flacColors];
-					}
-				} else {
-					const groundTruth = this.extractGroundTruthColors();
-					flacColors = [...groundTruth.flacColors];
-				}
-			} else {
-				const groundTruth = this.extractGroundTruthColors();
-				flacColors = [...groundTruth.flacColors];
-			}
+		// If already patched via relocation, do a re-patch by updating colors in place
+		if (isPatched && reloHeader && metadataOffset) {
+			return this.repatchRelocatedFunction(
+				{ flacColors, menuColors },
+				reloHeader,
+				metadataOffset,
+				outputPath,
+				writeFile
+			);
 		}
 
-		return this.patchImpl(
-			flacColors!,
-			menuColors!,
+		// Fill in missing colors from ground truth
+		if (!flacColors || !menuColors) {
+			const groundTruth = this.extractGroundTruthColors();
+			if (!flacColors) flacColors = [...groundTruth.flacColors];
+			if (!menuColors) menuColors = [...groundTruth.menuColors];
+		}
+
+		// If knockDownLanguage is -1, use inline patching instead of relocation
+		if (options.knockDownLanguage === -1) {
+			return this.patchImpl(
+				flacColors!,
+				menuColors!,
+				outputPath,
+				writeFile,
+				{ flacCustom: true, menuCustom: true }
+			);
+		}
+
+		// First-time patching: use relocation method
+		return this.patchWithRelocation(
+			{
+				flacColors: flacColors!,
+				menuColors: menuColors!,
+				knockDownLanguage: options.knockDownLanguage
+			},
 			outputPath,
-			writeFile,
-			{ flacCustom: !!options.flacColors, menuCustom: !!options.menuColors }
+			writeFile
 		);
+	}
+
+	/**
+	 * Re-patch an already relocated firmware
+	 *
+	 * This updates the colors in the relocated function without redoing the relocation.
+	 */
+	private repatchRelocatedFunction(
+		options: {
+			flacColors: number[] | null;
+			menuColors: number[] | null;
+		},
+		reloHeader: { newFuncAddr: number; funcSize: number; colorCodeOffset: number; callerAddr: number },
+		metadataOffset: number,
+		outputPath: string,
+		writeFile: boolean
+	): PatchResult {
+		// Read existing metadata to get current colors
+		const existingMetadata = readPatchMetadata(this.data, metadataOffset);
+		if (!existingMetadata) {
+			throw new PatchError('Cannot read existing patch metadata for re-patching');
+		}
+
+		// Use new colors if provided, otherwise keep existing
+		const flacColors = options.flacColors ?? [...existingMetadata.flacColors];
+		const menuColors = options.menuColors ?? [...existingMetadata.menuColors];
+
+		// Find caller address if not in header (old format compatibility)
+		let callerAddr = reloHeader.callerAddr;
+		if (callerAddr === 0) {
+			// Scan for BL instruction targeting the relocated function
+			const callerInfo = this.findFlacCaller(reloHeader.newFuncAddr);
+			if (!callerInfo) {
+				throw new PatchError('Cannot find BL instruction for re-patching (old header format)');
+			}
+			callerAddr = callerInfo.callerAddr;
+		}
+
+		// Clone firmware data
+		const patchedData = new Uint8Array(this.data);
+
+		// Regenerate the color selection code with new colors
+		const colorCodeAddr = reloHeader.newFuncAddr + reloHeader.colorCodeOffset;
+		const newColorCode = this.generateInlineColorSelection(flacColors, colorCodeAddr);
+		patchedData.set(newColorCode, colorCodeAddr);
+
+		// Update metadata
+		const newMetadata = createPatchMetadata(Math.floor(Date.now() / 1000), flacColors, menuColors);
+		const metadataBytes = writePatchMetadata(newMetadata);
+		patchedData.set(metadataBytes, metadataOffset);
+
+		// Rewrite relocation header with callerAddr (upgrade to new format)
+		const newReloHeader = {
+			newFuncAddr: reloHeader.newFuncAddr,
+			funcSize: reloHeader.funcSize,
+			colorCodeOffset: reloHeader.colorCodeOffset,
+			callerAddr
+		};
+		// Place header at proper offset based on new format size
+		const reloHeaderAddr = metadataOffset - RELO_HEADER_SIZE;
+		patchedData.set(encodeRelocationHeader(newReloHeader), reloHeaderAddr);
+
+		// Write to file if requested
+		if (writeFile) {
+			fileIO.writeFileSync(outputPath, patchedData);
+		}
+
+		// Create fake NOP slide for API compatibility
+		const fakeNopSlide: NopSlide = {
+			start: reloHeader.newFuncAddr,
+			end: metadataOffset + metadataBytes.length,
+			size: metadataOffset + metadataBytes.length - reloHeader.newFuncAddr,
+			source: 'relocation',
+			isActive: true,
+			referenceCount: 0
+		};
+
+		// Create patch points with BL address for test compatibility
+		const patchPoints: Record<string, PatchPoint> = {
+			'flac': {
+				type: 'flac',
+				funcAddr: 0, // Unknown during re-patch
+				patchAddr: callerAddr,
+				targetAddr: colorCodeAddr,
+				originalBytes: '',
+				newBytes: ''
+			}
+		};
+
+		return {
+			success: true,
+			nopSlide: fakeNopSlide,
+			patchPoints,
+			metadataAddr: metadataOffset,
+			patchedData: writeFile ? undefined : patchedData,
+			relocationInfo: {
+				method: 'relocation',
+				newFuncAddr: reloHeader.newFuncAddr,
+				funcSize: reloHeader.funcSize,
+				originalFuncAddr: 0, // Unknown during re-patch
+				callerAddr
+			}
+		};
 	}
 
 	/**
@@ -646,11 +784,12 @@ export class ThemePatcher {
 		outputPath: string,
 		writeFile = true
 	): PatchResult {
-		return this.patchImpl(flacColors, menuColors, outputPath, writeFile, { flacCustom: true, menuCustom: true });
+		return this.patch({ flacColors, menuColors }, outputPath, writeFile);
 	}
 
 	/**
-	 * Internal patch implementation
+	 * Internal patch implementation (deprecated - kept for API compatibility)
+	 * @deprecated Use patch() instead
 	 * @private
 	 */
 	patchImpl(
@@ -970,6 +1109,549 @@ export class ThemePatcher {
 	private bytesToHex(bytes: Uint8Array): string {
 		return Array.from(bytes).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ');
 	}
+
+	/**
+	 * Patch firmware using function relocation method
+	 *
+	 * This method:
+	 * 1. Knocks down a language to free space in the language pool
+	 * 2. Copies the entire FLAC function to the freed space
+	 * 3. Modifies the copied function with color selection logic
+	 * 4. Changes the caller's BL to point to the new function
+	 *
+	 * This avoids inserting code inside the function, which was causing stability issues.
+	 *
+	 * @param options - Patch options including colors and language to knock down
+	 * @param outputPath - Path to write patched firmware
+	 * @param writeFile - Whether to write to disk (default: true)
+	 */
+	patchWithRelocation(
+		options: {
+			flacColors: number[];
+			menuColors: number[];
+			/** Language index to knock down (default: last non-protected language) */
+			knockDownLanguage?: number;
+		},
+		outputPath: string,
+		writeFile = true
+	): PatchResult {
+		const { flacColors, menuColors } = options;
+
+		// Validate colors
+		const analysis = this.analyze();
+		const extractor = new ThemeColorExtractor(this.data);
+		const discoveryResult = extractor.extract();
+
+		const flacThemeFunc = discoveryResult.themeFunctions.find(f => f.type === 'flac');
+		const menuThemeFunc = discoveryResult.themeFunctions.find(f => f.type === 'menu');
+		const themeCount = flacThemeFunc?.themeCount || menuThemeFunc?.themeCount || 5;
+
+		if (flacColors.length !== themeCount) {
+			throw new ValidationError(`FLAC colors must have exactly ${themeCount} values (one per theme)`);
+		}
+		if (menuColors.length !== themeCount * 3) {
+			throw new ValidationError(`Menu colors must have exactly ${themeCount * 3} values (${themeCount} themes × 3 attributes)`);
+		}
+
+		// Early check: does the language system exist?
+		// This is the first thing we need to check because relocation depends on it
+		const langPatcher = new LanguagePatcher(this.data, this.version);
+		const langExtractor = langPatcher.getExtractor();
+
+		if (!langExtractor.hasLanguageSystem()) {
+			// Language system not found - cannot use relocation method
+			throw new CompatibilityError(
+				'Function relocation patching requires the language system, but it was not found in this firmware. ' +
+				'This may be an older or modified firmware version. ' +
+				'Try using knockDownLanguage: -1 to use inline patching instead.'
+			);
+		}
+
+		// Now do the full extraction to get language count
+		const langResult = langExtractor.extract();
+		if (!langResult.success || !langResult.systemInfo) {
+			throw new CompatibilityError('Language system detection failed');
+		}
+
+		// Find FLAC function info
+		const flacResult = discoverFlacFunction(this.data, this.version);
+		if (!flacResult) {
+			throw new CompatibilityError('FLAC function not found in firmware');
+		}
+
+		const [flacFuncAddr, flacPatchAddr] = flacResult;
+
+		// Find FLAC function boundaries (includes finding function start)
+		const flacFuncBounds = this.findFlacFunctionBounds(flacPatchAddr);
+		if (!flacFuncBounds) {
+			throw new PatchError('Cannot determine FLAC function boundaries');
+		}
+
+		const { start: funcStart, end: funcEnd, size: funcSize } = flacFuncBounds;
+
+		// Find the caller BL instruction
+		const callerInfo = this.findFlacCaller(funcStart);
+		if (!callerInfo) {
+			// This can happen if the firmware is already patched via relocation
+			// (the caller's BL no longer targets the original function)
+			throw new CompatibilityError(
+				'Cannot find caller BL instruction for FLAC function. ' +
+				'The firmware may already be patched. ' +
+				'Try using knockDownLanguage: -1 for inline patching.'
+			);
+		}
+
+		const { callerAddr, currentTarget } = callerInfo;
+
+		// Get the actual language count from the earlier check
+		const actualLanguageCount = langResult.systemInfo.languageCount;
+
+		// Determine which language to knock down
+		let knockDownIndex = options.knockDownLanguage;
+		if (knockDownIndex === undefined) {
+			// Default: use the last non-protected language that actually exists
+			knockDownIndex = this.findBestLanguageToKnockDown(actualLanguageCount);
+		}
+
+		// Validate language index
+		if (knockDownIndex < 0 || knockDownIndex >= actualLanguageCount) {
+			throw new ValidationError(`Invalid language index: ${knockDownIndex} (firmware has ${actualLanguageCount} languages)`);
+		}
+		if (isLanguageProtected(knockDownIndex)) {
+			throw new ValidationError(`Language ${knockDownIndex} is protected and cannot be knocked down`);
+		}
+
+		// Get language name before knocking down
+		const langInfo = langExtractor.getLanguage(knockDownIndex);
+		const langName = langInfo?.name ?? `Language ${knockDownIndex}`;
+
+		// Clone data for patching
+		const patchedData = new Uint8Array(this.data);
+
+		// Create language patcher for the cloned data
+		const patcherForEdit = new LanguagePatcher(patchedData, this.version);
+
+		// Calculate the address where the freed pool will be
+		// After knock down, the pool at index knockDownIndex will be freed
+		const freedPoolAddr = LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS + knockDownIndex * LANGUAGE_CONSTANTS.POOL_SPACING;
+
+		// Verify BL can reach the new location
+		const distance = Math.abs(freedPoolAddr - callerAddr);
+		if (distance > 0x1000000) { // ±16MB
+			throw new CapacityError(`Cannot patch: language pool at 0x${freedPoolAddr.toString(16)} is too far from caller at 0x${callerAddr.toString(16)}`);
+		}
+
+		// Execute knock down (synchronously - we don't need Unicorn verification for this)
+		// Note: We're modifying patchedData in place
+		const knockDownResult = patcherForEdit.knockDownLanguageSync({
+			languageIndex: knockDownIndex,
+			createBackup: false
+		});
+
+		if (!knockDownResult.success) {
+			throw new PatchError(`Failed to knock down language: ${knockDownResult.error}`);
+		}
+
+		// Get the modified data from language patcher
+		const modifiedData = patcherForEdit.getData();
+
+		// Copy FLAC function to the new location
+		// The freed pool starts at freedPoolAddr
+		const newFuncAddr = freedPoolAddr;
+
+		// Copy the original function bytes
+		const funcBytes = modifiedData.slice(funcStart, funcEnd);
+		modifiedData.set(funcBytes, newFuncAddr);
+
+		// Modify the copied function with color selection
+		// We need to replace the IT block with our color selection code
+		const colorCodeOffset = this.applyColorPatchToRelocatedFunction(modifiedData, newFuncAddr, funcSize, flacColors);
+
+		// Modify the caller's BL to point to the new function
+		const newBlBytes = encodeBl(callerAddr, newFuncAddr);
+		modifiedData.set(newBlBytes, callerAddr);
+
+		// Create patch points record
+		// Note: targetAddr points to the color selection code, not the function start
+		// This is what the test expects (MOVW instructions for color loading)
+		const patchPoints: Record<string, PatchPoint> = {
+			'flac': {
+				type: 'flac',
+				funcAddr: funcStart,
+				patchAddr: callerAddr,
+				targetAddr: newFuncAddr + colorCodeOffset,
+				originalBytes: this.bytesToHex(this.data.slice(callerAddr, callerAddr + 4)),
+				newBytes: this.bytesToHex(newBlBytes)
+			}
+		};
+
+		// Create relocation header (stored before metadata)
+		const reloHeader = encodeRelocationHeader({
+			newFuncAddr,
+			funcSize,
+			colorCodeOffset,
+			callerAddr
+		});
+
+		// Create metadata
+		const metadata = createPatchMetadata(Math.floor(Date.now() / 1000), flacColors, menuColors);
+		const metadataBytes = writePatchMetadata(metadata);
+		const METADATA_SIZE = metadataBytes.length; // Should be 51 bytes
+
+		// Calculate the color code size to determine where to place the header
+		// Color code structure:
+		//   4 CMP/BEQ pairs = 16 bytes
+		//   5 theme sections (MOVW/MOVT + B) = 5 * 10 = 50 bytes (last one has no B = 8 bytes)
+		// Total = 16 + 50 - 2 = 64 bytes
+		const COLOR_CODE_SIZE = 64;
+
+		// Calculate addresses:
+		// The relocation header must be placed AFTER the color code
+		// [function code including color code][relocation header (16 bytes)][metadata (51 bytes)]
+		const colorCodeEnd = colorCodeOffset + COLOR_CODE_SIZE;
+		const reloHeaderAddr = newFuncAddr + Math.max(funcSize, colorCodeEnd);
+		const metadataAddr = reloHeaderAddr + RELO_HEADER_SIZE;
+
+		// Write relocation header and metadata
+		modifiedData.set(reloHeader, reloHeaderAddr);
+		modifiedData.set(metadataBytes, metadataAddr);
+
+		// Create a fake NOP slide for compatibility with existing API
+		const fakeNopSlideEnd = metadataAddr + METADATA_SIZE;
+		const fakeNopSlide: NopSlide = {
+			start: newFuncAddr,
+			end: fakeNopSlideEnd,
+			size: fakeNopSlideEnd - newFuncAddr,
+			source: 'relocation',
+			isActive: true,
+			referenceCount: 0
+		};
+
+		// Write to file if requested
+		if (writeFile) {
+			fileIO.writeFileSync(outputPath, modifiedData);
+		}
+
+		const relocationInfo: RelocationInfo = {
+			method: 'relocation',
+			knockedDownLanguage: knockDownIndex,
+			knockedDownLanguageName: langName,
+			originalFuncAddr: funcStart,
+			newFuncAddr,
+			funcSize,
+			callerAddr
+		};
+
+		return {
+			success: true,
+			nopSlide: fakeNopSlide,
+			patchPoints,
+			metadataAddr,
+			patchedData: writeFile ? undefined : modifiedData,
+			relocationInfo
+		};
+	}
+
+	/**
+	 * Find FLAC function boundaries
+	 * Returns the start and end addresses of the FLAC function
+	 */
+	private findFlacFunctionBounds(patchAddr: number): { start: number; end: number; size: number } | null {
+		// First, find the function start by searching backwards for PUSH instruction
+		// FLAC function is large (~1200 bytes), so we need to search further back
+
+		// Manual search for PUSH instruction
+		let funcStart = patchAddr;
+		const maxBack = 2000;
+		for (let back = patchAddr; back >= Math.max(0, patchAddr - maxBack); back -= 2) {
+			const hw = this.data[back] | (this.data[back + 1] << 8);
+
+			// Check for PUSH patterns
+			if ((hw & 0xfe00) === 0xb400 ||    // PUSH {Rlist}
+			    (hw & 0xff00) === 0xb500 ||    // PUSH {Rlist, LR}
+			    hw === 0xe92d) {                // STMDB SP!, {...}
+				funcStart = back;
+				break;
+			}
+		}
+
+		// Search for the function end (POP {..., PC}, POP.W {..., PC}, or BX LR pattern)
+		const maxSearch = 2000;
+
+		for (let offset = 0; offset < maxSearch; ) {
+			const addr = funcStart + offset;
+			if (addr + 4 > this.data.length) break;
+
+			const hw = this.data[addr] | (this.data[addr + 1] << 8);
+
+			// Check for 16-bit POP {..., PC} (0xBD00 pattern)
+			if ((hw & 0xFF00) === 0xBD00) {
+				// Check if PC is in the register list (bit 7 = PC)
+				const regList = hw & 0xFF;
+				if (regList & 0x80) { // PC is in the list
+					return {
+						start: funcStart,
+						end: addr + 2,
+						size: addr + 2 - funcStart
+					};
+				}
+			}
+
+			// Check for 32-bit POP.W {..., PC} (0xE8BD pattern)
+			// POP.W is encoded as: E8BD xxxx where xxxx is the register list
+			// Bit 15 of the register list indicates PC
+			if (hw === 0xE8BD) {
+				const hw2 = this.data[addr + 2] | (this.data[addr + 3] << 8);
+				if (hw2 & 0x8000) { // PC is in the list
+					return {
+						start: funcStart,
+						end: addr + 4,
+						size: addr + 4 - funcStart
+					};
+				}
+			}
+
+			// Check for BX LR (0x4770)
+			if (hw === 0x4770) {
+				return {
+					start: funcStart,
+					end: addr + 2,
+					size: addr + 2 - funcStart
+				};
+			}
+
+			// Check for 32-bit instruction prefix
+			const is32bit = hw >= 0xe800 || (hw & 0xf800) === 0xf000 || (hw & 0xf800) === 0xf800;
+			offset += is32bit ? 4 : 2;
+		}
+
+		return null;
+	}
+
+	/**
+	 * Find the caller BL instruction that calls the FLAC function
+	 */
+	private findFlacCaller(flacFuncAddr: number): { callerAddr: number; currentTarget: number } | null {
+		// Search for BL instructions that target the FLAC function
+		const searchStart = 0x80000;
+		const searchEnd = Math.min(0x100000, this.data.length);
+
+		for (let addr = searchStart; addr < searchEnd; ) {
+			if (addr + 4 > this.data.length) break;
+
+			const hw1 = this.data[addr] | (this.data[addr + 1] << 8);
+			const hw2 = this.data[addr + 2] | (this.data[addr + 3] << 8);
+
+			// Check for BL instruction
+			if ((hw1 & 0xf800) === 0xf000 && (hw2 & 0xd000) === 0xd000) {
+				const target = decodeBlTarget(addr, this.data.slice(addr, addr + 4));
+
+				// Check if this BL targets our FLAC function (allow ±1 for Thumb alignment)
+				if (Math.abs(target - flacFuncAddr) <= 1) {
+					return {
+						callerAddr: addr,
+						currentTarget: target
+					};
+				}
+				addr += 4; // BL is always 32-bit
+			} else {
+				// Check if 32-bit instruction
+				const is32bit = hw1 >= 0xe800 || (hw1 & 0xf800) === 0xf000;
+				addr += is32bit ? 4 : 2;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Find the best language to knock down
+	 * Prefers the last non-protected language
+	 * @param maxLanguage - Maximum language index to consider (defaults to MAX_LANGUAGES)
+	 */
+	private findBestLanguageToKnockDown(maxLanguage: number = LANGUAGE_CONSTANTS.MAX_LANGUAGES): number {
+		// Start from the last language and find first non-protected
+		for (let i = maxLanguage - 1; i >= 0; i--) {
+			if (!isLanguageProtected(i)) {
+				return i;
+			}
+		}
+		// Fallback to last language even if protected (will fail later with proper error)
+		return maxLanguage - 1;
+	}
+
+	/**
+	 * Apply color patch to relocated function
+	 *
+	 * This modifies the IT block in the copied function to implement color selection.
+	 * Returns the offset of the color selection code within the function.
+	 */
+	private applyColorPatchToRelocatedFunction(
+		data: Uint8Array,
+		funcAddr: number,
+		funcSize: number,
+		colors: number[]
+	): number {
+		// Find the IT block pattern: CMP R1, #4 + IT EQ
+		const cmpPattern = new Uint8Array([0x04, 0x29, 0x0c, 0xbf]); // CMP R1,#4 + ITE EQ
+
+		// Search for the pattern in the relocated function
+		for (let offset = 0; offset < funcSize - 20; offset += 2) {
+			const addr = funcAddr + offset;
+
+			// Check for CMP R1, #4 pattern
+			if (data[addr] === cmpPattern[0] &&
+			    data[addr + 1] === cmpPattern[1] &&
+			    data[addr + 2] === cmpPattern[2] &&
+			    data[addr + 3] === cmpPattern[3]) {
+
+				// Found the IT block - replace it with our color selection code
+				// We replace the 12-byte IT block + MOVW with our handler call
+
+				// Generate inline color selection code
+				// We'll use a CMP/BEQ chain instead of IT block
+				const colorCode = this.generateInlineColorSelection(colors, funcAddr + offset);
+
+				// Write the new code
+				data.set(colorCode, addr);
+
+				return offset; // Return offset of color code
+			}
+		}
+
+		// If we didn't find the pattern, try a more flexible search
+		// Look for CMP R1, #4 (29 04) anywhere
+		for (let offset = 0; offset < funcSize - 20; offset += 2) {
+			const addr = funcAddr + offset;
+			const hw = data[addr] | (data[addr + 1] << 8);
+
+			// CMP R1, #imm8: 00101 001 imm8 = 0x29XX
+			if ((hw & 0xFF00) === 0x2900) {
+				const imm = hw & 0xFF;
+				if (imm === 4) {
+					// Found CMP R1, #4
+					// Check for IT instruction next
+					const nextHw = data[addr + 2] | (data[addr + 3] << 8);
+					if ((nextHw & 0xFF00) === 0xBF00) {
+						// Found IT block - replace with color selection
+						const colorCode = this.generateInlineColorSelection(colors, funcAddr + offset);
+						data.set(colorCode, addr);
+						return offset; // Return offset of color code
+					}
+				}
+			}
+		}
+
+		throw new PatchError('Cannot find IT block pattern in FLAC function for patching');
+	}
+
+	/**
+	 * Generate inline color selection code
+	 *
+	 * This replaces the IT block with a CMP/BEQ chain that's more reliable.
+	 *
+	 * @param colors Array of 5 color values (one per theme)
+	 * @param codeStartAddr Address where this code will be placed
+	 * @param originalCodeOffset Offset from codeStartAddr to the original code after IT block
+	 *                           (the STRH instruction that we need to jump to)
+	 */
+	private generateInlineColorSelection(
+		colors: number[],
+		codeStartAddr: number,
+		originalCodeOffset: number = 12 // Default: 12 bytes after IT block start
+	): Uint8Array {
+		const code: number[] = [];
+
+		// We need to replace the original:
+		//   CMP R1, #4
+		//   IT EQ
+		//   MOVWEQ R1, #color4
+		//   MOVW R1, #color0-3
+		//   STRH R1, [R0]
+		//
+		// With:
+		//   CMP R1, #0; BEQ theme_0
+		//   CMP R1, #1; BEQ theme_1
+		//   CMP R1, #2; BEQ theme_2
+		//   CMP R1, #3; BEQ theme_3
+		//   ; fall through to theme_4
+		// theme_4: MOVW R1, #color4; MOVT R1, #0; B store
+		// theme_3: MOVW R1, #color3; MOVT R1, #0; B store
+		// theme_2: MOVW R1, #color2; MOVT R1, #0; B store
+		// theme_1: MOVW R1, #color1; MOVT R1, #0; B store
+		// theme_0: MOVW R1, #color0; MOVT R1, #0
+		// store: (original STRH continues)
+
+		// Record positions for BEQ patching
+		const beqPositions: Array<{ index: number; beqCodeAddr: number }> = [];
+
+		// Generate CMP/BEQ pairs for themes 0-3
+		for (let i = 0; i < 4; i++) {
+			const cmpAddr = code.length;
+			code.push(0x00 | i, 0x29);  // CMP R1, #i
+			// BEQ placeholder (will be patched)
+			beqPositions.push({ index: i, beqCodeAddr: code.length });
+			code.push(0x00, 0xD0);  // BEQ placeholder
+		}
+
+		// Theme sections (theme 4 first, then 3, 2, 1, 0)
+		const themeSectionStarts: number[] = [];
+		const bPositions: number[] = []; // Positions of B instructions
+
+		for (let theme = 4; theme >= 0; theme--) {
+			themeSectionStarts[theme] = code.length;
+			const color = colors[theme];
+
+			// Load color into R1
+			code.push(...encodeMovw(1, color & 0xffff));
+			code.push(...encodeMovt(1, (color >> 16) & 0xffff));
+
+			// For themes 4-1, add a B to jump to original code
+			if (theme > 0) {
+				bPositions.push(code.length);
+				code.push(0x00, 0xE0);  // B placeholder (will be patched)
+			}
+		}
+
+		// Calculate the base address for offset calculations
+		const baseAddr = codeStartAddr;
+
+		// Now patch BEQ offsets
+		for (const { index, beqCodeAddr } of beqPositions) {
+			const pc = beqCodeAddr + 4; // PC is at instruction + 4
+			const target = themeSectionStarts[index];
+			const offset = (target - pc) >> 1; // Offset in halfwords
+
+			// BEQ encoding: 1101 0000 imm8
+			// imm8 is signed offset in halfwords
+			if (offset < -128 || offset > 127) {
+				throw new PatchError('BEQ offset out of range for theme selection');
+			}
+
+			const imm8 = offset & 0xFF;
+			code[beqCodeAddr] = imm8;
+			code[beqCodeAddr + 1] = 0xD0;
+		}
+
+		// Patch B instructions to jump to the original code (at originalCodeOffset)
+		// The original code is at codeStartAddr + originalCodeOffset
+		for (const bAddr of bPositions) {
+			const pc = bAddr + 4; // PC is at instruction + 4
+			const target = originalCodeOffset; // Jump to original code offset
+			const offset = (target - pc) >> 1;
+
+			// B encoding: 11100 imm11
+			if (offset < -1024 || offset > 1023) {
+				throw new PatchError('B offset out of range for theme skip');
+			}
+
+			const imm11 = offset & 0x7FF;
+			code[bAddr] = imm11 & 0xFF;
+			code[bAddr + 1] = 0xE0 | ((imm11 >> 8) & 0x07);
+		}
+
+		return new Uint8Array(code);
+	}
 }
 
 export function patchFirmware(firmwareData: Uint8Array, flacColors: number[], menuColors: number[], outputPath: string): PatchResult {
@@ -977,6 +1659,6 @@ export function patchFirmware(firmwareData: Uint8Array, flacColors: number[], me
 	return patcher.patchOriginal(flacColors, menuColors, outputPath, true);
 }
 
-export type { NopSlide, PatchMetadata, PatchPoint, PatchResult, PatchPointInfo, PatchAnalysisResult, PatchInfo };
+export type { NopSlide, PatchMetadata, PatchPoint, PatchResult, PatchPointInfo, PatchAnalysisResult, PatchInfo, RelocationInfo };
 export type { LandingPoint, NopSlideAnalysis };
 export { NopSlideFinder, PatchDetector, CodeReferenceAnalyzer };

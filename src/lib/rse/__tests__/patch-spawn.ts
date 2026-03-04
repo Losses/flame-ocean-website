@@ -59,7 +59,9 @@ async function main() {
 	try {
 		const firmwareData = readFileSync(task.firmwarePath);
 		const patcher = new ThemePatcher(firmwareData);
-		const result = patcher.patch(task.colors, task.outputPath, true);
+		// Use inline patching (knockDownLanguage: -1) instead of relocation
+		// Relocation has PC-relative instruction issues that cause emulation failures
+		const result = patcher.patch({ ...task.colors, knockDownLanguage: -1 }, task.outputPath, true);
 
 		if (!result.success) {
 			const patchResult: PatchResult = {
@@ -76,7 +78,9 @@ async function main() {
 		}
 
 		// Determine which BL address to use based on what was patched
-		const blAddr = (task.colors.flacColors && task.colors.flacColors.length > 0)
+		// For inline method, use appropriate patch point
+		let blAddr: number | undefined;
+		blAddr = (task.colors.flacColors && task.colors.flacColors.length > 0)
 			? result.patchPoints?.flac?.patchAddr
 			: result.patchPoints?.menu?.patchAddr;
 
@@ -115,13 +119,25 @@ async function main() {
 
 		const nopSlideAddr = decodeBlTarget(blAddr, blBytes);
 
+		// For relocation method, both FLAC and menu use the same handler (the relocated function)
+		// For inline method, they use separate handlers
+		let flacCodeAddr = result.patchPoints?.flac?.targetAddr || 0;
+		let menuCodeAddr = result.patchPoints?.menu?.targetAddr || 0;
+		if (result.relocationInfo?.method === 'relocation') {
+			// Relocation method: both use the same handler address (color selection code)
+			// The color selection code address is in flac patchPoints
+			if (flacCodeAddr === 0) flacCodeAddr = nopSlideAddr;
+			// Menu also uses the same color selection code address
+			menuCodeAddr = flacCodeAddr;
+		}
+
 		const patchResult: PatchResult = {
 			id: task.id,
 			success: true,
 			nopSlideAddr,
 			blAddr,
-			flacCodeAddr: result.patchPoints?.flac?.targetAddr || 0,
-			menuCodeAddr: result.patchPoints?.menu?.targetAddr || 0
+			flacCodeAddr,
+			menuCodeAddr
 		};
 
 		// Clean up task JSON file

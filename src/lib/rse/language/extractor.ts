@@ -15,9 +15,6 @@ import {
 	LANGUAGE_CONSTANTS,
 	getLanguageEncoding,
 	isLanguageProtected,
-	calculateNameEntryAddress,
-	calculatePoolAddress,
-	calculateStringEntryAddress,
 	isValidLanguageIndex
 } from './types.js';
 import {
@@ -35,6 +32,10 @@ export class LanguageExtractor {
 	private readonly data: Uint8Array;
 	private readonly version: string;
 	private cachedSystemInfo: LanguageSystemInfo | null = null;
+	/** Detected name table address (found by searching for Chinese name pattern) */
+	private detectedNameTableAddr: number | null = null;
+	/** Detected first pool address */
+	private detectedFirstPoolAddr: number | null = null;
 
 	/**
 	 * Create a new LanguageExtractor
@@ -79,9 +80,9 @@ export class LanguageExtractor {
 			this.cachedSystemInfo = {
 				version: this.version,
 				languageCount,
-				nameTableAddress: LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS,
+				nameTableAddress: this.detectedNameTableAddr ?? LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS,
 				nameTableSize: languageCount * LANGUAGE_CONSTANTS.ENTRY_SIZE,
-				firstPoolAddress: LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS,
+				firstPoolAddress: this.detectedFirstPoolAddr ?? LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS,
 				poolSpacing: LANGUAGE_CONSTANTS.POOL_SPACING,
 				languageCountCheckAddress: LANGUAGE_CONSTANTS.LANGUAGE_COUNT_CHECK_ADDRESS,
 				originalLanguageCountValue: LANGUAGE_CONSTANTS.MAX_LANGUAGES - 1, // 20 (0-indexed check)
@@ -111,6 +112,13 @@ export class LanguageExtractor {
 			}
 		}
 		return this.cachedSystemInfo;
+	}
+
+	/**
+	 * Quick check if language system exists (without full extraction)
+	 */
+	hasLanguageSystem(): boolean {
+		return this.detectLanguageSystem();
 	}
 
 	/**
@@ -150,34 +158,166 @@ export class LanguageExtractor {
 
 	/**
 	 * Detect if language system exists in firmware
+	 *
+	 * Uses search-based detection to find language system across different firmware versions.
+	 * Searches for Chinese name "简体中文" pattern to locate the name table.
 	 */
 	private detectLanguageSystem(): boolean {
-		// Check if language name table has valid entries
-		const nameTableAddr = LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS;
-		if (nameTableAddr + LANGUAGE_CONSTANTS.ENTRY_SIZE > this.data.length) {
+		// If already detected, return cached result
+		if (this.detectedNameTableAddr !== null) {
+			return true;
+		}
+
+		// Try hardcoded V3.1.0 addresses first (fast path)
+		if (this.tryDetectAtAddress(LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS, LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS)) {
+			return true;
+		}
+
+		// Search for Chinese name "简体中文" in UTF-16 LE
+		// Pattern: 80 7B 53 4F 2D 4E 87 65 (简体中文)
+		const chinesePattern = new Uint8Array([0x80, 0x7B, 0x53, 0x4F, 0x2D, 0x4E, 0x87, 0x65]);
+
+		// Search in typical firmware regions (0x700000 - 0x800000)
+		const searchStart = 0x700000;
+		const searchEnd = Math.min(0x800000, this.data.length - chinesePattern.length);
+
+		for (let addr = searchStart; addr < searchEnd; addr += 2) {
+			// Quick check for first 2 bytes
+			if (this.data[addr] === 0x80 && this.data[addr + 1] === 0x7B) {
+				// Check full pattern
+				let match = true;
+				for (let i = 2; i < chinesePattern.length; i++) {
+					if (this.data[addr + i] !== chinesePattern[i]) {
+						match = false;
+						break;
+					}
+				}
+
+				if (match) {
+					// Found Chinese name - now find the pool
+					const poolAddr = this.findFirstPoolFromNameTable(addr);
+					if (poolAddr !== null) {
+						this.detectedNameTableAddr = addr;
+						this.detectedFirstPoolAddr = poolAddr;
+						return true;
+					}
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Try to detect language system at specific addresses
+	 */
+	private tryDetectAtAddress(nameTableAddr: number, poolAddr: number): boolean {
+		if (nameTableAddr + 4 > this.data.length) {
+			return false;
+		}
+		if (poolAddr + 4 > this.data.length) {
 			return false;
 		}
 
 		// Check first language name entry (Chinese) - should NOT have FF FF prefix
 		const firstEntry = this.data.slice(nameTableAddr, nameTableAddr + 4);
-		// Language names don't have FF FF prefix
 		if (firstEntry[0] === 0xFF && firstEntry[1] === 0xFF) {
-			// This might be a different structure
 			return false;
 		}
 
 		// Check first menu pool - should have FF FF prefix
-		const poolAddr = LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS;
-		if (poolAddr + LANGUAGE_CONSTANTS.ENTRY_SIZE > this.data.length) {
-			return false;
-		}
-
 		const firstPoolEntry = this.data.slice(poolAddr, poolAddr + 2);
 		if (firstPoolEntry[0] !== 0xFF || firstPoolEntry[1] !== 0xFF) {
 			return false;
 		}
 
+		// Valid detection
+		this.detectedNameTableAddr = nameTableAddr;
+		this.detectedFirstPoolAddr = poolAddr;
 		return true;
+	}
+
+	/**
+	 * Find first menu pool from name table address
+	 *
+	 * The pool is typically at a fixed offset before the name table.
+	 * We search backwards for FF FF pattern that indicates menu pool start.
+	 */
+	private findFirstPoolFromNameTable(nameTableAddr: number): number | null {
+		// Try V3.1.0 offset first (0x15DB8)
+		const v310Offset = LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS - LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS;
+		const expectedPool = nameTableAddr - v310Offset;
+
+		if (expectedPool >= 0 && expectedPool + 4 <= this.data.length) {
+			if (this.data[expectedPool] === 0xFF && this.data[expectedPool + 1] === 0xFF) {
+				return expectedPool;
+			}
+		}
+
+		// Search backwards for FF FF pattern (within 0x20000 bytes)
+		const searchStart = Math.max(0, nameTableAddr - 0x20000);
+		const searchEnd = nameTableAddr;
+
+		for (let addr = searchEnd; addr >= searchStart; addr -= 2) {
+			if (this.data[addr] === 0xFF && this.data[addr + 1] === 0xFF) {
+				// Check if followed by valid UTF-16 text (not more FF or 00)
+				if (addr + 4 <= this.data.length) {
+					const nextByte = this.data[addr + 2];
+					const nextByte2 = this.data[addr + 3];
+					if (nextByte !== 0xFF && nextByte !== 0x00 && nextByte2 !== 0xFF) {
+						// Verify this is aligned to a reasonable boundary
+						if (addr % 2 === 0) {
+							return addr;
+						}
+					}
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Get the detected name table address
+	 */
+	getDetectedNameTableAddress(): number | null {
+		if (this.detectedNameTableAddr === null) {
+			this.detectLanguageSystem();
+		}
+		return this.detectedNameTableAddr;
+	}
+
+	/**
+	 * Get the detected first pool address
+	 */
+	getDetectedFirstPoolAddress(): number | null {
+		if (this.detectedFirstPoolAddr === null) {
+			this.detectLanguageSystem();
+		}
+		return this.detectedFirstPoolAddr;
+	}
+
+	/**
+	 * Calculate name entry address using detected base
+	 */
+	private getNameEntryAddress(languageIndex: number): number {
+		const baseAddr = this.detectedNameTableAddr ?? LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS;
+		return baseAddr + languageIndex * LANGUAGE_CONSTANTS.ENTRY_SIZE;
+	}
+
+	/**
+	 * Calculate pool address using detected base
+	 */
+	private getPoolAddress(languageIndex: number): number {
+		const baseAddr = this.detectedFirstPoolAddr ?? LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS;
+		return baseAddr + languageIndex * LANGUAGE_CONSTANTS.POOL_SPACING;
+	}
+
+	/**
+	 * Calculate string entry address within a pool
+	 */
+	private getStringEntryAddress(poolAddress: number, stringIndex: number): number {
+		return poolAddress + stringIndex * LANGUAGE_CONSTANTS.ENTRY_SIZE;
 	}
 
 	/**
@@ -187,8 +327,8 @@ export class LanguageExtractor {
 		// Try to find language count by checking for valid entries
 		let count = 0;
 		for (let i = 0; i < LANGUAGE_CONSTANTS.MAX_LANGUAGES; i++) {
-			const nameAddr = calculateNameEntryAddress(i);
-			const poolAddr = calculatePoolAddress(i);
+			const nameAddr = this.getNameEntryAddress(i);
+			const poolAddr = this.getPoolAddress(i);
 
 			// Check if addresses are within bounds
 			if (nameAddr + LANGUAGE_CONSTANTS.ENTRY_SIZE > this.data.length) {
@@ -228,8 +368,8 @@ export class LanguageExtractor {
 		}
 
 		const menuEncoding = getLanguageEncoding(index);
-		const nameAddr = calculateNameEntryAddress(index);
-		const poolAddr = calculatePoolAddress(index);
+		const nameAddr = this.getNameEntryAddress(index);
+		const poolAddr = this.getPoolAddress(index);
 
 		// Language names always use UTF-16 LE (they're metadata, not content)
 		// Extract language name with UTF-16 LE encoding
@@ -312,7 +452,7 @@ export class LanguageExtractor {
 		const maxStrings = Math.floor(poolSpacing / entrySize);
 
 		for (let i = 0; i < maxStrings; i++) {
-			const entryAddr = calculateStringEntryAddress(poolAddress, i);
+			const entryAddr = this.getStringEntryAddress(poolAddress, i);
 
 			if (entryAddr + entrySize > this.data.length) {
 				break;

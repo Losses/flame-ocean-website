@@ -543,8 +543,21 @@ function generateUnicornScriptWithBLVerification(
 	flacCodeAddr: number,
 	menuCodeAddr: number
 ): string {
-	const isFlacTest = Math.abs(blAddr - firmware.flacAddr) < 1000;
+	// Determine if this is a FLAC test based on:
+	// 1. Traditional inline patch: BL is near the FLAC function
+	// 2. Relocation patch: Both flacCodeAddr and menuCodeAddr point to the same handler
+	//    (which is the relocated FLAC function)
+	const isInlinePatch = Math.abs(blAddr - firmware.flacAddr) < 1000;
+	const isRelocationPatch = flacCodeAddr === menuCodeAddr && flacCodeAddr !== 0;
+	// For relocation patches, always use FLAC-style test (the handler is a relocated FLAC function)
+	const isFlacTest = isInlinePatch || isRelocationPatch;
 	const handlerStart = isFlacTest ? flacCodeAddr : menuCodeAddr;
+
+	// For relocation patches, we need to start execution at the BL address
+	// because the caller's BL now branches to the new handler
+	// For inline patches, we start at the FLAC function
+	const executionStart = isRelocationPatch ? blAddr : (isFlacTest ? flacFuncAddr : blAddr);
+	const executionEnd = isRelocationPatch ? (blAddr + 4) : (isFlacTest ? (blAddr + 16) : (blAddr + 4));
 
 	return `#!/usr/bin/env python3
 import sys
@@ -560,14 +573,17 @@ FLAC_FUNC = ${flacFuncAddr}
 BL_ADDR = ${blAddr}
 EXPECTED_HANDLER = ${nopSlideAddr}
 HANDLER_START = ${handlerStart}
+EXEC_START = ${executionStart}
+EXEC_END = ${executionEnd}
 RETURN_ADDR = BL_ADDR + 4
 FLASH_BASE = 0x00000000
 FLASH_SIZE = 0x02100000
 SYSRAM0_BASE = 0x03000000
 SYSRAM0_SIZE = 0x00100000
 is_flac = ${isFlacTest ? 'True' : 'False'}
+is_relocation = ${isRelocationPatch ? 'True' : 'False'}
 
-print(f"🔍 Test Config: BL=0x{BL_ADDR:X}, Handler=0x{HANDLER_START:X}, IS_FLAC={is_flac}")
+print(f"🔍 Test Config: BL=0x{BL_ADDR:X}, Handler=0x{HANDLER_START:X}, EXEC=0x{EXEC_START:X}, IS_FLAC={is_flac}, IS_RELO={is_relocation}")
 
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
 mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
@@ -590,11 +606,13 @@ actual_colors = []
 num_colors = 5 if is_flac else 3
 for i in range(num_colors):
     if is_flac:
-        # Theme section offset calculation:
-        #   PUSH {R4, LR} (2 bytes)
-        #   4 * (CMP R1, #i; BEQ theme_i) (4 * 4 = 16 bytes)
-        # Theme i MOVW/MOVT at offset 2 + 16 + (4 - i) * 10 (reverse order)
-        movw_addr = HANDLER_START + 18 + (4 - i) * 10
+        # FLAC handler structure:
+        # For inline patches: PUSH {R4, LR} (2 bytes) + CMP/BEQ pairs (16 bytes) + theme code
+        # For relocation patches: CMP/BEQ pairs (16 bytes) + theme code (no PUSH)
+        # Theme code: Theme 4: MOVW/MOVT/POP (10 bytes), Theme 3-1: same, Theme 0: MOVW/MOVT/POP (10 bytes)
+        # Theme i MOVW at offset: (2 if not relocation else 0) + 16 + (4 - i) * 10
+        push_offset = 0 if is_relocation else 2
+        movw_addr = HANDLER_START + push_offset + 16 + (4 - i) * 10
     else:
         # Menu handler starts with MOVW/MOVT pairs immediately (0 offset)
         # We load R1, R2, R3 correctly
@@ -648,11 +666,12 @@ for theme_idx in test_range:
     mu.reg_write(UC_ARM_REG_R7, CALLER_R7)
     mu.reg_write(UC_ARM_REG_R8, CALLER_R8)
     mu.reg_write(UC_ARM_REG_R1, theme_idx)
-    mu.reg_write(UC_ARM_REG_PC, (FLAC_FUNC if is_flac else BL_ADDR) | 1)
+    # For relocation patches, start at BL address (caller)
+    # For inline patches, start at FLAC function
+    mu.reg_write(UC_ARM_REG_PC, EXEC_START | 1)
     mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)
     try:
-        if is_flac: mu.emu_start(FLAC_FUNC | 1, (BL_ADDR + 16) | 1, 0, 1000)
-        else: mu.emu_start(BL_ADDR | 1, (BL_ADDR + 4) | 1, 0, 1000)
+        mu.emu_start(EXEC_START | 1, EXEC_END | 1, 0, 5000)
     except UcError:
         if not bl_executed: all_success = False; continue
     if not bl_executed: all_success = False

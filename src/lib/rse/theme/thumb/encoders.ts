@@ -383,7 +383,8 @@ export function decodeBlTarget(fromAddr: number, blBytes: Uint8Array): number {
 		imm32 = imm32 - 0x100000000;
 	}
 
-	return fromAddr + 4 + imm32;
+	// Return as unsigned 32-bit address
+	return (fromAddr + 4 + imm32) >>> 0;
 }
 
 /**

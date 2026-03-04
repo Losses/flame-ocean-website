@@ -264,6 +264,28 @@ export interface PatchResult {
 	readonly metadataAddr: number;
 	/** Patched firmware data (only included when writeFile=false) */
 	readonly patchedData?: Uint8Array;
+	/** Relocation info (if using function relocation method) */
+	readonly relocationInfo?: RelocationInfo;
+}
+
+/**
+ * Relocation info - details about function relocation patching
+ */
+export interface RelocationInfo {
+	/** Method used: 'relocation' for new method, 'inline' for old method */
+	readonly method: 'relocation' | 'inline';
+	/** Index of language that was knocked down (if using relocation) */
+	readonly knockedDownLanguage?: number;
+	/** Name of language that was knocked down */
+	readonly knockedDownLanguageName?: string;
+	/** Original FLAC function address */
+	readonly originalFuncAddr: number;
+	/** New FLAC function address (in freed language pool) */
+	readonly newFuncAddr: number;
+	/** Size of relocated function */
+	readonly funcSize: number;
+	/** Caller BL address that was modified */
+	readonly callerAddr: number;
 }
 
 /**
@@ -300,12 +322,20 @@ export interface PatchAnalysisResult {
 	patchStatus: {
 		readonly isPatched: boolean;
 		readonly status: string;
-		readonly patchType: 'none' | 'flac_only' | 'menu_only' | 'full' | 'unknown';
+		readonly patchType: 'none' | 'flac_only' | 'menu_only' | 'full' | 'unknown' | 'relocation';
 		readonly flacPatched: boolean;
 		readonly menuPatched: boolean;
 		readonly nopHasCode: boolean;
 		readonly confidence: number;
 		readonly metadata?: PatchMetadata;
+		/** Offset of patch metadata in firmware (if patched) */
+		readonly metadataOffset?: number;
+		/** Relocation header (if patched via relocation) */
+		readonly reloHeader?: {
+			newFuncAddr: number;
+			funcSize: number;
+			colorCodeOffset: number;
+		};
 	};
 }
 

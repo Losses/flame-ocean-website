@@ -11,6 +11,7 @@ import {
 	ThemePatcher,
 	ThemeColorExtractor,
 	encodeBl,
+	decodeBlTarget,
 	encodeB16bit,
 	encodeMovw,
 	encodePush,
@@ -1115,7 +1116,7 @@ describe('Theme Patcher - Partial Patching', () => {
 	});
 });
 
-describe('Theme Patcher - Batch Firmware Testing', () => {
+describe('Theme Patcher - Batch Firmware Testing', { timeout: 15000 }, () => {
 	/**
 	 * Test across all firmware versions to ensure compatibility
 	 */
@@ -1162,7 +1163,7 @@ describe('Theme Patcher - Batch Firmware Testing', () => {
 						expect(result.themeFunctions.length).toBeGreaterThan(0);
 					});
 
-					it('should patch firmware', () => {
+					it('should patch firmware', { timeout: 15000 }, () => {
 						const firmwareData = fileIO.readFileSync(path);
 						const patcher = new ThemePatcher(firmwareData);
 

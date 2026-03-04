@@ -16,6 +16,7 @@ import {
 	throwThemeError
 } from './errors.js';
 import { PatchDetector } from './detector.js';
+import { scanForPatchMetadata } from './metadata.js';
 
 /**
  * Check if there's actually a BL instruction at the given address
@@ -222,40 +223,50 @@ export class ThemeColorExtractor {
 				const detector = new PatchDetector(this.data);
 				const nopSlideStart = detector.decodeBlTarget(patchAddr);
 
-				// Find NOP slide end by looking for metadata signature
-				// Metadata is always last 51 bytes of NOP slide
-				// Standard NOP slide size is 256 bytes
-				let nopSlideEnd = nopSlideStart + 256;
-				if (nopSlideEnd > this.data.length) {
-					nopSlideEnd = this.data.length;
+				// Scan for metadata signature starting from NOP slide start
+				// Metadata is stored at the end of the NOP slide, which varies in size
+				// Search in a reasonable range (up to 1024 bytes from NOP slide start)
+				const searchStart = nopSlideStart;
+				const searchEnd = Math.min(nopSlideStart + 1024, this.data.length);
+
+				// Look for "ECHO" signature in the search range
+				let metadataOffset: number | null = null;
+				for (let addr = searchStart; addr < searchEnd - 51; addr++) {
+					// Check for "ECHO" magic (0x4F484345 in little-endian)
+					if (this.data[addr] === 0x45 &&  // 'E'
+					    this.data[addr + 1] === 0x43 && // 'C'
+					    this.data[addr + 2] === 0x48 && // 'H'
+					    this.data[addr + 3] === 0x4F) { // 'O'
+						metadataOffset = addr;
+						break;
+					}
 				}
 
-				// Try to read metadata
-				const nopSlide = {
-					start: nopSlideStart,
-					end: nopSlideEnd,
-					size: nopSlideEnd - nopSlideStart,
-					source: 'extractor',
-					isActive: true,
-					referenceCount: 0
-				};
-
-				const metadata = detector.readPatchMetadata(nopSlide);
-				if (metadata && metadata.menuColors && metadata.menuColors.length === 15) {
-					// Found valid metadata with Menu colors
-					console.error('[DEBUG] Menu colors from metadata:', metadata.menuColors.map(c => '0x' + c.toString(16)));
-					return [...metadata.menuColors];
-				} else {
-					// Menu appears to be patched but metadata is invalid
-					console.error('[ERROR] Menu is patched but metadata is invalid or missing');
-					console.error('[ERROR] NOP slide:', nopSlide);
-					console.error('[ERROR] Metadata:', metadata);
-					throw new NotFoundError(
-						'Menu function is patched but metadata cannot be read.\n\n' +
-						'This may indicate a corrupted patch.\n' +
-						'Please start with a clean original firmware file.'
-					);
+				if (metadataOffset !== null) {
+					const metadata = detector.readPatchMetadata({
+						start: nopSlideStart,
+						end: metadataOffset + 51,
+						size: metadataOffset + 51 - nopSlideStart,
+						source: 'extractor',
+						isActive: true,
+						referenceCount: 0
+					});
+					if (metadata && metadata.menuColors && metadata.menuColors.length === 15) {
+						// Found valid metadata with Menu colors
+						console.error('[DEBUG] Menu colors from metadata:', metadata.menuColors.map(c => '0x' + c.toString(16)));
+						return [...metadata.menuColors];
+					}
 				}
+
+				// Menu appears to be patched but metadata is invalid
+				console.error('[ERROR] Menu is patched but metadata is invalid or missing');
+				console.error('[ERROR] NOP slide start: 0x' + nopSlideStart.toString(16));
+				console.error('[ERROR] Metadata offset:', metadataOffset);
+				throw new NotFoundError(
+					'Menu function is patched but metadata cannot be read.\n\n' +
+					'This may indicate a corrupted patch.\n' +
+					'Please start with a clean original firmware file.'
+				);
 			}
 
 			// Unpatched firmware: use simulator

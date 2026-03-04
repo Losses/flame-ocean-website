@@ -180,3 +180,182 @@ export function formatTimestamp(timestamp: number): string {
 	const date = new Date(timestamp * 1000);
 	return date.toISOString();
 }
+
+/**
+ * Scan firmware for patch metadata
+ *
+ * Searches the entire firmware for valid "ECHO" metadata signatures.
+ * Returns the first valid metadata found along with its offset.
+ */
+export function scanForPatchMetadata(data: Uint8Array): { metadata: PatchMetadata; offset: number } | null {
+	const METADATA_SIZE = 51; // 4 + 1 + 4 + 10 + 30 + 2
+
+	// Scan from 0x100000 onwards (skip low memory where "ECHO" might appear coincidentally)
+	// Patch metadata is stored in language pools which start at 0x1C584
+	for (let offset = 0x100000; offset <= data.length - METADATA_SIZE; offset++) {
+		// Quick check for "ECHO" magic
+		if (data[offset] === 0x45 &&     // E
+		    data[offset + 1] === 0x43 && // C
+		    data[offset + 2] === 0x48 && // H
+		    data[offset + 3] === 0x4f) { // O
+
+			const metadata = PatchMetadataImpl.fromBytes(data, offset);
+			if (metadata) {
+				return { metadata, offset };
+			}
+		}
+	}
+
+	return null;
+}
+
+/** Relocation header magic */
+const RELO_MAGIC = 'RELO';
+/** Relocation header size */
+export const RELO_HEADER_SIZE_OLD = 16; // 4 + 4 + 4 + 4 (without callerAddr)
+export const RELO_HEADER_SIZE = 20; // 4 + 4 + 4 + 4 + 4 (with callerAddr)
+
+/**
+ * Relocation header - stored before metadata
+ *
+ * Contains information needed to relocate-patch an already patched firmware.
+ */
+export interface RelocationHeader {
+	/** New function address in language pool */
+	newFuncAddr: number;
+	/** Function size in bytes */
+	funcSize: number;
+	/** Offset of color selection code within the function */
+	colorCodeOffset: number;
+	/** Address of the BL instruction that calls the relocated function */
+	callerAddr: number;
+}
+
+/**
+ * Encode relocation header to bytes
+ */
+export function encodeRelocationHeader(header: RelocationHeader): Uint8Array {
+	const data = new Uint8Array(RELO_HEADER_SIZE);
+	let offset = 0;
+
+	// Magic "RELO"
+	data[offset++] = 0x52; // R
+	data[offset++] = 0x45; // E
+	data[offset++] = 0x4C; // L
+	data[offset++] = 0x4F; // O
+
+	// New function address (4 bytes, little-endian)
+	data[offset++] = header.newFuncAddr & 0xff;
+	data[offset++] = (header.newFuncAddr >> 8) & 0xff;
+	data[offset++] = (header.newFuncAddr >> 16) & 0xff;
+	data[offset++] = (header.newFuncAddr >> 24) & 0xff;
+
+	// Function size (4 bytes, little-endian)
+	data[offset++] = header.funcSize & 0xff;
+	data[offset++] = (header.funcSize >> 8) & 0xff;
+	data[offset++] = (header.funcSize >> 16) & 0xff;
+	data[offset++] = (header.funcSize >> 24) & 0xff;
+
+	// Color code offset (4 bytes, little-endian)
+	data[offset++] = header.colorCodeOffset & 0xff;
+	data[offset++] = (header.colorCodeOffset >> 8) & 0xff;
+	data[offset++] = (header.colorCodeOffset >> 16) & 0xff;
+	data[offset++] = (header.colorCodeOffset >> 24) & 0xff;
+
+	// Caller address (BL instruction address, 4 bytes, little-endian)
+	data[offset++] = header.callerAddr & 0xff;
+	data[offset++] = (header.callerAddr >> 8) & 0xff;
+	data[offset++] = (header.callerAddr >> 16) & 0xff;
+	data[offset++] = (header.callerAddr >> 24) & 0xff;
+
+	return data;
+}
+
+/**
+ * Decode relocation header from bytes
+ *
+ * Supports both old format (16 bytes, no callerAddr) and new format (20 bytes, with callerAddr)
+ */
+export function decodeRelocationHeader(data: Uint8Array, offset: number): RelocationHeader | null {
+	// Minimum size for old format (without callerAddr)
+	if (offset + RELO_HEADER_SIZE_OLD > data.length) {
+		return null;
+	}
+
+	// Check magic "RELO"
+	if (data[offset] !== 0x52 ||     // R
+	    data[offset + 1] !== 0x45 || // E
+	    data[offset + 2] !== 0x4C || // L
+	    data[offset + 3] !== 0x4F) { // O
+		return null;
+	}
+
+	let pos = offset + 4;
+
+	const newFuncAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	pos += 4;
+
+	const funcSize = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	pos += 4;
+
+	const colorCodeOffset = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	pos += 4;
+
+	// Check if we have enough bytes for callerAddr (new format)
+	let callerAddr = 0;
+	if (offset + RELO_HEADER_SIZE <= data.length) {
+		callerAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	}
+
+	return { newFuncAddr, funcSize, colorCodeOffset, callerAddr };
+}
+
+/**
+ * Scan firmware for patch with relocation header
+ *
+ * Returns metadata, relocation header, and metadata offset if found.
+ * Supports both old format (16 bytes) and new format (20 bytes) headers.
+ */
+export function scanForPatchWithRelocation(data: Uint8Array): {
+	metadata: PatchMetadata;
+	metadataOffset: number;
+	reloHeader: RelocationHeader;
+} | null {
+	const result = scanForPatchMetadata(data);
+	if (!result) {
+		return null;
+	}
+
+	// Try new format first (20 bytes before metadata)
+	let reloHeaderOffset = result.offset - RELO_HEADER_SIZE;
+	if (reloHeaderOffset >= 0) {
+		const reloHeader = decodeRelocationHeader(data, reloHeaderOffset);
+		if (reloHeader && reloHeader.callerAddr !== 0) {
+			return {
+				metadata: result.metadata,
+				metadataOffset: result.offset,
+				reloHeader
+			};
+		}
+	}
+
+	// Try old format (16 bytes before metadata)
+	reloHeaderOffset = result.offset - RELO_HEADER_SIZE_OLD;
+	if (reloHeaderOffset >= 0) {
+		const reloHeader = decodeRelocationHeader(data, reloHeaderOffset);
+		if (reloHeader) {
+			return {
+				metadata: result.metadata,
+				metadataOffset: result.offset,
+				reloHeader
+			};
+		}
+	}
+
+	return null;
+}
+
+/**
+ * Get the size of patch metadata in bytes
+ */
+export const METADATA_SIZE = 51;
