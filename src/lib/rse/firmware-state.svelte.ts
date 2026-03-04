@@ -809,13 +809,16 @@ export class FirmwareState {
 
   showFlacUnlockWarning() {
     this.showWarningDialog(
-      "Unlock FLAC Color Editing",
-      "This will modify the firmware to enable FLAC color customization.\n\n" +
-      "This operation:\n" +
-      "- Injects custom code into the firmware (NOP slide)\n" +
-      "- Modifies the FLAC function to use injected handlers\n" +
-      "- Cannot be easily undone\n" +
-      "- May affect firmware stability if done incorrectly\n\n" +
+      "Unlock Theme Color Editing",
+      "This will enable customization of FLAC and Menu text colors.\n\n" +
+      "How it works:\n" +
+      "- Relocates the FLAC function to unused language pool space\n" +
+      "- The last language will be permanently disabled\n" +
+      "- Color selection code is added to the relocated function\n\n" +
+      "Important:\n" +
+      "- This operation cannot be undone\n" +
+      "- The disabled language cannot be recovered\n" +
+      "- Keep a backup of your original firmware\n\n" +
       "Do you want to continue?"
     );
     // Store the pending FLAC unlock action
