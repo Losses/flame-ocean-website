@@ -845,9 +845,6 @@ export class FirmwareState {
         "- Relocates the FLAC function to unused language pool space\n" +
         "- The last language will be permanently disabled\n" +
         "- Color selection code is added to the relocated function\n\n" +
-        "Important:\n" +
-        "- This operation cannot be undone\n" +
-        "- The disabled language cannot be recovered\n\n" +
         "Do you want to continue?";
     } else if (type === 'menu') {
       title = "Unlock Menu Color Editing";
@@ -859,9 +856,6 @@ export class FirmwareState {
         "- Menu color handler is added to the freed space\n\n" +
         "Note: Even if you only want to customize Menu colors,\n" +
         "the FLAC function must still be relocated to make space.\n\n" +
-        "Important:\n" +
-        "- This operation cannot be undone\n" +
-        "- The disabled language cannot be recovered\n\n" +
         "Do you want to continue?";
     } else {
       title = "Unlock Theme Color Editing";
@@ -871,9 +865,6 @@ export class FirmwareState {
         "- Relocates the FLAC function to unused language pool space\n" +
         "- The last language will be permanently disabled\n" +
         "- Color selection code is added for both FLAC and Menu\n\n" +
-        "Important:\n" +
-        "- This operation cannot be undone\n" +
-        "- The disabled language cannot be recovered\n\n" +
         "Do you want to continue?";
     }
 
