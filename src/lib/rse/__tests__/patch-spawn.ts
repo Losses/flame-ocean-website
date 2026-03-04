@@ -59,9 +59,7 @@ async function main() {
 	try {
 		const firmwareData = readFileSync(task.firmwarePath);
 		const patcher = new ThemePatcher(firmwareData);
-		// Use inline patching (knockDownLanguage: -1) instead of relocation
-		// Relocation has PC-relative instruction issues that cause emulation failures
-		const result = patcher.patch({ ...task.colors, knockDownLanguage: -1 }, task.outputPath, true);
+		const result = patcher.patch(task.colors, task.outputPath, true);
 
 		if (!result.success) {
 			const patchResult: PatchResult = {
@@ -78,11 +76,17 @@ async function main() {
 		}
 
 		// Determine which BL address to use based on what was patched
-		// For inline method, use appropriate patch point
+		// Relocation method always uses FLAC function, so we always use flac patchAddr
 		let blAddr: number | undefined;
-		blAddr = (task.colors.flacColors && task.colors.flacColors.length > 0)
-			? result.patchPoints?.flac?.patchAddr
-			: result.patchPoints?.menu?.patchAddr;
+		if (result.relocationInfo?.method === 'relocation') {
+			// Relocation method: always use FLAC patch point (even for menu-only patches)
+			blAddr = result.patchPoints?.flac?.patchAddr;
+		} else {
+			// Fallback: use appropriate patch point
+			blAddr = (task.colors.flacColors && task.colors.flacColors.length > 0)
+				? result.patchPoints?.flac?.patchAddr
+				: result.patchPoints?.menu?.patchAddr;
+		}
 
 		if (!blAddr) {
 			const patchResult: PatchResult = {

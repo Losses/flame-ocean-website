@@ -649,18 +649,7 @@ export class ThemePatcher {
 			if (!menuColors) menuColors = [...groundTruth.menuColors];
 		}
 
-		// If knockDownLanguage is -1, use inline patching instead of relocation
-		if (options.knockDownLanguage === -1) {
-			return this.patchImpl(
-				flacColors!,
-				menuColors!,
-				outputPath,
-				writeFile,
-				{ flacCustom: true, menuCustom: true }
-			);
-		}
-
-		// First-time patching: use relocation method
+		// Use relocation method for patching
 		return this.patchWithRelocation(
 			{
 				flacColors: flacColors!,
@@ -711,10 +700,11 @@ export class ThemePatcher {
 		// Clone firmware data
 		const patchedData = new Uint8Array(this.data);
 
-		// Regenerate the color selection code with new colors
-		const colorCodeAddr = reloHeader.newFuncAddr + reloHeader.colorCodeOffset;
-		const newColorCode = this.generateInlineColorSelection(flacColors, colorCodeAddr);
-		patchedData.set(newColorCode, colorCodeAddr);
+		// Regenerate the color handler with new colors
+		// The handler is at newFuncAddr + colorCodeOffset (which is funcSize)
+		const handlerAddr = reloHeader.newFuncAddr + reloHeader.colorCodeOffset;
+		const newHandler = this.generateRelocatedColorHandler(flacColors);
+		patchedData.set(newHandler, handlerAddr);
 
 		// Update metadata
 		const newMetadata = createPatchMetadata(Math.floor(Date.now() / 1000), flacColors, menuColors);
@@ -753,7 +743,7 @@ export class ThemePatcher {
 				type: 'flac',
 				funcAddr: 0, // Unknown during re-patch
 				patchAddr: callerAddr,
-				targetAddr: colorCodeAddr,
+				targetAddr: handlerAddr, // Handler address
 				originalBytes: '',
 				newBytes: ''
 			}
@@ -1080,6 +1070,69 @@ export class ThemePatcher {
 		return new Uint8Array(code);
 	}
 
+	/**
+	 * Generate a simple FLAC color handler for relocation patching
+	 *
+	 * This handler is called via BL from within the relocated FLAC function.
+	 * It does NOT save/restore callee-saved registers - it only modifies R1
+	 * (caller-saved) and returns with BX LR.
+	 *
+	 * Structure:
+	 *   CMP R1, #0; BEQ theme_0
+	 *   CMP R1, #1; BEQ theme_1
+	 *   CMP R1, #2; BEQ theme_2
+	 *   CMP R1, #3; BEQ theme_3
+	 *   ; fall through to theme_4
+	 * theme_4: MOVW R1, #color4; MOVT R1, #0; BX LR
+	 * theme_3: MOVW R1, #color3; MOVT R1, #0; BX LR
+	 * theme_2: MOVW R1, #color2; MOVT R1, #0; BX LR
+	 * theme_1: MOVW R1, #color1; MOVT R1, #0; BX LR
+	 * theme_0: MOVW R1, #color0; MOVT R1, #0; BX LR
+	 */
+	private generateRelocatedColorHandler(colors: number[]): Uint8Array {
+		const code: number[] = [];
+
+		// Record BEQ positions for later patching
+		const beqPositions: Array<{ index: number; cmpAddr: number }> = [];
+
+		// Generate CMP/BEQ pairs for themes 0-3
+		for (let i = 0; i < 4; i++) {
+			const cmpAddr = code.length;
+			code.push(0x00 | i, 0x29);  // CMP R1, #i
+			// BEQ placeholder (cond=0 for EQ)
+			code.push(0x00, 0xD0);
+			beqPositions.push({ index: i, cmpAddr });
+		}
+
+		// Generate theme sections in reverse order (theme_4 first, then theme_3, ..., theme_0)
+		const themeSectionStarts: number[] = [];
+		for (let theme = 4; theme >= 0; theme--) {
+			themeSectionStarts[theme] = code.length;
+			const color = colors[theme];
+
+			// Load color into R1
+			code.push(...encodeMovw(1, color & 0xffff));
+			code.push(...encodeMovt(1, (color >> 16) & 0xffff));
+
+			// Return to caller (BX LR)
+			code.push(0x70, 0x47);  // BX LR
+		}
+
+		// Now patch BEQ offsets
+		for (const { index, cmpAddr } of beqPositions) {
+			const beqAddr = cmpAddr + 2;
+			const pc = beqAddr + 4;
+			const target = themeSectionStarts[index];
+			const offset = (target - pc) >> 1;
+
+			const imm8 = offset & 0xFF;
+			code[beqAddr] = imm8;
+			code[beqAddr + 1] = 0xD0;
+		}
+
+		return new Uint8Array(code);
+	}
+
 	private applyPatch(data: Uint8Array, patchAddr: number, targetAddr: number, nopBytes = 0): void {
 		data.set(encodeBl(patchAddr, targetAddr), patchAddr);
 		for (let i = 0; i < nopBytes; i += 2) {
@@ -1263,33 +1316,81 @@ export class ThemePatcher {
 		const funcBytes = modifiedData.slice(funcStart, funcEnd);
 		modifiedData.set(funcBytes, newFuncAddr);
 
-		// Modify the copied function with color selection
-		// We need to replace the IT block with our color selection code
-		const colorCodeOffset = this.applyColorPatchToRelocatedFunction(modifiedData, newFuncAddr, funcSize, flacColors);
+		// Find the IT block offset first (before applying color patch)
+		// We need this to calculate where to place the literal pool
+		const colorCodeOffset = this.findColorCodeOffset(modifiedData, newFuncAddr, funcSize);
+
+		// Generate the color handler (uses BX LR to return)
+		const colorHandler = this.generateRelocatedColorHandler(flacColors);
+		const COLOR_HANDLER_SIZE = colorHandler.length; // Should be ~54 bytes
+
+		// At the IT block location, we place:
+		// - BL to color handler (4 bytes)
+		// - NOP padding (8 bytes, to fill the 12-byte IT block space)
+		const IT_BLOCK_SIZE = 12;
+		const blAddr = newFuncAddr + colorCodeOffset;
+		const handlerAddr = newFuncAddr + funcSize; // Handler goes right after function code
+
+		// Verify BL can reach the handler
+		const blDistance = Math.abs(handlerAddr - blAddr);
+		if (blDistance > 0x1000000) { // ±16MB
+			throw new CapacityError(`Color handler too far from BL: distance=${blDistance}`);
+		}
+
+		// Write BL instruction at IT block location
+		const blBytes = encodeBl(blAddr, handlerAddr);
+		modifiedData.set(blBytes, blAddr);
+
+		// Fill remaining IT block space with NOPs
+		for (let i = 4; i < IT_BLOCK_SIZE; i += 2) {
+			modifiedData[blAddr + i] = 0x00;
+			modifiedData[blAddr + i + 1] = 0xBF; // NOP
+		}
+
+		// Write the color handler after the function code
+		modifiedData.set(colorHandler, handlerAddr);
+
+		// Literal pool must be placed AFTER both the function and the color handler
+		// AND must be word-aligned (4-byte boundary) for LDR instructions
+		const rawLiteralPoolOffset = funcSize + COLOR_HANDLER_SIZE;
+		const literalPoolOffset = (rawLiteralPoolOffset + 3) & ~3; // Round up to 4-byte boundary
+
+		// Fix PC-relative LDR instructions after relocation
+		// This copies literal values from original firmware to a new pool
+		// and adjusts the LDR offsets to point to the new locations
+		const literalPoolEndOffset = this.fixPcRelativeLdrInstructions(
+			modifiedData,
+			funcStart,
+			newFuncAddr,
+			funcSize,
+			literalPoolOffset
+		);
 
 		// Modify the caller's BL to point to the new function
 		const newBlBytes = encodeBl(callerAddr, newFuncAddr);
 		modifiedData.set(newBlBytes, callerAddr);
 
 		// Create patch points record
-		// Note: targetAddr points to the color selection code, not the function start
+		// Note: targetAddr points to the color handler, not the function start
 		// This is what the test expects (MOVW instructions for color loading)
 		const patchPoints: Record<string, PatchPoint> = {
 			'flac': {
 				type: 'flac',
 				funcAddr: funcStart,
 				patchAddr: callerAddr,
-				targetAddr: newFuncAddr + colorCodeOffset,
+				targetAddr: handlerAddr, // Color handler address
 				originalBytes: this.bytesToHex(this.data.slice(callerAddr, callerAddr + 4)),
 				newBytes: this.bytesToHex(newBlBytes)
 			}
 		};
 
 		// Create relocation header (stored before metadata)
+		// Note: colorCodeOffset now stores the handler offset (which is funcSize)
+		// The handler is at newFuncAddr + funcSize
 		const reloHeader = encodeRelocationHeader({
 			newFuncAddr,
 			funcSize,
-			colorCodeOffset,
+			colorCodeOffset: funcSize, // Handler offset (not IT block offset)
 			callerAddr
 		});
 
@@ -1298,18 +1399,10 @@ export class ThemePatcher {
 		const metadataBytes = writePatchMetadata(metadata);
 		const METADATA_SIZE = metadataBytes.length; // Should be 51 bytes
 
-		// Calculate the color code size to determine where to place the header
-		// Color code structure:
-		//   4 CMP/BEQ pairs = 16 bytes
-		//   5 theme sections (MOVW/MOVT + B) = 5 * 10 = 50 bytes (last one has no B = 8 bytes)
-		// Total = 16 + 50 - 2 = 64 bytes
-		const COLOR_CODE_SIZE = 64;
-
 		// Calculate addresses:
-		// The relocation header must be placed AFTER the color code
-		// [function code including color code][relocation header (16 bytes)][metadata (51 bytes)]
-		const colorCodeEnd = colorCodeOffset + COLOR_CODE_SIZE;
-		const reloHeaderAddr = newFuncAddr + Math.max(funcSize, colorCodeEnd);
+		// The relocation header must be placed AFTER the literal pool
+		// [function code][color code][literal pool][relocation header][metadata]
+		const reloHeaderAddr = newFuncAddr + literalPoolEndOffset;
 		const metadataAddr = reloHeaderAddr + RELO_HEADER_SIZE;
 
 		// Write relocation header and metadata
@@ -1478,6 +1571,191 @@ export class ThemePatcher {
 		}
 		// Fallback to last language even if protected (will fail later with proper error)
 		return maxLanguage - 1;
+	}
+
+	/**
+	 * Fix PC-relative LDR instructions after function relocation
+	 *
+	 * When a function is copied to a new location, PC-relative LDR instructions
+	 * need their offsets adjusted because PC has changed.
+	 *
+	 * Strategy: Copy literal values from original firmware to a new pool at the end
+	 * of the relocated function and adjust the LDR offsets to point to the new locations.
+	 *
+	 * @param patchedData - Patched firmware data (modified in place)
+	 * @param originalFuncAddr - Original function address in firmware
+	 * @param newFuncAddr - New function address in patchedData
+	 * @param funcSize - Function size in bytes
+	 * @param literalPoolOffset - Offset from newFuncAddr where to place new literals
+	 * @returns New literal pool end offset
+	 */
+	private fixPcRelativeLdrInstructions(
+		patchedData: Uint8Array,
+		originalFuncAddr: number,
+		newFuncAddr: number,
+		funcSize: number,
+		literalPoolOffset: number
+	): number {
+		let currentLiteralOffset = literalPoolOffset;
+
+		// Scan for PC-relative LDR instructions in the ORIGINAL function
+		// We use this.data (original firmware) to find the instructions and their targets
+		for (let offset = 0; offset < funcSize; offset += 2) {
+			const originalAddr = originalFuncAddr + offset;
+			if (originalAddr + 4 > this.data.length) break;
+
+			const hw1 = this.data[originalAddr] | (this.data[originalAddr + 1] << 8);
+
+			// Check for LDR.W Rt, [PC, #imm] (32-bit)
+			// Encoding: 0xF8DF for LDR.W Rt, [PC, #imm12]
+			if (hw1 === 0xF8DF) {
+				const hw2 = this.data[originalAddr + 2] | (this.data[originalAddr + 3] << 8);
+				const imm12 = hw2 & 0xFFF;
+				const rt = (hw2 >> 12) & 0xF;
+
+				// Calculate ORIGINAL target address
+				// LDR.W uses (PC + 4) & ~3 as base
+				const originalAlignedPc = (originalAddr + 4) & ~3;
+				const originalTarget = originalAlignedPc + imm12;
+
+				// Read the literal value from ORIGINAL firmware
+				if (originalTarget + 4 <= this.data.length) {
+					const literalValue = this.data[originalTarget] |
+						(this.data[originalTarget + 1] << 8) |
+						(this.data[originalTarget + 2] << 16) |
+						(this.data[originalTarget + 3] << 24);
+
+					// Calculate new offset for the relocated function
+					// New PC = newFuncAddr + offset + 4
+					// New target = newFuncAddr + currentLiteralOffset
+					// New imm12 = newTarget - ((newPC) & ~3)
+					const newPc = newFuncAddr + offset + 4;
+					const newAlignedPc = newPc & ~3;
+					const newTarget = newFuncAddr + currentLiteralOffset;
+					const newImm12 = newTarget - newAlignedPc;
+
+					// Check if offset fits in 12 bits (0-4095, must be positive and word-aligned)
+					if (newImm12 >= 0 && newImm12 <= 4095 && (newImm12 & 3) === 0) {
+						// Update the LDR instruction in patched data
+						const newAddr = newFuncAddr + offset;
+						const newHw2 = (rt << 12) | newImm12;
+						patchedData[newAddr + 2] = newHw2 & 0xFF;
+						patchedData[newAddr + 3] = (newHw2 >> 8) & 0xFF;
+
+						// Write literal to new pool
+						patchedData[newTarget] = literalValue & 0xFF;
+						patchedData[newTarget + 1] = (literalValue >> 8) & 0xFF;
+						patchedData[newTarget + 2] = (literalValue >> 16) & 0xFF;
+						patchedData[newTarget + 3] = (literalValue >> 24) & 0xFF;
+
+						currentLiteralOffset += 4;
+					} else {
+						// Offset doesn't fit - this is a problem
+						console.error(`WARNING: Cannot fix LDR.W at offset ${offset}: new offset ${newImm12} doesn't fit`);
+					}
+				}
+
+				offset += 2; // Skip second halfword of 32-bit instruction
+			}
+			// Check for 16-bit LDR Rt, [PC, #imm] (T1)
+			// Encoding: 01001 Rt imm8 (0x48XX)
+			else if ((hw1 & 0xF800) === 0x4800) {
+				const rt = (hw1 >> 8) & 0x7;
+				const imm8 = hw1 & 0xFF;
+				const imm32 = imm8 << 2;
+
+				// Calculate original target
+				const originalAlignedPc = (originalAddr + 4) & ~3;
+				const originalTarget = originalAlignedPc + imm32;
+
+				if (originalTarget + 4 <= this.data.length) {
+					const literalValue = this.data[originalTarget] |
+						(this.data[originalTarget + 1] << 8) |
+						(this.data[originalTarget + 2] << 16) |
+						(this.data[originalTarget + 3] << 24);
+
+					// Calculate new offset
+					const newPc = newFuncAddr + offset + 4;
+					const newAlignedPc = newPc & ~3;
+					const newTarget = newFuncAddr + currentLiteralOffset;
+					const newImm32 = newTarget - newAlignedPc;
+					const newImm8 = newImm32 >> 2;
+
+					// Check if offset fits (imm8 * 4, so max 1020)
+					if (newImm32 >= 0 && newImm32 <= 1020 && (newImm32 & 3) === 0) {
+						// Update instruction
+						const newAddr = newFuncAddr + offset;
+						const newHw1 = 0x4800 | (rt << 8) | newImm8;
+						patchedData[newAddr] = newHw1 & 0xFF;
+						patchedData[newAddr + 1] = (newHw1 >> 8) & 0xFF;
+
+						// Write literal
+						patchedData[newTarget] = literalValue & 0xFF;
+						patchedData[newTarget + 1] = (literalValue >> 8) & 0xFF;
+						patchedData[newTarget + 2] = (literalValue >> 16) & 0xFF;
+						patchedData[newTarget + 3] = (literalValue >> 24) & 0xFF;
+
+						currentLiteralOffset += 4;
+					}
+				}
+			}
+			// Check for 32-bit instruction to skip appropriately
+			else {
+				const is32bit = hw1 >= 0xE800 || (hw1 & 0xF000) === 0xF000;
+				if (is32bit) {
+					offset += 2; // Skip second halfword
+				}
+			}
+		}
+
+		return currentLiteralOffset;
+	}
+
+	/**
+	 * Find the offset of the IT block (color code location) in the function
+	 */
+	private findColorCodeOffset(data: Uint8Array, funcAddr: number, funcSize: number): number {
+		// Find the IT block pattern: CMP R1, #4 + IT EQ
+		const cmpPattern = new Uint8Array([0x04, 0x29, 0x0c, 0xbf]); // CMP R1,#4 + ITE EQ
+
+		// Search for the pattern
+		for (let offset = 0; offset < funcSize - 20; offset += 2) {
+			const addr = funcAddr + offset;
+
+			if (data[addr] === cmpPattern[0] &&
+			    data[addr + 1] === cmpPattern[1] &&
+			    data[addr + 2] === cmpPattern[2] &&
+			    data[addr + 3] === cmpPattern[3]) {
+				return offset;
+			}
+		}
+
+		// Try flexible search for CMP R1, #4
+		for (let offset = 0; offset < funcSize - 20; offset += 2) {
+			const addr = funcAddr + offset;
+			const hw = data[addr] | (data[addr + 1] << 8);
+
+			if ((hw & 0xFF00) === 0x2900) {
+				const imm = hw & 0xFF;
+				if (imm === 4) {
+					const nextHw = data[addr + 2] | (data[addr + 3] << 8);
+					if ((nextHw & 0xFF00) === 0xBF00) {
+						return offset;
+					}
+				}
+			}
+		}
+
+		throw new PatchError('Cannot find IT block pattern in FLAC function');
+	}
+
+	/**
+	 * Apply color patch at a specific offset
+	 */
+	private applyColorPatchAtOffset(data: Uint8Array, funcAddr: number, offset: number, colors: number[]): void {
+		const addr = funcAddr + offset;
+		const colorCode = this.generateInlineColorSelection(colors, addr);
+		data.set(colorCode, addr);
 	}
 
 	/**
