@@ -280,10 +280,16 @@ export interface RelocationInfo {
 	readonly originalFuncAddr: number;
 	/** New FLAC function address (in freed language pool) */
 	readonly newFuncAddr: number;
-	/** Size of relocated function */
+	/** Size of relocated FLAC function */
 	readonly funcSize: number;
-	/** Caller BL address that was modified */
+	/** FLAC caller BL address that was modified */
 	readonly callerAddr: number;
+	/** Menu handler address (in freed language pool, 0 if not patched) */
+	readonly menuHandlerAddr?: number;
+	/** Menu handler size */
+	readonly menuHandlerSize?: number;
+	/** Menu caller BL address that was modified (0 if not patched) */
+	readonly menuCallerAddr?: number;
 }
 
 /**

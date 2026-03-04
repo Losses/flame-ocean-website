@@ -11,7 +11,7 @@ import { fileIO } from '../utils/file-io.js';
 import { NopSlideFinder } from './nop-slide.js';
 import { CodeReferenceAnalyzer, type LandingPoint, type NopSlideAnalysis } from './code-reference-analyzer.js';
 import { PatchDetector } from './detector.js';
-import { createPatchMetadata, writePatchMetadata, scanForPatchMetadata, readPatchMetadata, encodeRelocationHeader, decodeRelocationHeader, scanForPatchWithRelocation, RELO_HEADER_SIZE } from './metadata.js';
+import { createPatchMetadata, writePatchMetadata, scanForPatchMetadata, readPatchMetadata, encodeRelocationHeader, decodeRelocationHeader, scanForPatchWithRelocation, RELO_HEADER_SIZE, METADATA_SIZE, type RelocationHeader } from './metadata.js';
 import { discoverFlacFunction, discoverMenuFunction, findFunctionStart, discoverPatchesBySignature } from './discovery.js';
 import { ThemeColorExtractor } from './extractor.js';
 import { patchSwitchCaseFunction } from './switch-case-patcher.js';
@@ -600,7 +600,7 @@ export class ThemePatcher {
 		const analysis = this.analyze();
 		const { isPatched, reloHeader, metadataOffset } = analysis.patchStatus as {
 			isPatched: boolean;
-			reloHeader?: { newFuncAddr: number; funcSize: number; colorCodeOffset: number };
+			reloHeader?: RelocationHeader;
 			metadataOffset?: number;
 		};
 
@@ -647,7 +647,7 @@ export class ThemePatcher {
 			flacColors: number[] | null;
 			menuColors: number[] | null;
 		},
-		reloHeader: { newFuncAddr: number; funcSize: number; colorCodeOffset: number; callerAddr?: number },
+		reloHeader: RelocationHeader,
 		metadataOffset: number,
 		outputPath: string,
 		writeFile: boolean
@@ -662,24 +662,21 @@ export class ThemePatcher {
 		const flacColors = options.flacColors ?? [...existingMetadata.flacColors];
 		const menuColors = options.menuColors ?? [...existingMetadata.menuColors];
 
-		// Find caller address if not in header (old format compatibility)
-		let callerAddr = reloHeader.callerAddr;
-		if (!callerAddr || callerAddr === 0) {
+		// Find FLAC caller address if not in header (old format compatibility)
+		let flacCallerAddr = reloHeader.flacCallerAddr;
+		if (!flacCallerAddr || flacCallerAddr === 0) {
 			// Scan for BL instruction targeting the relocated function
-			const callerInfo = this.findFlacCaller(reloHeader.newFuncAddr);
+			const callerInfo = this.findFlacCaller(reloHeader.flacFuncAddr);
 			if (!callerInfo) {
 				throw new PatchError('Cannot find BL instruction for re-patching (old header format)');
 			}
-			callerAddr = callerInfo.callerAddr;
+			flacCallerAddr = callerInfo.callerAddr;
 		}
-
-		// Now callerAddr is guaranteed to be a number
-		const resolvedCallerAddr: number = callerAddr;
 
 		// Clone firmware data
 		const patchedData = new Uint8Array(this.data);
 
-		// Patch the MOVW immediate values in the inline color code
+		// Patch the MOVW immediate values in the FLAC inline color code
 		// Color code structure:
 		//   CMP/BEQ pairs: 16 bytes (offset 0-15)
 		//   theme_4: MOVW + MOVT + B: 10 bytes (offset 16-25)
@@ -687,12 +684,32 @@ export class ThemePatcher {
 		//   theme_2: MOVW + MOVT + B: 10 bytes (offset 36-45)
 		//   theme_1: MOVW + MOVT + B: 10 bytes (offset 46-55)
 		//   theme_0: MOVW + MOVT: 8 bytes (offset 56-63)
-		const colorCodeAddr = reloHeader.newFuncAddr + reloHeader.colorCodeOffset;
+		const flacColorCodeAddr = reloHeader.flacFuncAddr + reloHeader.flacColorCodeOffset;
 		const themeMovwOffsets = [56, 46, 36, 26, 16]; // theme 0, 1, 2, 3, 4
 
 		for (let i = 0; i < 5; i++) {
-			const movwAddr = colorCodeAddr + themeMovwOffsets[i];
+			const movwAddr = flacColorCodeAddr + themeMovwOffsets[i];
 			this.patchMovwImmediate(patchedData, movwAddr, flacColors[i]);
+		}
+
+		// Re-patch Menu handler if it exists
+		let menuHandlerAddr = reloHeader.menuHandlerAddr;
+		let menuHandlerSize = reloHeader.menuHandlerSize;
+		let menuCallerAddr = reloHeader.menuCallerAddr;
+
+		if (menuHandlerAddr !== 0 && menuHandlerSize > 0) {
+			// Re-generate Menu handler with new colors
+			const themeCount = 5; // Default theme count
+			const menuHandler = this.generateMenuHandlerWithPrologue(menuColors, themeCount);
+
+			// Verify size matches
+			if (menuHandler.length !== menuHandlerSize) {
+				// Size mismatch - this shouldn't happen, but handle it gracefully
+				console.warn(`Menu handler size mismatch: expected ${menuHandlerSize}, got ${menuHandler.length}`);
+			}
+
+			// Write new Menu handler
+			patchedData.set(menuHandler, menuHandlerAddr);
 		}
 
 		// Update metadata
@@ -700,16 +717,9 @@ export class ThemePatcher {
 		const metadataBytes = writePatchMetadata(newMetadata);
 		patchedData.set(metadataBytes, metadataOffset);
 
-		// Rewrite relocation header with callerAddr (upgrade to new format)
-		const newReloHeader = {
-			newFuncAddr: reloHeader.newFuncAddr,
-			funcSize: reloHeader.funcSize,
-			colorCodeOffset: reloHeader.colorCodeOffset,
-			callerAddr: resolvedCallerAddr
-		};
-		// Place header at proper offset based on new format size
+		// Rewrite relocation header (preserve all fields, just in case)
 		const reloHeaderAddr = metadataOffset - RELO_HEADER_SIZE;
-		patchedData.set(encodeRelocationHeader(newReloHeader), reloHeaderAddr);
+		patchedData.set(encodeRelocationHeader(reloHeader), reloHeaderAddr);
 
 		// Write to file if requested
 		if (writeFile) {
@@ -718,9 +728,9 @@ export class ThemePatcher {
 
 		// Create fake NOP slide for API compatibility
 		const fakeNopSlide: NopSlide = {
-			start: reloHeader.newFuncAddr,
+			start: reloHeader.flacFuncAddr,
 			end: metadataOffset + metadataBytes.length,
-			size: metadataOffset + metadataBytes.length - reloHeader.newFuncAddr,
+			size: metadataOffset + metadataBytes.length - reloHeader.flacFuncAddr,
 			source: 'relocation',
 			isActive: true,
 			referenceCount: 0
@@ -731,12 +741,24 @@ export class ThemePatcher {
 			'flac': {
 				type: 'flac',
 				funcAddr: 0, // Unknown during re-patch
-				patchAddr: resolvedCallerAddr,
-				targetAddr: colorCodeAddr, // Color code address
+				patchAddr: flacCallerAddr,
+				targetAddr: flacColorCodeAddr, // Color code address
 				originalBytes: '',
 				newBytes: ''
 			}
 		};
+
+		// Add Menu patch point if Menu was patched
+		if (menuHandlerAddr !== 0 && menuCallerAddr !== 0) {
+			patchPoints['menu'] = {
+				type: 'menu',
+				funcAddr: 0, // Unknown during re-patch
+				patchAddr: menuCallerAddr,
+				targetAddr: menuHandlerAddr,
+				originalBytes: '',
+				newBytes: ''
+			};
+		}
 
 		return {
 			success: true,
@@ -745,10 +767,13 @@ export class ThemePatcher {
 			metadataAddr: metadataOffset,
 			patchedData: writeFile ? undefined : patchedData,
 			relocationInfo: {
-				newFuncAddr: reloHeader.newFuncAddr,
-				funcSize: reloHeader.funcSize,
+				newFuncAddr: reloHeader.flacFuncAddr,
+				funcSize: reloHeader.flacFuncSize,
 				originalFuncAddr: 0, // Unknown during re-patch
-				callerAddr: resolvedCallerAddr
+				callerAddr: flacCallerAddr,
+				menuHandlerAddr: menuHandlerAddr !== 0 ? menuHandlerAddr : undefined,
+				menuHandlerSize: menuHandlerSize !== 0 ? menuHandlerSize : undefined,
+				menuCallerAddr: menuCallerAddr !== 0 ? menuCallerAddr : undefined
 			}
 		};
 	}
@@ -1039,6 +1064,117 @@ export class ThemePatcher {
 		return new Uint8Array(code);
 	}
 
+	/**
+	 * Generate Menu handler with prologue and color selection
+	 *
+	 * Structure:
+	 *   [Original prologue: PUSH + LDRs] (14 bytes)
+	 *   [Color selection: CMP R0, #theme; BEQ theme_X] (20 bytes for 4 themes)
+	 *   [Theme 4: MOVW/MOVT R1,R2,R3; B end] (26 bytes)
+	 *   [Theme 3: MOVW/MOVT R1,R2,R3; B end] (26 bytes)
+	 *   [Theme 2: MOVW/MOVT R1,R2,R3; B end] (26 bytes)
+	 *   [Theme 1: MOVW/MOVT R1,R2,R3; B end] (26 bytes)
+	 *   [Theme 0: MOVW/MOVT R1,R2,R3] (24 bytes, falls through)
+	 *   end: BX LR (2 bytes)
+	 *
+	 * Total: ~164 bytes
+	 */
+	private generateMenuHandlerWithPrologue(colors: number[], themeCount: number): Uint8Array {
+		const code: number[] = [];
+
+		// Copy original prologue (14 bytes from 0x3F87E)
+		// PUSH {R4-R6} + 5 LDR instructions
+		const menuEntryResult = discoverMenuFunction(this.data);
+		if (!menuEntryResult) {
+			throw new PatchError('Cannot find Menu function for prologue');
+		}
+		const [movAddr] = menuEntryResult;
+		const prologueStart = movAddr - 14; // 0x3F87E
+		const prologueSize = 14;
+
+		// Copy prologue bytes
+		for (let i = 0; i < prologueSize; i++) {
+			code.push(this.data[prologueStart + i]);
+		}
+
+		// Generate color selection code
+		// CMP R0, #0; BEQ theme_0
+		// CMP R0, #1; BEQ theme_1
+		// ...
+		const beqPositions: Array<{ index: number; beqCodeAddr: number }> = [];
+
+		for (let i = 0; i < themeCount - 1; i++) {
+			code.push(0x00 | i, 0x28);  // CMP R0, #i
+			beqPositions.push({ index: i, beqCodeAddr: code.length });
+			code.push(0x00, 0xD0);  // BEQ placeholder
+		}
+
+		// Theme sections (theme N-1 first, then N-2, ..., 0)
+		// Each section loads 3 colors into R1, R2, R3, then branches to end
+		const themeSectionStarts: number[] = [];
+		const bPositions: number[] = [];
+
+		for (let theme = themeCount - 1; theme >= 0; theme--) {
+			themeSectionStarts[theme] = code.length;
+
+			// Load 3 colors for this theme
+			for (let attr = 0; attr < 3; attr++) {
+				const colorIndex = theme * 3 + attr;
+				const color = colors[colorIndex] || 0;
+				const reg = 1 + attr; // R1, R2, R3
+
+				code.push(...encodeMovw(reg, color & 0xffff));
+				code.push(...encodeMovt(reg, (color >> 16) & 0xffff));
+			}
+
+			// For themes N-1 to 1, add B instruction to skip to end
+			if (theme > 0) {
+				bPositions.push(code.length);
+				code.push(0x00, 0xE0);  // B placeholder
+			}
+			// Theme 0 falls through to BX LR
+		}
+
+		// End address (BX LR)
+		const endAddr = code.length;
+		code.push(0x70, 0x47); // BX LR
+
+		// Patch BEQ offsets
+		for (const { index, beqCodeAddr } of beqPositions) {
+			const pc = beqCodeAddr + 4;
+			const target = themeSectionStarts[index];
+			const offset = (target - pc) >> 1;
+
+			if (offset < -128 || offset > 127) {
+				throw new PatchError('BEQ offset out of range for Menu theme selection');
+			}
+
+			const imm8 = offset & 0xFF;
+			code[beqCodeAddr] = imm8;
+			code[beqCodeAddr + 1] = 0xD0;
+		}
+
+		// Patch B offsets (for themes N-1 to 1)
+		for (let i = 0; i < bPositions.length; i++) {
+			const bAddr = bPositions[i];
+			const pc = bAddr + 4;
+			const offset = (endAddr - pc) >> 1;
+
+			if (offset < -128 || offset > 127) {
+				throw new PatchError('B offset out of range for Menu theme skip');
+			}
+
+			const imm8 = offset & 0xFF;
+			code[bAddr] = imm8;
+			code[bAddr + 1] = 0xE0;  // B (unconditional)
+		}
+
+		return new Uint8Array(code);
+	}
+
+	/**
+	 * Generate simple Menu handler (without prologue) for inline patching
+	 */
 	private generateMenuHandler(colors: number[]): Uint8Array {
 		const code: number[] = [];
 		for (let i = 0; i < Math.min(colors.length, 3); i++) {
@@ -1276,9 +1412,44 @@ export class ThemePatcher {
 		// New function size
 		const newFuncSize = funcSize + expansionBytes;
 
-		// Place metadata after the function (word-aligned)
-		const metadataOffset = (newFuncSize + 3) & ~3;
-		const metadataAddr = newFuncAddr + metadataOffset;
+		// Generate Menu handler and place it after FLAC function
+		let menuHandlerAddr = 0;
+		let menuHandlerSize = 0;
+		let menuCallerAddr = 0;
+		let nextOffset = (newFuncSize + 3) & ~3; // Word-aligned offset after FLAC function
+
+		// Find Menu caller (optional - only if Menu patching is needed)
+		const menuCallerInfo = this.findMenuCaller();
+		if (menuCallerInfo) {
+			// Generate Menu handler with prologue
+			const menuHandler = this.generateMenuHandlerWithPrologue(menuColors, themeCount);
+			menuHandlerSize = menuHandler.length;
+
+			// Place Menu handler after FLAC function (word-aligned)
+			menuHandlerAddr = newFuncAddr + nextOffset;
+
+			// Verify we have enough space (Menu handler + RELO header + metadata)
+			const totalNeeded = nextOffset + menuHandlerSize + RELO_HEADER_SIZE + METADATA_SIZE;
+			const poolEnd = freedPoolAddr + LANGUAGE_CONSTANTS.POOL_SPACING;
+			if (menuHandlerAddr + menuHandlerSize + RELO_HEADER_SIZE + METADATA_SIZE > poolEnd) {
+				throw new CapacityError('Not enough space in language pool for Menu handler');
+			}
+
+			// Write Menu handler
+			modifiedData.set(menuHandler, menuHandlerAddr);
+
+			// Modify Menu caller's BL to point to new handler
+			menuCallerAddr = menuCallerInfo.callerAddr;
+			const menuBlBytes = encodeBl(menuCallerAddr, menuHandlerAddr);
+			modifiedData.set(menuBlBytes, menuCallerAddr);
+
+			// Update next offset after Menu handler
+			nextOffset = (nextOffset + menuHandlerSize + 3) & ~3;
+		}
+
+		// Place RELO header and metadata at the end
+		// RELO header comes immediately before metadata
+		const metadataAddr = newFuncAddr + nextOffset + RELO_HEADER_SIZE;
 
 		// Create metadata
 		const metadata = createPatchMetadata(Math.floor(Date.now() / 1000), flacColors, menuColors);
@@ -1287,10 +1458,13 @@ export class ThemePatcher {
 
 		// Create relocation header (stores info for re-patching)
 		const reloHeader = encodeRelocationHeader({
-			newFuncAddr,
-			funcSize: newFuncSize,
-			colorCodeOffset: itBlockOffset, // Color code offset in new function
-			callerAddr
+			flacFuncAddr: newFuncAddr,
+			flacFuncSize: newFuncSize,
+			flacColorCodeOffset: itBlockOffset, // Color code offset in new function
+			flacCallerAddr: callerAddr,
+			menuHandlerAddr,
+			menuHandlerSize,
+			menuCallerAddr
 		});
 		const reloHeaderAddr = metadataAddr - RELO_HEADER_SIZE;
 		modifiedData.set(reloHeader, reloHeaderAddr);
@@ -1308,7 +1482,23 @@ export class ThemePatcher {
 			}
 		};
 
+		// Add Menu patch point if Menu was patched
+		if (menuHandlerAddr !== 0 && menuCallerAddr !== 0) {
+			const menuCallerInfo = this.findMenuCaller();
+			const originalMenuTarget = menuCallerInfo?.currentTarget ?? 0;
+			patchPoints['menu'] = {
+				type: 'menu',
+				funcAddr: originalMenuTarget,
+				patchAddr: menuCallerAddr,
+				targetAddr: menuHandlerAddr,
+				originalBytes: this.bytesToHex(this.data.slice(menuCallerAddr, menuCallerAddr + 4)),
+				newBytes: this.bytesToHex(modifiedData.slice(menuCallerAddr, menuCallerAddr + 4))
+			};
+		}
+
 		// Create a fake NOP slide for compatibility with existing API
+		// Include Menu handler in the slide size if present
+		const codeEnd = menuHandlerAddr !== 0 ? (menuHandlerAddr + menuHandlerSize) : (newFuncAddr + newFuncSize);
 		const fakeNopSlideEnd = metadataAddr + metadataBytes.length;
 		const fakeNopSlide: NopSlide = {
 			start: newFuncAddr,
@@ -1330,7 +1520,10 @@ export class ThemePatcher {
 			originalFuncAddr: funcStart,
 			newFuncAddr,
 			funcSize: newFuncSize,
-			callerAddr
+			callerAddr,
+			menuHandlerAddr: menuHandlerAddr !== 0 ? menuHandlerAddr : undefined,
+			menuHandlerSize: menuHandlerSize !== 0 ? menuHandlerSize : undefined,
+			menuCallerAddr: menuCallerAddr !== 0 ? menuCallerAddr : undefined
 		};
 
 		return {
@@ -1439,6 +1632,54 @@ export class ThemePatcher {
 
 				// Check if this BL targets our FLAC function (allow ±1 for Thumb alignment)
 				if (Math.abs(target - flacFuncAddr) <= 1) {
+					return {
+						callerAddr: addr,
+						currentTarget: target
+					};
+				}
+				addr += 4; // BL is always 32-bit
+			} else {
+				// Check if 32-bit instruction
+				const is32bit = hw1 >= 0xe800 || (hw1 & 0xf800) === 0xf000;
+				addr += is32bit ? 4 : 2;
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Find the BL instruction that calls the Menu function
+	 * Menu function is at 0x3F87E (entry point with PUSH {R4-R6})
+	 */
+	private findMenuCaller(): { callerAddr: number; currentTarget: number } | null {
+		// Find Menu function entry point (0x3F87E pattern: PUSH {R4-R6} followed by LDRs)
+		const menuEntryResult = discoverMenuFunction(this.data);
+		if (!menuEntryResult) {
+			return null;
+		}
+
+		// The actual entry point is 14 bytes before the MOV.W R12, #0 signature
+		// because discoverMenuFunction returns the MOV.W address, not the PUSH address
+		const [movAddr] = menuEntryResult;
+		const menuEntryAddr = movAddr - 14; // 0x3F88C - 14 = 0x3F87E
+
+		// Search for BL instructions that target the Menu entry point
+		const searchStart = 0x30000;
+		const searchEnd = Math.min(0x50000, this.data.length);
+
+		for (let addr = searchStart; addr < searchEnd; ) {
+			if (addr + 4 > this.data.length) break;
+
+			const hw1 = this.data[addr] | (this.data[addr + 1] << 8);
+			const hw2 = this.data[addr + 2] | (this.data[addr + 3] << 8);
+
+			// Check for BL instruction
+			if ((hw1 & 0xf800) === 0xf000 && (hw2 & 0xd000) === 0xd000) {
+				const target = decodeBlTarget(addr, this.data.slice(addr, addr + 4));
+
+				// Check if this BL targets our Menu entry point (allow ±1 for Thumb alignment)
+				if (Math.abs(target - menuEntryAddr) <= 1) {
 					return {
 						callerAddr: addr,
 						currentTarget: target

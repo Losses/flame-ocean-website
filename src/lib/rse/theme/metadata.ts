@@ -213,7 +213,8 @@ export function scanForPatchMetadata(data: Uint8Array): { metadata: PatchMetadat
 const RELO_MAGIC = 'RELO';
 /** Relocation header size */
 export const RELO_HEADER_SIZE_OLD = 16; // 4 + 4 + 4 + 4 (without callerAddr)
-export const RELO_HEADER_SIZE = 20; // 4 + 4 + 4 + 4 + 4 (with callerAddr)
+export const RELO_HEADER_SIZE_V2 = 20; // 4 + 4 + 4 + 4 + 4 (with callerAddr, no menu)
+export const RELO_HEADER_SIZE = 32; // 4 + 4 + 4 + 4 + 4 + 4 + 4 + 4 (with flac + menu)
 
 /**
  * Relocation header - stored before metadata
@@ -221,14 +222,20 @@ export const RELO_HEADER_SIZE = 20; // 4 + 4 + 4 + 4 + 4 (with callerAddr)
  * Contains information needed to relocate-patch an already patched firmware.
  */
 export interface RelocationHeader {
-	/** New function address in language pool */
-	newFuncAddr: number;
-	/** Function size in bytes */
-	funcSize: number;
-	/** Offset of color selection code within the function */
-	colorCodeOffset: number;
-	/** Address of the BL instruction that calls the relocated function */
-	callerAddr: number;
+	/** FLAC function address in language pool */
+	flacFuncAddr: number;
+	/** FLAC function size in bytes */
+	flacFuncSize: number;
+	/** Offset of color selection code within the FLAC function */
+	flacColorCodeOffset: number;
+	/** Address of the BL instruction that calls the FLAC function */
+	flacCallerAddr: number;
+	/** Menu handler address in language pool (0 if not patched) */
+	menuHandlerAddr: number;
+	/** Menu handler size in bytes */
+	menuHandlerSize: number;
+	/** Address of the BL instruction that calls the Menu function (0 if not patched) */
+	menuCallerAddr: number;
 }
 
 /**
@@ -244,29 +251,47 @@ export function encodeRelocationHeader(header: RelocationHeader): Uint8Array {
 	data[offset++] = 0x4C; // L
 	data[offset++] = 0x4F; // O
 
-	// New function address (4 bytes, little-endian)
-	data[offset++] = header.newFuncAddr & 0xff;
-	data[offset++] = (header.newFuncAddr >> 8) & 0xff;
-	data[offset++] = (header.newFuncAddr >> 16) & 0xff;
-	data[offset++] = (header.newFuncAddr >> 24) & 0xff;
+	// FLAC function address (4 bytes, little-endian)
+	data[offset++] = header.flacFuncAddr & 0xff;
+	data[offset++] = (header.flacFuncAddr >> 8) & 0xff;
+	data[offset++] = (header.flacFuncAddr >> 16) & 0xff;
+	data[offset++] = (header.flacFuncAddr >> 24) & 0xff;
 
-	// Function size (4 bytes, little-endian)
-	data[offset++] = header.funcSize & 0xff;
-	data[offset++] = (header.funcSize >> 8) & 0xff;
-	data[offset++] = (header.funcSize >> 16) & 0xff;
-	data[offset++] = (header.funcSize >> 24) & 0xff;
+	// FLAC function size (4 bytes, little-endian)
+	data[offset++] = header.flacFuncSize & 0xff;
+	data[offset++] = (header.flacFuncSize >> 8) & 0xff;
+	data[offset++] = (header.flacFuncSize >> 16) & 0xff;
+	data[offset++] = (header.flacFuncSize >> 24) & 0xff;
 
-	// Color code offset (4 bytes, little-endian)
-	data[offset++] = header.colorCodeOffset & 0xff;
-	data[offset++] = (header.colorCodeOffset >> 8) & 0xff;
-	data[offset++] = (header.colorCodeOffset >> 16) & 0xff;
-	data[offset++] = (header.colorCodeOffset >> 24) & 0xff;
+	// FLAC color code offset (4 bytes, little-endian)
+	data[offset++] = header.flacColorCodeOffset & 0xff;
+	data[offset++] = (header.flacColorCodeOffset >> 8) & 0xff;
+	data[offset++] = (header.flacColorCodeOffset >> 16) & 0xff;
+	data[offset++] = (header.flacColorCodeOffset >> 24) & 0xff;
 
-	// Caller address (BL instruction address, 4 bytes, little-endian)
-	data[offset++] = header.callerAddr & 0xff;
-	data[offset++] = (header.callerAddr >> 8) & 0xff;
-	data[offset++] = (header.callerAddr >> 16) & 0xff;
-	data[offset++] = (header.callerAddr >> 24) & 0xff;
+	// FLAC caller address (BL instruction address, 4 bytes, little-endian)
+	data[offset++] = header.flacCallerAddr & 0xff;
+	data[offset++] = (header.flacCallerAddr >> 8) & 0xff;
+	data[offset++] = (header.flacCallerAddr >> 16) & 0xff;
+	data[offset++] = (header.flacCallerAddr >> 24) & 0xff;
+
+	// Menu handler address (4 bytes, little-endian)
+	data[offset++] = header.menuHandlerAddr & 0xff;
+	data[offset++] = (header.menuHandlerAddr >> 8) & 0xff;
+	data[offset++] = (header.menuHandlerAddr >> 16) & 0xff;
+	data[offset++] = (header.menuHandlerAddr >> 24) & 0xff;
+
+	// Menu handler size (4 bytes, little-endian)
+	data[offset++] = header.menuHandlerSize & 0xff;
+	data[offset++] = (header.menuHandlerSize >> 8) & 0xff;
+	data[offset++] = (header.menuHandlerSize >> 16) & 0xff;
+	data[offset++] = (header.menuHandlerSize >> 24) & 0xff;
+
+	// Menu caller address (BL instruction address, 4 bytes, little-endian)
+	data[offset++] = header.menuCallerAddr & 0xff;
+	data[offset++] = (header.menuCallerAddr >> 8) & 0xff;
+	data[offset++] = (header.menuCallerAddr >> 16) & 0xff;
+	data[offset++] = (header.menuCallerAddr >> 24) & 0xff;
 
 	return data;
 }
@@ -274,10 +299,13 @@ export function encodeRelocationHeader(header: RelocationHeader): Uint8Array {
 /**
  * Decode relocation header from bytes
  *
- * Supports both old format (16 bytes, no callerAddr) and new format (20 bytes, with callerAddr)
+ * Supports multiple formats:
+ * - V1 (16 bytes): flacFuncAddr, flacFuncSize, flacColorCodeOffset
+ * - V2 (20 bytes): + flacCallerAddr
+ * - V3 (32 bytes): + menuHandlerAddr, menuHandlerSize, menuCallerAddr
  */
 export function decodeRelocationHeader(data: Uint8Array, offset: number): RelocationHeader | null {
-	// Minimum size for old format (without callerAddr)
+	// Minimum size for old format
 	if (offset + RELO_HEADER_SIZE_OLD > data.length) {
 		return null;
 	}
@@ -292,29 +320,57 @@ export function decodeRelocationHeader(data: Uint8Array, offset: number): Reloca
 
 	let pos = offset + 4;
 
-	const newFuncAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	const flacFuncAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
 	pos += 4;
 
-	const funcSize = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	const flacFuncSize = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
 	pos += 4;
 
-	const colorCodeOffset = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	const flacColorCodeOffset = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
 	pos += 4;
 
-	// Check if we have enough bytes for callerAddr (new format)
-	let callerAddr = 0;
-	if (offset + RELO_HEADER_SIZE <= data.length) {
-		callerAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	// Default values for optional fields
+	let flacCallerAddr = 0;
+	let menuHandlerAddr = 0;
+	let menuHandlerSize = 0;
+	let menuCallerAddr = 0;
+
+	// Check available size to determine format version
+	const availableBytes = data.length - offset;
+
+	if (availableBytes >= RELO_HEADER_SIZE) {
+		// V3 format (32 bytes) - full format with menu
+		flacCallerAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+		pos += 4;
+
+		menuHandlerAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+		pos += 4;
+
+		menuHandlerSize = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+		pos += 4;
+
+		menuCallerAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
+	} else if (availableBytes >= RELO_HEADER_SIZE_V2) {
+		// V2 format (20 bytes) - with callerAddr but no menu
+		flacCallerAddr = data[pos] | (data[pos + 1] << 8) | (data[pos + 2] << 16) | (data[pos + 3] << 24);
 	}
 
-	return { newFuncAddr, funcSize, colorCodeOffset, callerAddr };
+	return {
+		flacFuncAddr,
+		flacFuncSize,
+		flacColorCodeOffset,
+		flacCallerAddr,
+		menuHandlerAddr,
+		menuHandlerSize,
+		menuCallerAddr
+	};
 }
 
 /**
  * Scan firmware for patch with relocation header
  *
  * Returns metadata, relocation header, and metadata offset if found.
- * Supports both old format (16 bytes) and new format (20 bytes) headers.
+ * Supports multiple format versions.
  */
 export function scanForPatchWithRelocation(data: Uint8Array): {
 	metadata: PatchMetadata;
@@ -326,11 +382,13 @@ export function scanForPatchWithRelocation(data: Uint8Array): {
 		return null;
 	}
 
-	// Try new format first (20 bytes before metadata)
+	// Try formats from newest to oldest
+
+	// Try V3 format first (32 bytes before metadata)
 	let reloHeaderOffset = result.offset - RELO_HEADER_SIZE;
 	if (reloHeaderOffset >= 0) {
 		const reloHeader = decodeRelocationHeader(data, reloHeaderOffset);
-		if (reloHeader && reloHeader.callerAddr !== 0) {
+		if (reloHeader && reloHeader.flacCallerAddr !== 0) {
 			return {
 				metadata: result.metadata,
 				metadataOffset: result.offset,
@@ -339,7 +397,20 @@ export function scanForPatchWithRelocation(data: Uint8Array): {
 		}
 	}
 
-	// Try old format (16 bytes before metadata)
+	// Try V2 format (20 bytes before metadata)
+	reloHeaderOffset = result.offset - RELO_HEADER_SIZE_V2;
+	if (reloHeaderOffset >= 0) {
+		const reloHeader = decodeRelocationHeader(data, reloHeaderOffset);
+		if (reloHeader && reloHeader.flacCallerAddr !== 0) {
+			return {
+				metadata: result.metadata,
+				metadataOffset: result.offset,
+				reloHeader
+			};
+		}
+	}
+
+	// Try V1 format (16 bytes before metadata)
 	reloHeaderOffset = result.offset - RELO_HEADER_SIZE_OLD;
 	if (reloHeaderOffset >= 0) {
 		const reloHeader = decodeRelocationHeader(data, reloHeaderOffset);
