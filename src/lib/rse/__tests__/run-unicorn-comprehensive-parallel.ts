@@ -611,13 +611,16 @@ actual_colors = []
 num_colors = 5 if is_flac else 3
 for i in range(num_colors):
     if is_flac:
-        # FLAC handler structure:
-        # For inline patches: PUSH {R4, LR} (2 bytes) + CMP/BEQ pairs (16 bytes) + theme code
-        # For relocation patches: CMP/BEQ pairs (16 bytes) + theme code (no PUSH)
-        # Theme code: Theme 4: MOVW/MOVT/POP (10 bytes), Theme 3-1: same, Theme 0: MOVW/MOVT/POP (10 bytes)
-        # Theme i MOVW at offset: (2 if not relocation else 0) + 16 + (4 - i) * 10
-        push_offset = 0 if is_relocation else 2
-        movw_addr = HANDLER_START + push_offset + 16 + (4 - i) * 10
+        # FLAC color code structure (inline with B to skip):
+        # CMP/BEQ pairs: 16 bytes (offset 0-15)
+        # Theme 4: MOVW + MOVT + B: 10 bytes (offset 16-25)
+        # Theme 3: MOVW + MOVT + B: 10 bytes (offset 26-35)
+        # Theme 2: MOVW + MOVT + B: 10 bytes (offset 36-45)
+        # Theme 1: MOVW + MOVT + B: 10 bytes (offset 46-55)
+        # Theme 0: MOVW + MOVT: 8 bytes (offset 56-63, falls through to original code)
+        # Total: 64 bytes
+        # Theme i MOVW at offset: 16 + (4 - i) * 10
+        movw_addr = HANDLER_START + 16 + (4 - i) * 10
     else:
         # Menu handler starts with MOVW/MOVT pairs immediately (0 offset)
         # We load R1, R2, R3 correctly
@@ -649,6 +652,11 @@ def hook_code(uc, address, size, user_data):
     # For inline FLAC patches, stop at BL_ADDR + 14 (inside original function)
     # For relocation patches, DON'T stop here - the handler is far away
     if not is_relocation and address == (BL_ADDR + 14) and is_flac:
+        uc.emu_stop()
+    # For relocation patches with inline color code (no BX LR), stop after color code
+    # Color code is 64 bytes: 16 bytes CMP/BEQ + 48 bytes (4 themes with B + 1 theme without)
+    if is_relocation and address == (HANDLER_START + 64):
+        bx_lr_executed = True  # Treat fall-through as success
         uc.emu_stop()
 
 mu.hook_add(UC_HOOK_CODE, hook_code)

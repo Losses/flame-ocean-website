@@ -78,7 +78,7 @@ async function main() {
 		// Determine which BL address to use based on what was patched
 		// Relocation method always uses FLAC function, so we always use flac patchAddr
 		let blAddr: number | undefined;
-		if (result.relocationInfo?.method === 'relocation') {
+		if (result.relocationInfo) {
 			// Relocation method: always use FLAC patch point (even for menu-only patches)
 			blAddr = result.patchPoints?.flac?.patchAddr;
 		} else {
@@ -127,7 +127,7 @@ async function main() {
 		// For inline method, they use separate handlers
 		let flacCodeAddr = result.patchPoints?.flac?.targetAddr || 0;
 		let menuCodeAddr = result.patchPoints?.menu?.targetAddr || 0;
-		if (result.relocationInfo?.method === 'relocation') {
+		if (result.relocationInfo) {
 			// Relocation method: both use the same handler address (color selection code)
 			// The color selection code address is in flac patchPoints
 			if (flacCodeAddr === 0) flacCodeAddr = nopSlideAddr;

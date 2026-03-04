@@ -272,9 +272,7 @@ export interface PatchResult {
  * Relocation info - details about function relocation patching
  */
 export interface RelocationInfo {
-	/** Method used: 'relocation' for new method, 'inline' for old method */
-	readonly method: 'relocation' | 'inline';
-	/** Index of language that was knocked down (if using relocation) */
+	/** Index of language that was knocked down */
 	readonly knockedDownLanguage?: number;
 	/** Name of language that was knocked down */
 	readonly knockedDownLanguageName?: string;
@@ -314,15 +312,12 @@ export interface PatchAnalysisResult {
 	nopSlides: NopSlide[];
 	/** Whether firmware can be patched */
 	canPatch: boolean;
-	/** Compatibility level */
-	compatibility: 'supported' | 'experimental' | 'deprecated' | 'unsupported';
-	/** Optional message explaining support status */
-	supportMessage?: string;
 	/** Patch detection status */
 	patchStatus: {
 		readonly isPatched: boolean;
 		readonly status: string;
-		readonly patchType: 'none' | 'flac_only' | 'menu_only' | 'full' | 'unknown' | 'relocation';
+		/** What's patched: 'none', 'flac', 'menu', or 'both' */
+		readonly patchType: 'none' | 'flac' | 'menu' | 'both';
 		readonly flacPatched: boolean;
 		readonly menuPatched: boolean;
 		readonly nopHasCode: boolean;
@@ -330,7 +325,7 @@ export interface PatchAnalysisResult {
 		readonly metadata?: PatchMetadata;
 		/** Offset of patch metadata in firmware (if patched) */
 		readonly metadataOffset?: number;
-		/** Relocation header (if patched via relocation) */
+		/** Relocation header (if patched) */
 		readonly reloHeader?: {
 			newFuncAddr: number;
 			funcSize: number;
