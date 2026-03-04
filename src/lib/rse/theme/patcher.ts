@@ -605,7 +605,7 @@ export class ThemePatcher {
 		};
 
 		let flacColors = options.flacColors ?? null;
-		let menuColors = options.menuColors ?? null;
+		let menuColors = options.menuColors ?? null; // Can be null if user only wants FLAC patch
 
 		// If already patched via relocation, do a re-patch by updating colors in place
 		if (isPatched && reloHeader && metadataOffset) {
@@ -618,18 +618,20 @@ export class ThemePatcher {
 			);
 		}
 
-		// Fill in missing colors from ground truth
-		if (!flacColors || !menuColors) {
+		// Fill in missing FLAC colors from ground truth (required for first patch)
+		if (!flacColors) {
 			const groundTruth = this.extractGroundTruthColors();
-			if (!flacColors) flacColors = [...groundTruth.flacColors];
-			if (!menuColors) menuColors = [...groundTruth.menuColors];
+			flacColors = [...groundTruth.flacColors];
 		}
+
+		// Note: menuColors is NOT auto-filled - user must explicitly provide it to patch Menu
+		// This allows FLAC-only patches
 
 		// Use relocation method for patching
 		return this.patchWithRelocation(
 			{
 				flacColors: flacColors!,
-				menuColors: menuColors!,
+				menuColors, // Can be null for FLAC-only patch
 				knockDownLanguage: options.knockDownLanguage
 			},
 			outputPath,
@@ -710,6 +712,29 @@ export class ThemePatcher {
 
 			// Write new Menu handler
 			patchedData.set(menuHandler, menuHandlerAddr);
+		} else if (options.menuColors && menuHandlerAddr === 0) {
+			// Menu not yet patched but user wants to add it now
+			// Place Menu handler after FLAC function
+			const themeCount = 5;
+			const menuHandler = this.generateMenuHandlerWithPrologue(menuColors, themeCount);
+			menuHandlerSize = menuHandler.length;
+
+			// Calculate placement: after FLAC function (word-aligned)
+			const menuHandlerOffset = (reloHeader.flacFuncSize + 3) & ~3;
+			menuHandlerAddr = reloHeader.flacFuncAddr + menuHandlerOffset;
+
+			// Find Menu caller
+			const menuCallerInfo = this.findMenuCaller();
+			if (menuCallerInfo) {
+				menuCallerAddr = menuCallerInfo.callerAddr;
+
+				// Write Menu handler
+				patchedData.set(menuHandler, menuHandlerAddr);
+
+				// Modify Menu caller's BL
+				const menuBlBytes = encodeBl(menuCallerAddr, menuHandlerAddr);
+				patchedData.set(menuBlBytes, menuCallerAddr);
+			}
 		}
 
 		// Update metadata
@@ -717,9 +742,18 @@ export class ThemePatcher {
 		const metadataBytes = writePatchMetadata(newMetadata);
 		patchedData.set(metadataBytes, metadataOffset);
 
-		// Rewrite relocation header (preserve all fields, just in case)
+		// Rewrite relocation header with updated Menu info (if Menu was just added)
+		const newReloHeader: RelocationHeader = {
+			flacFuncAddr: reloHeader.flacFuncAddr,
+			flacFuncSize: reloHeader.flacFuncSize,
+			flacColorCodeOffset: reloHeader.flacColorCodeOffset,
+			flacCallerAddr: reloHeader.flacCallerAddr,
+			menuHandlerAddr,
+			menuHandlerSize,
+			menuCallerAddr
+		};
 		const reloHeaderAddr = metadataOffset - RELO_HEADER_SIZE;
-		patchedData.set(encodeRelocationHeader(reloHeader), reloHeaderAddr);
+		patchedData.set(encodeRelocationHeader(newReloHeader), reloHeaderAddr);
 
 		// Write to file if requested
 		if (writeFile) {
@@ -1240,7 +1274,7 @@ export class ThemePatcher {
 	patchWithRelocation(
 		options: {
 			flacColors: number[];
-			menuColors: number[];
+			menuColors: number[] | null; // null for FLAC-only patch
 			/** Language index to knock down (default: last non-protected language) */
 			knockDownLanguage?: number;
 		},
@@ -1261,7 +1295,8 @@ export class ThemePatcher {
 		if (flacColors.length !== themeCount) {
 			throw new ValidationError(`FLAC colors must have exactly ${themeCount} values (one per theme)`);
 		}
-		if (menuColors.length !== themeCount * 3) {
+		// Only validate menuColors if provided
+		if (menuColors && menuColors.length !== themeCount * 3) {
 			throw new ValidationError(`Menu colors must have exactly ${themeCount * 3} values (${themeCount} themes × 3 attributes)`);
 		}
 
@@ -1417,47 +1452,51 @@ export class ThemePatcher {
 		// New function size
 		const newFuncSize = funcSize + expansionBytes;
 
-		// Generate Menu handler and place it after FLAC function
+		// Generate Menu handler and place it after FLAC function (only if menuColors provided)
 		let menuHandlerAddr = 0;
 		let menuHandlerSize = 0;
 		let menuCallerAddr = 0;
 		let nextOffset = (newFuncSize + 3) & ~3; // Word-aligned offset after FLAC function
 
-		// Find Menu caller (optional - only if Menu patching is needed)
-		const menuCallerInfo = this.findMenuCaller();
-		if (menuCallerInfo) {
-			// Generate Menu handler with prologue
-			const menuHandler = this.generateMenuHandlerWithPrologue(menuColors, themeCount);
-			menuHandlerSize = menuHandler.length;
+		// Only patch Menu if menuColors is explicitly provided
+		if (menuColors && menuColors.length > 0) {
+			// Find Menu caller
+			const menuCallerInfo = this.findMenuCaller();
+			if (menuCallerInfo) {
+				// Generate Menu handler with prologue
+				const menuHandler = this.generateMenuHandlerWithPrologue(menuColors, themeCount);
+				menuHandlerSize = menuHandler.length;
 
-			// Place Menu handler after FLAC function (word-aligned)
-			menuHandlerAddr = newFuncAddr + nextOffset;
+				// Place Menu handler after FLAC function (word-aligned)
+				menuHandlerAddr = newFuncAddr + nextOffset;
 
-			// Verify we have enough space (Menu handler + RELO header + metadata)
-			const totalNeeded = nextOffset + menuHandlerSize + RELO_HEADER_SIZE + METADATA_SIZE;
-			const poolEnd = freedPoolAddr + LANGUAGE_CONSTANTS.POOL_SPACING;
-			if (menuHandlerAddr + menuHandlerSize + RELO_HEADER_SIZE + METADATA_SIZE > poolEnd) {
-				throw new CapacityError('Not enough space in language pool for Menu handler');
+				// Verify we have enough space (Menu handler + RELO header + metadata)
+				const totalNeeded = nextOffset + menuHandlerSize + RELO_HEADER_SIZE + METADATA_SIZE;
+				const poolEnd = freedPoolAddr + LANGUAGE_CONSTANTS.POOL_SPACING;
+				if (menuHandlerAddr + menuHandlerSize + RELO_HEADER_SIZE + METADATA_SIZE > poolEnd) {
+					throw new CapacityError('Not enough space in language pool for Menu handler');
+				}
+
+				// Write Menu handler
+				modifiedData.set(menuHandler, menuHandlerAddr);
+
+				// Modify Menu caller's BL to point to new handler
+				menuCallerAddr = menuCallerInfo.callerAddr;
+				const menuBlBytes = encodeBl(menuCallerAddr, menuHandlerAddr);
+				modifiedData.set(menuBlBytes, menuCallerAddr);
+
+				// Update next offset after Menu handler
+				nextOffset = (nextOffset + menuHandlerSize + 3) & ~3;
 			}
-
-			// Write Menu handler
-			modifiedData.set(menuHandler, menuHandlerAddr);
-
-			// Modify Menu caller's BL to point to new handler
-			menuCallerAddr = menuCallerInfo.callerAddr;
-			const menuBlBytes = encodeBl(menuCallerAddr, menuHandlerAddr);
-			modifiedData.set(menuBlBytes, menuCallerAddr);
-
-			// Update next offset after Menu handler
-			nextOffset = (nextOffset + menuHandlerSize + 3) & ~3;
 		}
 
 		// Place RELO header and metadata at the end
 		// RELO header comes immediately before metadata
 		const metadataAddr = newFuncAddr + nextOffset + RELO_HEADER_SIZE;
 
-		// Create metadata
-		const metadata = createPatchMetadata(Math.floor(Date.now() / 1000), flacColors, menuColors);
+		// Create metadata - use ground truth menu colors if not patching Menu
+		const metadataMenuColors = menuColors ?? this.extractGroundTruthColors().menuColors;
+		const metadata = createPatchMetadata(Math.floor(Date.now() / 1000), flacColors, metadataMenuColors);
 		const metadataBytes = writePatchMetadata(metadata);
 		modifiedData.set(metadataBytes, metadataAddr);
 

@@ -237,7 +237,7 @@ export class FirmwareState {
                 this._flacOperationThemeId = 0;
 
                 if (opType === 'unlock') {
-                  // FLAC unlock completed successfully
+                  // Theme unlock completed successfully
                   // buildColorTree() has already detected the patch status from the firmware
                   // Force update the selected color detail to reflect the new status
                   if (this.selectedColorDetail && this.selectedColorDetail.semantic.includes('Codec Info')) {
@@ -247,7 +247,25 @@ export class FirmwareState {
                     };
                   }
                   this.progress = 100;
-                  this.statusMessage = "FLAC color editing unlocked successfully!";
+                  this.statusMessage = "Theme color editing unlocked successfully!";
+
+                  // Check if there's a pending color selection to apply
+                  if (this.pendingColorSelection) {
+                    const pending = this.pendingColorSelection;
+                    this.pendingColorSelection = null;
+                    this.showColorPicker = false;
+                    this.colorPickerTarget = null;
+
+                    // Apply the pending color selection after a short delay
+                    setTimeout(() => {
+                      this.showLoadingWindow = false;
+                      this.isProcessing = false;
+                      // Re-trigger color selection with the pending values
+                      this.applyColorSelection(pending.type, pending.themeId, pending.rgb565);
+                    }, 500);
+                    return;
+                  }
+
                   setTimeout(() => {
                     this.showLoadingWindow = false;
                     this.isProcessing = false;
@@ -808,24 +826,66 @@ export class FirmwareState {
   }
 
   showFlacUnlockWarning() {
-    this.showWarningDialog(
-      "Unlock Theme Color Editing",
-      "This will enable customization of FLAC and Menu text colors.\n\n" +
-      "How it works:\n" +
-      "- Relocates the FLAC function to unused language pool space\n" +
-      "- The last language will be permanently disabled\n" +
-      "- Color selection code is added to the relocated function\n\n" +
-      "Important:\n" +
-      "- This operation cannot be undone\n" +
-      "- The disabled language cannot be recovered\n" +
-      "- Keep a backup of your original firmware\n\n" +
-      "Do you want to continue?"
-    );
-    // Store the pending FLAC unlock action
-    this.pendingFlacUnlock = true;
+    this.showThemeUnlockWarning('flac');
   }
 
-  pendingFlacUnlock = $state(false);
+  /**
+   * Show theme unlock warning dialog
+   * @param type - 'flac' for FLAC-only, 'menu' for Menu-only, 'both' for FLAC+Menu
+   */
+  showThemeUnlockWarning(type: 'flac' | 'menu' | 'both') {
+    let title: string;
+    let message: string;
+
+    if (type === 'flac') {
+      title = "Unlock FLAC Color Editing";
+      message =
+        "This will enable customization of FLAC playback info colors.\n\n" +
+        "How it works:\n" +
+        "- Relocates the FLAC function to unused language pool space\n" +
+        "- The last language will be permanently disabled\n" +
+        "- Color selection code is added to the relocated function\n\n" +
+        "Important:\n" +
+        "- This operation cannot be undone\n" +
+        "- The disabled language cannot be recovered\n\n" +
+        "Do you want to continue?";
+    } else if (type === 'menu') {
+      title = "Unlock Menu Color Editing";
+      message =
+        "This will enable customization of menu text colors.\n\n" +
+        "How it works:\n" +
+        "- Relocates the FLAC function to unused language pool space\n" +
+        "- The last language will be permanently disabled\n" +
+        "- Menu color handler is added to the freed space\n\n" +
+        "Note: Even if you only want to customize Menu colors,\n" +
+        "the FLAC function must still be relocated to make space.\n\n" +
+        "Important:\n" +
+        "- This operation cannot be undone\n" +
+        "- The disabled language cannot be recovered\n\n" +
+        "Do you want to continue?";
+    } else {
+      title = "Unlock Theme Color Editing";
+      message =
+        "This will enable customization of both FLAC and Menu colors.\n\n" +
+        "How it works:\n" +
+        "- Relocates the FLAC function to unused language pool space\n" +
+        "- The last language will be permanently disabled\n" +
+        "- Color selection code is added for both FLAC and Menu\n\n" +
+        "Important:\n" +
+        "- This operation cannot be undone\n" +
+        "- The disabled language cannot be recovered\n\n" +
+        "Do you want to continue?";
+    }
+
+    this.showWarningDialog(title, message);
+    this.pendingThemeUnlock = type;
+  }
+
+  // Pending theme unlock type: 'flac' for FLAC-only, 'menu' for Menu-only, 'both' for FLAC+Menu
+  pendingThemeUnlock = $state<'flac' | 'menu' | 'both' | null>(null);
+
+  // Pending color selection after unlock
+  pendingColorSelection = $state<{ type: 'flac' | 'menu'; themeId: number; rgb565: number } | null>(null);
 
   handleSelectNode(nodeId: string) {
     const node = this.findNodeById(this.treeNodes, nodeId);
@@ -919,19 +979,28 @@ export class FirmwareState {
   }
 
   handleWarningConfirm() {
-    // Handle FLAC unlock confirmation
-    if (this.pendingFlacUnlock) {
-      this.pendingFlacUnlock = false;
-      this.performFlacUnlock();
+    // Handle theme unlock confirmation
+    if (this.pendingThemeUnlock) {
+      const unlockType = this.pendingThemeUnlock;
+      this.pendingThemeUnlock = null;
+
+      if (unlockType === 'flac') {
+        this.performFlacUnlock();
+      } else if (unlockType === 'menu') {
+        this.performMenuUnlock();
+      } else if (unlockType === 'both') {
+        this.performBothUnlock();
+      }
     }
     this.showWarning = false;
   }
 
   handleWarningCancel() {
-    // Cancel FLAC unlock
-    if (this.pendingFlacUnlock) {
-      this.pendingFlacUnlock = false;
-      this.statusMessage = "FLAC unlock cancelled";
+    // Cancel theme unlock
+    if (this.pendingThemeUnlock) {
+      this.statusMessage = `${this.pendingThemeUnlock === 'both' ? 'Theme' : this.pendingThemeUnlock.toUpperCase()} unlock cancelled`;
+      this.pendingThemeUnlock = null;
+      this.pendingColorSelection = null;
     }
     this.showWarning = false;
   }
@@ -996,15 +1065,13 @@ export class FirmwareState {
         };
         this.worker!.addEventListener("message", handler);
 
-        // Extract current Menu colors (will be preserved during FLAC patch)
-        const currentMenuColors = extractor.getColorsForFunction('menu');
-
+        // Only patch FLAC, not Menu (user can patch Menu later if desired)
         this.worker!.postMessage({
           type: "patchTheme",
           id: "patchTheme",
           firmware: firmwareData,
           flacColors: currentFlacColors,
-          menuColors: currentMenuColors, // Also patch Menu with current colors
+          // menuColors not provided - Menu stays unpatched
         });
       });
 
@@ -1057,6 +1124,174 @@ export class FirmwareState {
       this._pendingFlacOperation = false;
       this._flacOperationType = null;
       this.showWarningDialog("FLAC Unlock Failed", `Failed to unlock codec information color editing:\n${err instanceof Error ? err.message : String(err)}`);
+      this.statusMessage = "Unknown error";
+    }
+  }
+
+  /**
+   * Unlock Menu color editing (only)
+   * This still requires FLAC function relocation to make space for Menu handler
+   */
+  async performMenuUnlock() {
+    // Get firmware from worker (single source of truth)
+    const firmwareData = await this.getFirmwareFromWorker();
+
+    this.isProcessing = true;
+    this.showLoadingWindow = true;
+    this.loadingTitle = "Unlocking Menu Color Editing";
+    this.progress = 10;
+    this.statusMessage = "Patching firmware...";
+
+    // Let the UI render the loading window before doing heavy work
+    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+
+    try {
+      const extractor = new ThemeColorExtractor(firmwareData);
+
+      // Extract current FLAC colors (must be preserved - FLAC function will be relocated)
+      const currentFlacColors = extractor.getColorsForFunction('flac');
+
+      // Extract current Menu colors
+      const currentMenuColors = extractor.getColorsForFunction('menu');
+
+      this.progress = 30;
+      this.statusMessage = "Applying patch...";
+
+      // Apply patch with both FLAC (preserved) and Menu colors
+      const patchedData = await new Promise<Uint8Array>((resolve, reject) => {
+        const handler = (e: MessageEvent) => {
+          const { type, id: responseId, result, error } = e.data;
+          if (responseId === "patchMenuUnlock") {
+            if (type === "success") {
+              this.worker!.removeEventListener("message", handler);
+              const patchResult = result as { patchedData: Uint8Array };
+              resolve(patchResult.patchedData);
+            } else if (type === "progress") {
+              const data = e.data as { message: string };
+              this.statusMessage = data.message;
+            } else if (type === "error") {
+              this.worker!.removeEventListener("message", handler);
+              reject(new Error(error || "Worker patching failed"));
+            }
+          }
+        };
+        this.worker!.addEventListener("message", handler);
+
+        // Patch both FLAC (preserved) and Menu
+        this.worker!.postMessage({
+          type: "patchTheme",
+          id: "patchMenuUnlock",
+          firmware: firmwareData,
+          flacColors: currentFlacColors,
+          menuColors: currentMenuColors,
+        });
+      });
+
+      this.progress = 80;
+      this.statusMessage = "Reloading firmware...";
+
+      // Set flag to indicate operation is in progress
+      this._pendingFlacOperation = true;
+      this._flacOperationType = 'unlock';
+
+      // Send patched firmware to worker
+      this.worker!.postMessage({
+        type: "analyze",
+        id: "analyze",
+        firmware: patchedData,
+      });
+
+      // If there's a pending color selection, apply it after unlock
+      if (this.pendingColorSelection) {
+        // Will be handled after worker responds
+      }
+    } catch (err) {
+      this.showLoadingWindow = false;
+      this.isProcessing = false;
+      this._pendingFlacOperation = false;
+      this._flacOperationType = null;
+      this.pendingColorSelection = null;
+      this.showWarningDialog("Menu Unlock Failed", `Failed to unlock menu color editing:\n${err instanceof Error ? err.message : String(err)}`);
+      this.statusMessage = "Unknown error";
+    }
+  }
+
+  /**
+   * Unlock both FLAC and Menu color editing
+   */
+  async performBothUnlock() {
+    // Get firmware from worker (single source of truth)
+    const firmwareData = await this.getFirmwareFromWorker();
+
+    this.isProcessing = true;
+    this.showLoadingWindow = true;
+    this.loadingTitle = "Unlocking Theme Color Editing";
+    this.progress = 10;
+    this.statusMessage = "Patching firmware...";
+
+    // Let the UI render the loading window before doing heavy work
+    await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+
+    try {
+      const extractor = new ThemeColorExtractor(firmwareData);
+
+      // Extract current colors
+      const currentFlacColors = extractor.getColorsForFunction('flac');
+      const currentMenuColors = extractor.getColorsForFunction('menu');
+
+      this.progress = 30;
+      this.statusMessage = "Applying patch...";
+
+      // Apply patch with both FLAC and Menu colors
+      const patchedData = await new Promise<Uint8Array>((resolve, reject) => {
+        const handler = (e: MessageEvent) => {
+          const { type, id: responseId, result, error } = e.data;
+          if (responseId === "patchBothUnlock") {
+            if (type === "success") {
+              this.worker!.removeEventListener("message", handler);
+              const patchResult = result as { patchedData: Uint8Array };
+              resolve(patchResult.patchedData);
+            } else if (type === "progress") {
+              const data = e.data as { message: string };
+              this.statusMessage = data.message;
+            } else if (type === "error") {
+              this.worker!.removeEventListener("message", handler);
+              reject(new Error(error || "Worker patching failed"));
+            }
+          }
+        };
+        this.worker!.addEventListener("message", handler);
+
+        // Patch both FLAC and Menu
+        this.worker!.postMessage({
+          type: "patchTheme",
+          id: "patchBothUnlock",
+          firmware: firmwareData,
+          flacColors: currentFlacColors,
+          menuColors: currentMenuColors,
+        });
+      });
+
+      this.progress = 80;
+      this.statusMessage = "Reloading firmware...";
+
+      // Set flag to indicate operation is in progress
+      this._pendingFlacOperation = true;
+      this._flacOperationType = 'unlock';
+
+      // Send patched firmware to worker
+      this.worker!.postMessage({
+        type: "analyze",
+        id: "analyze",
+        firmware: patchedData,
+      });
+    } catch (err) {
+      this.showLoadingWindow = false;
+      this.isProcessing = false;
+      this._pendingFlacOperation = false;
+      this._flacOperationType = null;
+      this.pendingColorSelection = null;
+      this.showWarningDialog("Theme Unlock Failed", `Failed to unlock theme color editing:\n${err instanceof Error ? err.message : String(err)}`);
       this.statusMessage = "Unknown error";
     }
   }
@@ -1816,20 +2051,33 @@ export class FirmwareState {
     if (!this.colorPickerTarget) return;
 
     const { type, themeId } = this.colorPickerTarget;
+
+    // Convert RGB to RGB565
+    const r5 = Math.round((rgb.r / 255) * 31);
+    const g5 = Math.round((rgb.g / 255) * 63);
+    const b5 = Math.round((rgb.b / 255) * 31);
+    const rgb565 = (r5 << 11) | (g5 << 5) | b5;
+
+    // Call the shared method
+    await this.applyColorSelection(type, themeId, rgb565);
+  }
+
+  /**
+   * Apply color selection after unlock or direct edit
+   * This is called both from handleColorSelect and after unlock completion
+   */
+  async applyColorSelection(type: 'flac' | 'menu' | 'progress' | 'marquee', themeId: number, rgb565: number) {
     this.isProcessing = true;
     this.statusMessage = `Updating ${type} color for theme ${themeId}...`;
 
     try {
-      // Convert RGB to RGB565
-      const r5 = Math.round((rgb.r / 255) * 31);
-      const g5 = Math.round((rgb.g / 255) * 63);
-      const b5 = Math.round((rgb.b / 255) * 31);
-      const rgb565 = (r5 << 11) | (g5 << 5) | b5;
-
       // FLAC color editing (requires full patch re-application)
       if (type === 'flac') {
         if (!this.flacPatched) {
-          throw new Error("FLAC color editing is not unlocked. Please unlock first.");
+          // Not patched - show warning and store pending selection
+          this.pendingColorSelection = { type: 'flac', themeId, rgb565 };
+          this.showThemeUnlockWarning('flac');
+          return;
         }
 
         this.showLoadingWindow = true;
@@ -1989,6 +2237,14 @@ export class FirmwareState {
 
       // Menu color editing (requires full patch re-application, similar to FLAC)
       if (type === 'menu') {
+        // Check if FLAC is patched first (Menu requires FLAC to be patched)
+        if (!this.flacPatched) {
+          // Not patched - show warning and store pending selection
+          this.pendingColorSelection = { type: 'menu', themeId, rgb565 };
+          this.showThemeUnlockWarning('menu');
+          return;
+        }
+
         this.showLoadingWindow = true;
         this.loadingTitle = "Updating Menu Color";
         this.progress = 10;
@@ -2004,9 +2260,7 @@ export class FirmwareState {
           const menuDiscovery = discoverMenuFunction(menuFirmwareData);
           const menuHasBl = menuDiscovery !== null && hasBlInstructionAt(menuFirmwareData, menuDiscovery[1]);
 
-          if (!menuHasBl) {
-            throw new Error("Menu color editing is not unlocked. Please unlock FLAC first (this will also unlock Menu).");
-          }
+          // If Menu is not patched yet, we'll patch it now (repatchRelocatedFunction handles this)
 
           this.progress = 20;
           this.statusMessage = "Extracting current colors...";
@@ -2168,7 +2422,15 @@ export class FirmwareState {
       // Rebuild color entries with updated data
       this.rebuildColorEntries(result);
 
-      this.statusMessage = `Successfully updated ${type} color for theme ${themeId} to RGB(${rgb.r}, ${rgb.g}, ${rgb.b})`;
+      // Convert RGB565 back to RGB for display
+      const r = (rgb565 >> 11) & 0x1f;
+      const g = (rgb565 >> 5) & 0x3f;
+      const b = rgb565 & 0x1f;
+      const r8 = Math.round(r * 255 / 31);
+      const g8 = Math.round(g * 255 / 63);
+      const b8 = Math.round(b * 255 / 31);
+
+      this.statusMessage = `Successfully updated ${type} color for theme ${themeId} to RGB(${r8}, ${g8}, ${b8})`;
       this.showColorPicker = false;
       this.colorPickerTarget = null;
 
