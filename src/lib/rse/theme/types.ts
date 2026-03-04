@@ -5,6 +5,7 @@
  */
 
 import type { Instruction } from './thumb/index.js';
+import type { RelocationHeader } from './metadata.js';
 
 /**
  * Color write record - represents a STRH instruction that writes a color
@@ -332,11 +333,7 @@ export interface PatchAnalysisResult {
 		/** Offset of patch metadata in firmware (if patched) */
 		readonly metadataOffset?: number;
 		/** Relocation header (if patched) */
-		readonly reloHeader?: {
-			newFuncAddr: number;
-			funcSize: number;
-			colorCodeOffset: number;
-		};
+		readonly reloHeader?: RelocationHeader;
 	};
 }
 

@@ -135,7 +135,7 @@ export class FirmwareState {
   // Color picker state
   showColorPicker = $state(false);
   colorPickerTarget = $state<{
-    type: 'progress' | 'marquee' | 'flac';
+    type: 'progress' | 'marquee' | 'flac' | 'menu';
     themeId: number;
   } | null>(null);
 
@@ -798,9 +798,9 @@ export class FirmwareState {
   }
 
   openColorDetail(entry: ColorEntry) {
-    // Include FLAC patch status for Codec Info colors
+    // Include FLAC patch status for Codec Info and Menu colors
     const detailWithFlacStatus = { ...entry };
-    if (entry.semantic.includes('Codec Info')) {
+    if (entry.semantic.includes('Codec Info') || entry.semantic.includes('Menu')) {
       detailWithFlacStatus.isFlacPatched = this.flacPatched;
     }
     this.selectedColorDetail = detailWithFlacStatus;
@@ -992,12 +992,16 @@ export class FirmwareState {
           }
         };
         this.worker!.addEventListener("message", handler);
+
+        // Extract current Menu colors (will be preserved during FLAC patch)
+        const currentMenuColors = extractor.getColorsForFunction('menu');
+
         this.worker!.postMessage({
           type: "patchTheme",
           id: "patchTheme",
           firmware: firmwareData,
           flacColors: currentFlacColors,
-          // menuColors: NOT PROVIDED - Menu stays unpatched
+          menuColors: currentMenuColors, // Also patch Menu with current colors
         });
       });
 
@@ -1590,7 +1594,7 @@ export class FirmwareState {
     }
   }
 
-  openColorPicker(type: 'progress' | 'marquee' | 'flac', themeId: number) {
+  openColorPicker(type: 'progress' | 'marquee' | 'flac' | 'menu', themeId: number) {
     this.colorPickerTarget = { type, themeId };
     this.showColorPicker = true;
   }
@@ -1976,6 +1980,117 @@ export class FirmwareState {
           this._pendingFlacOperation = false;
           this._flacOperationType = null;
           this._flacOperationThemeId = 0;
+          throw err;
+        }
+      }
+
+      // Menu color editing (requires full patch re-application, similar to FLAC)
+      if (type === 'menu') {
+        this.showLoadingWindow = true;
+        this.loadingTitle = "Updating Menu Color";
+        this.progress = 10;
+
+        // Let the UI render the loading window before doing heavy work
+        await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+
+        try {
+          // Get firmware from worker (single source of truth)
+          const menuFirmwareData = await this.getFirmwareFromWorker();
+
+          // Check if Menu is already patched
+          const menuDiscovery = discoverMenuFunction(menuFirmwareData);
+          const menuHasBl = menuDiscovery !== null && hasBlInstructionAt(menuFirmwareData, menuDiscovery[1]);
+
+          if (!menuHasBl) {
+            throw new Error("Menu color editing is not unlocked. Please unlock FLAC first (this will also unlock Menu).");
+          }
+
+          this.progress = 20;
+          this.statusMessage = "Extracting current colors...";
+
+          const extractor = new ThemeColorExtractor(menuFirmwareData);
+
+          // Extract current FLAC colors (must be preserved)
+          const currentFlacColors = extractor.getColorsForFunction('flac');
+
+          // Extract current Menu colors and update the selected one
+          const currentMenuColors = extractor.getColorsForFunction('menu');
+          // Menu colors are stored as 15 values (3 colors per theme * 5 themes)
+          // We need to update all 3 colors for the selected theme
+          // For simplicity, update all 3 attributes to the same color
+          currentMenuColors[themeId * 3 + 0] = rgb565; // Highlight
+          currentMenuColors[themeId * 3 + 1] = rgb565; // Secondary
+          currentMenuColors[themeId * 3 + 2] = rgb565; // Foreground
+
+          this.progress = 40;
+          this.statusMessage = "Applying patch...";
+
+          // Apply both FLAC and Menu patches using the worker
+          const patchedData = await new Promise<Uint8Array>((resolve, reject) => {
+            const handler = (e: MessageEvent) => {
+              const { type, id: responseId, result, error } = e.data;
+              if (responseId === "patchMenuEdit") {
+                if (type === "success") {
+                  this.worker!.removeEventListener("message", handler);
+                  const patchResult = result as { patchedData: Uint8Array };
+                  resolve(patchResult.patchedData);
+                } else if (type === "progress") {
+                  const data = e.data as { message: string };
+                  this.statusMessage = data.message;
+                  if (data.message.includes("Preparing")) {
+                    this.progress = 45;
+                  } else if (data.message.includes("Analyzing")) {
+                    this.progress = 50;
+                  } else if (data.message.includes("applied")) {
+                    this.progress = 55;
+                  }
+                } else if (type === "error") {
+                  this.worker!.removeEventListener("message", handler);
+                  reject(new Error(error || "Worker patching failed"));
+                }
+              }
+            };
+            this.worker!.addEventListener("message", handler);
+            this.worker!.postMessage({
+              type: "patchTheme",
+              id: "patchMenuEdit",
+              firmware: menuFirmwareData,
+              flacColors: currentFlacColors,
+              menuColors: currentMenuColors,
+            });
+          });
+
+          this.progress = 60;
+          this.statusMessage = "Verifying patch...";
+
+          // Round-trip verification
+          const verifyExtractor = new ThemeColorExtractor(patchedData);
+          const verifyMenuColors = verifyExtractor.getColorsForFunction('menu');
+
+          // Verify the specific theme colors were applied correctly
+          for (let attr = 0; attr < 3; attr++) {
+            const expectedColor = currentMenuColors[themeId * 3 + attr];
+            const actualColor = verifyMenuColors[themeId * 3 + attr];
+            if (actualColor !== expectedColor) {
+              throw new Error(`Menu color verification failed for theme ${themeId} attr ${attr}: expected 0x${expectedColor.toString(16)}, got 0x${actualColor.toString(16)}`);
+            }
+          }
+
+          this.progress = 80;
+          this.statusMessage = "Reloading firmware...";
+
+          // Send patched firmware to worker
+          this.worker!.postMessage({
+            type: "analyze",
+            id: "analyze",
+            firmware: patchedData,
+          });
+
+          // The rest of the workflow will be handled by the main worker message handler
+          return;
+        } catch (err) {
+          this.showLoadingWindow = false;
+          this.isProcessing = false;
           throw err;
         }
       }

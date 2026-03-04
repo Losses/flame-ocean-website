@@ -1075,9 +1075,12 @@ export class ThemePatcher {
 	 *   [Theme 2: MOVW/MOVT R1,R2,R3; B end] (26 bytes)
 	 *   [Theme 1: MOVW/MOVT R1,R2,R3; B end] (26 bytes)
 	 *   [Theme 0: MOVW/MOVT R1,R2,R3] (24 bytes, falls through)
-	 *   end: BX LR (2 bytes)
+	 *   end: POP {R4-R6, PC} (2 bytes) - restores callee-saved registers and returns
 	 *
 	 * Total: ~164 bytes
+	 *
+	 * IMPORTANT: Original prologue contains PUSH {R4-R6}, so we MUST use POP {R4-R6, PC}
+	 * to restore registers and return. Using BX LR would corrupt R4-R6 and unbalance the stack!
 	 */
 	private generateMenuHandlerWithPrologue(colors: number[], themeCount: number): Uint8Array {
 		const code: number[] = [];
@@ -1132,12 +1135,14 @@ export class ThemePatcher {
 				bPositions.push(code.length);
 				code.push(0x00, 0xE0);  // B placeholder
 			}
-			// Theme 0 falls through to BX LR
+			// Theme 0 falls through to POP
 		}
 
-		// End address (BX LR)
+		// End address - use POP {R4-R6, PC} to restore registers and return
+		// This is CRITICAL because the original prologue pushed R4-R6
+		// Encoding: POP {R4,R5,R6,PC} = 0xBD70 (register list bits 4,5,6,15)
 		const endAddr = code.length;
-		code.push(0x70, 0x47); // BX LR
+		code.push(0x70, 0xBD);  // POP {R4-R6, PC}
 
 		// Patch BEQ offsets
 		for (const { index, beqCodeAddr } of beqPositions) {

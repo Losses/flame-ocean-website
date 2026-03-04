@@ -132,11 +132,12 @@
 
 	const instructionHeaders = ['Key', 'Value'];
 
-	// Show Edit button for Progress Bar, Marquee, and patched FLAC colors
+	// Show Edit button for Progress Bar, Marquee, patched FLAC colors, and patched Menu colors
 	const showEditButton = $derived(
 		detail.semantic.includes('Progress Bar') ||
 		detail.semantic.includes('Marquee Overlay') ||
-		(detail.semantic.includes('Codec Info') && detail.isFlacPatched)
+		(detail.semantic.includes('Codec Info') && detail.isFlacPatched) ||
+		(detail.semantic.includes('Menu') && detail.isFlacPatched) // Menu is patched when FLAC is patched
 	);
 
 	// Show Unlock button for unpatched FLAC colors
