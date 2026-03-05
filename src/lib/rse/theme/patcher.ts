@@ -1931,8 +1931,12 @@ export class ThemePatcher {
 	 * - firstcond[3:0] = condition code
 	 * - mask[3:0] = determines number of conditional instructions
 	 *
-	 * Number of instructions = number of 1s in mask[3:0] + 1 (if firstcond[0]==0)
-	 *                        = number of 0s in mask[3:0] + 1 (if firstcond[0]==1)
+	 * The number of instructions is determined by the position of the least
+	 * significant set bit in the mask:
+	 * - 1000: 1 instruction
+	 * - x100: 2 instructions
+	 * - xx10: 3 instructions
+	 * - xxx1: 4 instructions
 	 */
 	private calculateItBlockSize(data: Uint8Array, itBlockOffset: number): number {
 		// IT instruction is at offset + 2 (after CMP)
@@ -1943,30 +1947,28 @@ export class ThemePatcher {
 			throw new PatchError('Expected IT instruction not found');
 		}
 
-		const firstcond = (itHw >> 4) & 0xF;
 		const mask = itHw & 0xF;
-
-		// Calculate number of conditional instructions
-		const firstcondLsb = firstcond & 1;
-		let itCount: number;
-
-		if (firstcondLsb === 0) {
-			// Count 1s in mask
-			itCount = (mask.toString(2).match(/1/g) || []).length + 1;
-		} else {
-			// Count 0s in mask
-			itCount = (mask.toString(2).match(/0/g) || []).length + 1;
+		if (mask === 0) {
+			throw new PatchError('Invalid IT instruction mask (0)');
 		}
+
+		// Calculate number of conditional instructions based on LSB of mask
+		let itCount = 0;
+		if (mask & 1) itCount = 4;
+		else if (mask & 2) itCount = 3;
+		else if (mask & 4) itCount = 2;
+		else if (mask & 8) itCount = 1;
 
 		// Calculate total size: CMP (2) + IT (2) + conditional instructions
 		let size = 4; // CMP + IT
 		let offset = itBlockOffset + 4;
 
 		for (let i = 0; i < itCount; i++) {
+			if (offset + 2 > data.length) break;
 			const hw = data[offset] | (data[offset + 1] << 8);
 
 			// Check if 32-bit instruction (Thumb-2)
-			const is32bit = (hw & 0xF800) >= 0xE800 || (hw & 0xF000) === 0xF000;
+			const is32bit = (hw & 0xF800) >= 0xE800;
 
 			if (is32bit) {
 				size += 4;
@@ -1995,6 +1997,12 @@ export class ThemePatcher {
 			    data[addr + 1] === cmpPattern[1] &&
 			    data[addr + 2] === cmpPattern[2] &&
 			    data[addr + 3] === cmpPattern[3]) {
+				// We found the CMP + IT.
+				// In original firmware, this is followed by:
+				// theme_4: MOVW R0, #color + B ... (10 bytes)
+				// theme_other: MOVW R0, #color (4 bytes)
+				// FINAL: STRH R0, [R12, #0] (2 bytes)
+				// Total logic length is 10 bytes after IT block (14 bytes from CMP)
 				return offset;
 			}
 		}
@@ -2016,6 +2024,23 @@ export class ThemePatcher {
 		}
 
 		throw new PatchError('Cannot find IT block pattern in FLAC function');
+	}
+
+	/**
+	 * Calculate the size of the original color selection logic block to be replaced.
+	 * 
+	 * Pattern:
+	 *   CMP R1, #4     (2 bytes)
+	 *   ITE EQ         (2 bytes)
+	 *   MOVW R0, #imm  (4 bytes) - Branch 1
+	 *   B.W label      (4 bytes) - Branch 1
+	 *   MOVW R0, #imm  (4 bytes) - Branch 2
+	 *   STRH R0, [R12] (2 bytes)
+	 * Total: 18 bytes
+	 */
+	private calculateColorLogicSize(data: Uint8Array, addr: number): number {
+		// Standard size for the pattern we replace
+		return 18;
 	}
 
 	/**
@@ -2340,6 +2365,10 @@ export class ThemePatcher {
 	 * When a function is relocated, BL instructions that were PC-relative
 	 * need to be re-encoded for the new address.
 	 *
+	 * CRITICAL: We must distinguish between INTERNAL and EXTERNAL calls.
+	 * 1. Internal calls (branches within the function): Offset stays the same if content didn't shift.
+	 * 2. External calls (calls to other functions): Target address stays same, but BL offset must change.
+	 *
 	 * @param data Modified firmware data (will be edited in place)
 	 * @param originalData Original firmware data (for decoding original BL targets)
 	 * @param originalFuncAddr Original function address
@@ -2362,136 +2391,71 @@ export class ThemePatcher {
 	): { fixed: number; skipped: number; errors: string[] } {
 		const result = { fixed: 0, skipped: 0, errors: [] as string[] };
 
-		// Calculate expansion: colorCodeSize - itBlockSize
-		const expansion = colorCodeSize - itBlockSize;
-
-		// Region 1: Code before color code (offsets 0 to colorCodeOffset)
-		// In both original and new function, this region has the same content
-		// But BL targets need to be re-encoded for the new function address
-
-		// Region 2: Code after color code
-		// In original: starts at offset colorCodeOffset + itBlockSize
-		// In new: starts at offset colorCodeOffset + colorCodeSize
-		// Content is the same but shifted by 'expansion' bytes
-
-		// Scan for BL instructions in both regions
+		// Scan regions for BL instructions
 		// BL format: hw1 = 11110 S imm10, hw2 = 11 J1 1 J2 imm11
 
-		// Region 1: Before color code
-		// We need to track 32-bit instructions to avoid false positives from misaligned reads
-		let skipNext = false;
-		for (let offset = 0; offset < colorCodeOffset - 2; offset += 2) {
-			if (skipNext) {
-				skipNext = false;
-				continue;
-			}
-
-			const hw1 = data[newFuncAddr + offset] | (data[newFuncAddr + offset + 1] << 8);
-
-			// Check if this is a 32-bit instruction (hw1[15:11] = 11101, 11110, or 11111)
-			const is32bit = (hw1 & 0xF800) >= 0xE800;
-			if (is32bit) {
-				skipNext = true; // Skip the next 2-byte half-word
-			}
-
-			// Check for BL instruction pattern: 11110 xxxxxxxxxx
-			if ((hw1 & 0xF800) === 0xF000) {
-				// Read hw2 to confirm it's BL
-				const hw2 = data[newFuncAddr + offset + 2] | (data[newFuncAddr + offset + 3] << 8);
-
-				// BL hw2 pattern: 11 J1 1 J2 imm11 = 0xD000 | bits
-				if ((hw2 & 0xD000) === 0xD000) {
-					// This is a BL instruction
-					// Decode original target from original function
-					const originalBlBytes = originalData.slice(
-						originalFuncAddr + offset,
-						originalFuncAddr + offset + 4
-					);
-
-					try {
-						const originalTarget = decodeBlTarget(
-							originalFuncAddr + offset,
-							originalBlBytes
-						);
-
-						// Re-encode for new function address
-						const newBlBytes = encodeBl(newFuncAddr + offset, originalTarget);
-
-						// Write to new function
-						data.set(newBlBytes, newFuncAddr + offset);
-						result.fixed++;
-					} catch (e) {
-						result.errors.push(
-							`Region 1 BL at offset ${offset}: ${(e as Error).message}`
-						);
-						result.skipped++;
-					}
-				}
-			}
-		}
-
-		// Region 2: After color code
-		// Original offset: colorCodeOffset + itBlockSize
-		// New offset: colorCodeOffset + colorCodeSize
-		const region2OriginalStart = colorCodeOffset + itBlockSize;
-		const region2NewStart = colorCodeOffset + colorCodeSize;
-		const region2Size = funcSize - region2OriginalStart;
-
-		// Track 32-bit instructions to avoid false positives
-		skipNext = false;
-		for (let i = 0; i < region2Size - 2; i += 2) {
-			if (skipNext) {
-				skipNext = false;
-				continue;
-			}
-
-			const newOffset = region2NewStart + i;
-			const originalOffset = region2OriginalStart + i;
-
+		const fixBlAtOffset = (newOffset: number, originalOffset: number) => {
 			const hw1 = data[newFuncAddr + newOffset] | (data[newFuncAddr + newOffset + 1] << 8);
-
-			// Check if this is a 32-bit instruction
-			const is32bit = (hw1 & 0xF800) >= 0xE800;
-			if (is32bit) {
-				skipNext = true;
-			}
-
-			// Check for BL instruction pattern
+			
+			// Check for BL instruction pattern (Thumb-2)
 			if ((hw1 & 0xF800) === 0xF000) {
 				const hw2 = data[newFuncAddr + newOffset + 2] | (data[newFuncAddr + newOffset + 3] << 8);
 
 				if ((hw2 & 0xD000) === 0xD000) {
-					// This is a BL instruction
-					// Decode original target from original function
+					// This is a BL instruction.
+					// Decode the original target from the ORIGINAL location.
 					const originalBlBytes = originalData.slice(
 						originalFuncAddr + originalOffset,
 						originalFuncAddr + originalOffset + 4
 					);
 
 					try {
-						const originalTarget = decodeBlTarget(
+						// Get the absolute target address the original code was calling
+						const absoluteTarget = decodeBlTarget(
 							originalFuncAddr + originalOffset,
 							originalBlBytes
 						);
 
-						// Re-encode for new function address
-						const newBlBytes = encodeBl(newFuncAddr + newOffset, originalTarget);
+						// Now re-encode a BL instruction at the NEW location 
+						// that points to the SAME absolute target.
+						const newBlBytes = encodeBl(newFuncAddr + newOffset, absoluteTarget);
 
 						// Write to new function
 						data.set(newBlBytes, newFuncAddr + newOffset);
 						result.fixed++;
 					} catch (e) {
 						result.errors.push(
-							`Region 2 BL at offset ${newOffset}: ${(e as Error).message}`
+							`BL at offset ${newOffset}: ${(e as Error).message}`
 						);
 						result.skipped++;
 					}
+					return true; // Was 32-bit instruction
 				}
 			}
+			
+			// Check for other 32-bit instructions to maintain alignment
+			return (hw1 & 0xF800) >= 0xE800;
+		};
+
+		// Region 1: Before color code
+		for (let offset = 0; offset < colorCodeOffset - 2; ) {
+			const is32bit = fixBlAtOffset(offset, offset);
+			offset += is32bit ? 4 : 2;
+		}
+
+		// Region 2: After color code
+		const region2OriginalStart = colorCodeOffset + itBlockSize;
+		const region2NewStart = colorCodeOffset + colorCodeSize;
+		const region2Size = funcSize - region2OriginalStart;
+
+		for (let i = 0; i < region2Size - 2; ) {
+			const is32bit = fixBlAtOffset(region2NewStart + i, region2OriginalStart + i);
+			i += is32bit ? 4 : 2;
 		}
 
 		return result;
 	}
+
 
 	/**
 	 * Patch the immediate value in a MOVW instruction
