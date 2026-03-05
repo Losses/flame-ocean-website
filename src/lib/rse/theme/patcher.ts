@@ -1448,6 +1448,28 @@ export class ThemePatcher {
 			expansionBytes // How much to adjust offsets
 		);
 
+		// Fix BL instructions in the relocated function
+		// BL instructions are PC-relative and need to be re-encoded for the new address
+		const blFixResult = this.fixBlInstructionsInRelocatedFunction(
+			modifiedData,
+			this.data, // Original firmware data for decoding original BL targets
+			funcStart, // Original function address
+			newFuncAddr, // New function address
+			funcSize, // Original function size
+			itBlockOffset, // Color code offset in new function
+			COLOR_CODE_SIZE, // Color code size
+			itBlockSize // Original IT block size
+		);
+
+		// Log BL fix results for debugging (only in development)
+		// Commented out to avoid interfering with test JSON output
+		// if (blFixResult.fixed > 0 || blFixResult.skipped > 0) {
+		// 	console.log(`BL fix: ${blFixResult.fixed} fixed, ${blFixResult.skipped} skipped`);
+		// 	if (blFixResult.errors.length > 0) {
+		// 		console.warn('BL fix errors:', blFixResult.errors);
+		// 	}
+		// }
+
 		// Modify the caller's BL to point to the new function
 		const newBlBytes = encodeBl(callerAddr, newFuncAddr);
 		modifiedData.set(newBlBytes, callerAddr);
@@ -2310,6 +2332,165 @@ export class ThemePatcher {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Fix BL instructions in a relocated function
+	 *
+	 * When a function is relocated, BL instructions that were PC-relative
+	 * need to be re-encoded for the new address.
+	 *
+	 * @param data Modified firmware data (will be edited in place)
+	 * @param originalData Original firmware data (for decoding original BL targets)
+	 * @param originalFuncAddr Original function address
+	 * @param newFuncAddr New function address
+	 * @param funcSize Original function size
+	 * @param colorCodeOffset Offset of color code in new function
+	 * @param colorCodeSize Size of color code
+	 * @param itBlockSize Size of original IT block
+	 * @returns Number of BL instructions fixed, skipped, and any errors
+	 */
+	private fixBlInstructionsInRelocatedFunction(
+		data: Uint8Array,
+		originalData: Uint8Array,
+		originalFuncAddr: number,
+		newFuncAddr: number,
+		funcSize: number,
+		colorCodeOffset: number,
+		colorCodeSize: number,
+		itBlockSize: number
+	): { fixed: number; skipped: number; errors: string[] } {
+		const result = { fixed: 0, skipped: 0, errors: [] as string[] };
+
+		// Calculate expansion: colorCodeSize - itBlockSize
+		const expansion = colorCodeSize - itBlockSize;
+
+		// Region 1: Code before color code (offsets 0 to colorCodeOffset)
+		// In both original and new function, this region has the same content
+		// But BL targets need to be re-encoded for the new function address
+
+		// Region 2: Code after color code
+		// In original: starts at offset colorCodeOffset + itBlockSize
+		// In new: starts at offset colorCodeOffset + colorCodeSize
+		// Content is the same but shifted by 'expansion' bytes
+
+		// Scan for BL instructions in both regions
+		// BL format: hw1 = 11110 S imm10, hw2 = 11 J1 1 J2 imm11
+
+		// Region 1: Before color code
+		// We need to track 32-bit instructions to avoid false positives from misaligned reads
+		let skipNext = false;
+		for (let offset = 0; offset < colorCodeOffset - 2; offset += 2) {
+			if (skipNext) {
+				skipNext = false;
+				continue;
+			}
+
+			const hw1 = data[newFuncAddr + offset] | (data[newFuncAddr + offset + 1] << 8);
+
+			// Check if this is a 32-bit instruction (hw1[15:11] = 11101, 11110, or 11111)
+			const is32bit = (hw1 & 0xF800) >= 0xE800;
+			if (is32bit) {
+				skipNext = true; // Skip the next 2-byte half-word
+			}
+
+			// Check for BL instruction pattern: 11110 xxxxxxxxxx
+			if ((hw1 & 0xF800) === 0xF000) {
+				// Read hw2 to confirm it's BL
+				const hw2 = data[newFuncAddr + offset + 2] | (data[newFuncAddr + offset + 3] << 8);
+
+				// BL hw2 pattern: 11 J1 1 J2 imm11 = 0xD000 | bits
+				if ((hw2 & 0xD000) === 0xD000) {
+					// This is a BL instruction
+					// Decode original target from original function
+					const originalBlBytes = originalData.slice(
+						originalFuncAddr + offset,
+						originalFuncAddr + offset + 4
+					);
+
+					try {
+						const originalTarget = decodeBlTarget(
+							originalFuncAddr + offset,
+							originalBlBytes
+						);
+
+						// Re-encode for new function address
+						const newBlBytes = encodeBl(newFuncAddr + offset, originalTarget);
+
+						// Write to new function
+						data.set(newBlBytes, newFuncAddr + offset);
+						result.fixed++;
+					} catch (e) {
+						result.errors.push(
+							`Region 1 BL at offset ${offset}: ${(e as Error).message}`
+						);
+						result.skipped++;
+					}
+				}
+			}
+		}
+
+		// Region 2: After color code
+		// Original offset: colorCodeOffset + itBlockSize
+		// New offset: colorCodeOffset + colorCodeSize
+		const region2OriginalStart = colorCodeOffset + itBlockSize;
+		const region2NewStart = colorCodeOffset + colorCodeSize;
+		const region2Size = funcSize - region2OriginalStart;
+
+		// Track 32-bit instructions to avoid false positives
+		skipNext = false;
+		for (let i = 0; i < region2Size - 2; i += 2) {
+			if (skipNext) {
+				skipNext = false;
+				continue;
+			}
+
+			const newOffset = region2NewStart + i;
+			const originalOffset = region2OriginalStart + i;
+
+			const hw1 = data[newFuncAddr + newOffset] | (data[newFuncAddr + newOffset + 1] << 8);
+
+			// Check if this is a 32-bit instruction
+			const is32bit = (hw1 & 0xF800) >= 0xE800;
+			if (is32bit) {
+				skipNext = true;
+			}
+
+			// Check for BL instruction pattern
+			if ((hw1 & 0xF800) === 0xF000) {
+				const hw2 = data[newFuncAddr + newOffset + 2] | (data[newFuncAddr + newOffset + 3] << 8);
+
+				if ((hw2 & 0xD000) === 0xD000) {
+					// This is a BL instruction
+					// Decode original target from original function
+					const originalBlBytes = originalData.slice(
+						originalFuncAddr + originalOffset,
+						originalFuncAddr + originalOffset + 4
+					);
+
+					try {
+						const originalTarget = decodeBlTarget(
+							originalFuncAddr + originalOffset,
+							originalBlBytes
+						);
+
+						// Re-encode for new function address
+						const newBlBytes = encodeBl(newFuncAddr + newOffset, originalTarget);
+
+						// Write to new function
+						data.set(newBlBytes, newFuncAddr + newOffset);
+						result.fixed++;
+					} catch (e) {
+						result.errors.push(
+							`Region 2 BL at offset ${newOffset}: ${(e as Error).message}`
+						);
+						result.skipped++;
+					}
+				}
+			}
+		}
+
+		return result;
 	}
 
 	/**

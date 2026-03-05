@@ -770,6 +770,111 @@ if is_relocation and is_flac:
         except:
             pass
 
+# BL instruction validation for relocation patches
+# This catches the critical bug where BL instructions are not fixed when function is relocated
+if is_relocation and is_flac:
+    print("\\n🔍 BL Instruction Validation:")
+
+    # Helper function to decode BL target address
+    def decode_bl_target(from_addr, bl_bytes):
+        if len(bl_bytes) != 4:
+            return None
+        hw1 = bl_bytes[0] | (bl_bytes[1] << 8)
+        hw2 = bl_bytes[2] | (bl_bytes[3] << 8)
+        # Verify BL instruction format
+        if (hw1 & 0xF800) != 0xF000 or (hw2 & 0xD000) != 0xD000:
+            return None
+        S = (hw1 >> 10) & 1
+        imm10 = hw1 & 0x3FF
+        J1 = (hw2 >> 13) & 1
+        J2 = (hw2 >> 11) & 1
+        imm11 = hw2 & 0x7FF
+        I1 = (~(J1 ^ S)) & 1
+        I2 = (~(J2 ^ S)) & 1
+        # Reconstruct offset: imm25 = {S, I1, I2, imm10, imm11, 1'b0}
+        imm25 = (S << 24) | (I1 << 23) | (I2 << 22) | (imm10 << 12) | (imm11 << 1)
+        # Sign extend from 25 bits
+        if S:
+            imm32 = imm25 | 0xFE000000
+        else:
+            imm32 = imm25
+        # Convert to signed
+        if imm32 & 0x80000000:
+            imm32 = imm32 - 0x100000000
+        # Target = PC + offset (PC = from_addr + 4)
+        target = (from_addr + 4 + imm32) & 0xFFFFFFFF
+        return target
+
+    # Scan the relocated function for BL instructions
+    # The handler starts at HANDLER_START (which is colorCodeAddr = newFuncAddr + itBlockOffset)
+    # We need to scan from the actual function start (newFuncAddr)
+    # But we don't know newFuncAddr directly - we know HANDLER_START which is newFuncAddr + itBlockOffset
+    # For ver05, itBlockOffset is 0x476, so newFuncAddr = HANDLER_START - 0x476
+    # Since we don't know the exact itBlockOffset here, we scan from HANDLER_START - 0x1000 to be safe
+    # (assuming the function prologue is within 4KB of the color code)
+
+    # Actually, let's scan two regions:
+    # 1. Code before color code (HANDLER_START - 0x800 to HANDLER_START)
+    # 2. Code after color code (HANDLER_START + 64 onwards)
+
+    bl_count = 0
+    invalid_bl_count = 0
+
+    # Region 1: Before color code (scan backwards from color code start)
+    # Typical function prologue is small, so 0x800 bytes should be enough
+    region1_start = HANDLER_START - 0x800
+    if region1_start < 0:
+        region1_start = 0
+
+    for offset in range(region1_start, HANDLER_START - 2, 2):
+        hw1 = data[offset] | (data[offset + 1] << 8)
+        if (hw1 & 0xF800) == 0xF000:
+            hw2 = data[offset + 2] | (data[offset + 3] << 8)
+            if (hw2 & 0xD000) == 0xD000:
+                # Found a BL instruction
+                bl_bytes = data[offset:offset + 4]
+                target = decode_bl_target(offset, bl_bytes)
+                if target is not None:
+                    bl_count += 1
+                    # Check if target is within valid firmware range
+                    # Firmware is loaded at FLASH_BASE to FLASH_BASE + FLASH_SIZE
+                    if target < FLASH_BASE or target >= FLASH_BASE + FLASH_SIZE:
+                        print(f"❌ BL at 0x{offset:X} has INVALID target 0x{target:X} (outside firmware bounds)")
+                        invalid_bl_count += 1
+                        all_success = False
+                    else:
+                        print(f"   BL at 0x{offset:X} -> 0x{target:X} ✓")
+
+    # Region 2: After color code
+    # Scan for 0x500 bytes after color code (typical function tail)
+    region2_start = HANDLER_START + 64
+    region2_end = min(region2_start + 0x500, len(data) - 4)
+
+    for offset in range(region2_start, region2_end, 2):
+        hw1 = data[offset] | (data[offset + 1] << 8)
+        if (hw1 & 0xF800) == 0xF000:
+            hw2 = data[offset + 2] | (data[offset + 3] << 8)
+            if (hw2 & 0xD000) == 0xD000:
+                # Found a BL instruction
+                bl_bytes = data[offset:offset + 4]
+                target = decode_bl_target(offset, bl_bytes)
+                if target is not None:
+                    bl_count += 1
+                    # Check if target is within valid firmware range
+                    if target < FLASH_BASE or target >= FLASH_BASE + FLASH_SIZE:
+                        print(f"❌ BL at 0x{offset:X} has INVALID target 0x{target:X} (outside firmware bounds)")
+                        invalid_bl_count += 1
+                        all_success = False
+                    else:
+                        print(f"   BL at 0x{offset:X} -> 0x{target:X} ✓")
+
+    print(f"   Total BL instructions found: {bl_count}, Invalid: {invalid_bl_count}")
+    if bl_count > 0 and invalid_bl_count == 0:
+        print(f"✅ All BL instructions have valid targets")
+    elif bl_count == 0:
+        print(f"⚠️ No BL instructions found in scanned regions (may need larger scan range)")
+
+
 if all_success: print("✅ PASS"); sys.exit(0)
 else: print("❌ FAIL"); sys.exit(1)
 `;

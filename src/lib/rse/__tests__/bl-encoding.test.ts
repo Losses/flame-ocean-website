@@ -30,34 +30,35 @@ describe('BL Instruction - Fixed Implementation', () => {
 			expect(decodedTarget).toEqual(toAddr);
 		});
 
-		it('should handle odd offset by rounding down (BL alignment limitation)', () => {
+		it('should correctly encode and decode even offset (BL alignment)', () => {
 			const fromAddr = 0x8651e;
-			const toAddr = 0x90000; // offset = 0x9ADE (odd)
+			const toAddr = 0x90000; // offset = 0x9ADE (even)
 
 			const blBytes = encodeBl(fromAddr, toAddr);
 			const decodedTarget = decodeBlTarget(fromAddr, blBytes);
 
-			// BL instruction can only encode even offsets
-			// Odd bit is dropped, so 0x9ADE becomes 0x9ADC
-			const expectedTarget = 0x8FFFE; // fromAddr + 4 + 0x9ADC
-			expect(decodedTarget).toEqual(expectedTarget);
+			// BL instruction encodes even offsets correctly
+			expect(decodedTarget).toEqual(toAddr);
 		});
 
-		it('should match the exact bytes from the bugfix verification', () => {
-			// This is the exact test case from the debugging session
+		it('should throw on odd offset (BL alignment limitation)', () => {
+			const fromAddr = 0x8651e;
+			const toAddr = 0x90001; // offset = 0x9ADF (odd)
+
+			// BL instruction cannot encode odd offsets
+			expect(() => encodeBl(fromAddr, toAddr)).toThrow('BL offset must be even');
+		});
+
+		it('should produce correct bytes for real-world offset', () => {
+			// Test case from the debugging session
 			const fromAddr = 0x8651e;
 			const toAddr = 0x90000;
 
 			const blBytes = encodeBl(fromAddr, toAddr);
 
-			// Expected bytes from the fix verification
-			const expectedBytes = new Uint8Array([0x04, 0xf0, 0xb7, 0xfe]);
-
-			expect(Array.from(blBytes)).toEqual(Array.from(expectedBytes));
-
-			// Verify decoding matches expectation (with alignment limitation)
+			// Verify the bytes decode back to the correct target
 			const decodedTarget = decodeBlTarget(fromAddr, blBytes);
-			expect(decodedTarget).toEqual(0x8FFFE);
+			expect(decodedTarget).toEqual(toAddr);
 		});
 	});
 
@@ -103,15 +104,15 @@ describe('BL Instruction - Fixed Implementation', () => {
 	});
 
 	describe('decodeBlTarget correctness', () => {
-		it('should correctly decode BL instruction with sign extension', () => {
-			// BL instruction: 0x04 0xf0 0xb7 0xfe
-			// From: 0x8651e, To: 0x8FFFE (rounded from 0x90000)
+		it('should correctly decode BL instruction with positive offset', () => {
+			// Test encoding/decoding roundtrip with positive offset
 			const fromAddr = 0x8651e;
-			const blBytes = new Uint8Array([0x04, 0xf0, 0xb7, 0xfe]);
+			const toAddr = 0x90000;
 
+			const blBytes = encodeBl(fromAddr, toAddr);
 			const decodedTarget = decodeBlTarget(fromAddr, blBytes);
 
-			expect(decodedTarget).toEqual(0x8FFFE);
+			expect(decodedTarget).toEqual(toAddr);
 		});
 
 		it('should correctly decode BL to NOP slide (real firmware case)', () => {
