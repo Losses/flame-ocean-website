@@ -636,27 +636,42 @@ expected_flac = actual_colors
 CALLER_R4 = 0x12345678
 bl_executed = False
 bx_lr_executed = False
+executed_after_color_code = False
+instr_count = 0
+MAX_INSTRUCTIONS = 200  # Safety limit for basic execution test
+reached_color_code_end = False
 
 def hook_code(uc, address, size, user_data):
-    global bl_executed, bx_lr_executed
+    global bl_executed, bx_lr_executed, executed_after_color_code, instr_count, reached_color_code_end
+    instr_count += 1
+    if instr_count > MAX_INSTRUCTIONS:
+        print(f"⚠️ Instruction limit ({MAX_INSTRUCTIONS}) reached at 0x{address:X}")
+        uc.emu_stop()
+        return
     if (address & ~1) == BL_ADDR:
         bl_executed = True
+    # Track if we reached the end of color code (64 bytes)
+    if is_relocation and address == (HANDLER_START + 64):
+        reached_color_code_end = True
+        # Stop at color code end - code after contains BL instructions we can't emulate
+        print(f"✅ Reached color code end at 0x{address:X}")
+        uc.emu_stop()
+        return
+    # Track if we executed code after the color code (shouldn't happen for relocation patches)
+    if is_relocation and address > (HANDLER_START + 64):
+        executed_after_color_code = True
     try:
         instr_bytes = uc.mem_read(address, 2)
         is_bx_lr = instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47
-        is_pop_pc = (instr_bytes[1] == 0xBD)
-        if is_bx_lr or is_pop_pc:
+        # Check for 16-bit POP {..., PC} = 0xBDxx
+        is_16bit_pop_pc = (instr_bytes[1] == 0xBD) and ((instr_bytes[0] & 0x01) == 0x01)
+        if is_bx_lr or is_16bit_pop_pc:
             bx_lr_executed = True
+            print(f"✅ Return instruction at 0x{address:X}")
             uc.emu_stop()
     except: pass
     # For inline FLAC patches, stop at BL_ADDR + 14 (inside original function)
-    # For relocation patches, DON'T stop here - the handler is far away
     if not is_relocation and address == (BL_ADDR + 14) and is_flac:
-        uc.emu_stop()
-    # For relocation patches with inline color code (no BX LR), stop after color code
-    # Color code is 64 bytes: 16 bytes CMP/BEQ + 48 bytes (4 themes with B + 1 theme without)
-    if is_relocation and address == (HANDLER_START + 64):
-        bx_lr_executed = True  # Treat fall-through as success
         uc.emu_stop()
 
 mu.hook_add(UC_HOOK_CODE, hook_code)
@@ -685,21 +700,75 @@ for theme_idx in test_range:
     mu.reg_write(UC_ARM_REG_R1, theme_idx)
     mu.reg_write(UC_ARM_REG_PC, EXEC_START | 1)
     mu.reg_write(UC_ARM_REG_CPSR, 0x000001F3)
+
+    # Reset tracking variables for each test
+    instr_count = 0
+    executed_after_color_code = False
+    bx_lr_executed = False
+
     try:
         mu.emu_start(EXEC_START | 1, EXEC_END | 1, 0, 5000)
-    except UcError:
+    except UcError as e:
+        print(f"⚠️ Unicorn error: {e}")
         pass  # Ignore errors - we check results below
+
     # For relocation patches, we start at handler, so bl_executed is always False
     # We only check bl_executed for inline patches
-    if not is_relocation and not bl_executed: all_success = False
-    if (mu.reg_read(UC_ARM_REG_R1) & 0xFFFF) != expected_color: all_success = False
+    if not is_relocation and not bl_executed:
+        print(f"❌ BL not executed for inline patch")
+        all_success = False
+    if (mu.reg_read(UC_ARM_REG_R1) & 0xFFFF) != expected_color:
+        print(f"❌ Color mismatch: expected 0x{expected_color:04X}, got 0x{(mu.reg_read(UC_ARM_REG_R1) & 0xFFFF):04X}")
+        all_success = False
     # For relocation patches, the handler doesn't modify callee-saved registers
     # But we still check them to be safe
-    if mu.reg_read(UC_ARM_REG_R4) != CALLER_R4: all_success = False
-    if mu.reg_read(UC_ARM_REG_R5) != CALLER_R5: all_success = False
-    if mu.reg_read(UC_ARM_REG_R6) != CALLER_R6: all_success = False
-    if mu.reg_read(UC_ARM_REG_R7) != CALLER_R7: all_success = False
-    if mu.reg_read(UC_ARM_REG_R8) != CALLER_R8: all_success = False
+    if mu.reg_read(UC_ARM_REG_R4) != CALLER_R4:
+        print(f"❌ R4 corrupted: expected 0x{CALLER_R4:08X}, got 0x{mu.reg_read(UC_ARM_REG_R4):08X}")
+        all_success = False
+    if mu.reg_read(UC_ARM_REG_R5) != CALLER_R5:
+        print(f"❌ R5 corrupted: expected 0x{CALLER_R5:08X}, got 0x{mu.reg_read(UC_ARM_REG_R5):08X}")
+        all_success = False
+    if mu.reg_read(UC_ARM_REG_R6) != CALLER_R6:
+        print(f"❌ R6 corrupted: expected 0x{CALLER_R6:08X}, got 0x{mu.reg_read(UC_ARM_REG_R6):08X}")
+        all_success = False
+    if mu.reg_read(UC_ARM_REG_R7) != CALLER_R7:
+        print(f"❌ R7 corrupted: expected 0x{CALLER_R7:08X}, got 0x{mu.reg_read(UC_ARM_REG_R7):08X}")
+        all_success = False
+    if mu.reg_read(UC_ARM_REG_R8) != CALLER_R8:
+        print(f"❌ R8 corrupted: expected 0x{CALLER_R8:08X}, got 0x{mu.reg_read(UC_ARM_REG_R8):08X}")
+        all_success = False
+
+    # For relocation patches, verify we reached the color code end
+    # This confirms the color code executed correctly
+    if is_relocation and not reached_color_code_end:
+        print(f"❌ FAILED: Color code end was never reached!")
+        print(f"   This indicates color code execution failed.")
+        all_success = False
+
+# Static verification for relocation patches: check that code after color code is valid
+# This catches IT block size bugs where code after color code is misaligned
+if is_relocation and is_flac:
+    # For relocation patches, the handler is the relocated FLAC function
+    # Color code is at HANDLER_START (which is colorCodeAddr = newFuncAddr + itBlockOffset)
+    # Code after color code starts at HANDLER_START + 64
+    color_code_end = HANDLER_START + 64
+    bytes_after = data[color_code_end:color_code_end + 10]
+    print(f"📋 Bytes after color code at 0x{color_code_end:X}: {bytes_after.hex()}")
+    # Check if it looks like valid code (not all zeros or 0xFF)
+    if all(b == 0 for b in bytes_after) or all(b == 0xFF for b in bytes_after):
+        print(f"❌ FAILED: Code after color code appears to be invalid (all zeros or 0xFF)")
+        all_success = False
+    else:
+        # Try to disassemble first few instructions
+        try:
+            from capstone import Cs, CS_ARCH_ARM, CS_MODE_THUMB
+            md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
+            instructions = list(md.disasm(bytes_after, color_code_end))
+            if instructions:
+                print(f"   First instruction: {instructions[0].mnemonic} {instructions[0].op_str}")
+                print(f"✅ Code after color code appears valid")
+        except:
+            pass
 
 if all_success: print("✅ PASS"); sys.exit(0)
 else: print("❌ FAIL"); sys.exit(1)
