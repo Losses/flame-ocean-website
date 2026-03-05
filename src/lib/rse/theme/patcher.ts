@@ -1406,19 +1406,22 @@ export class ThemePatcher {
 
 		// Find the IT block offset in the ORIGINAL function
 		const itBlockOffset = this.findColorCodeOffset(this.data, funcStart, funcSize);
-		const IT_BLOCK_SIZE = 12; // CMP + ITE + MOVWEQ + MOVW
+
+		// Calculate the ACTUAL IT block size (not hardcoded!)
+		// IT block size varies based on the IT instruction's mask field
+		const itBlockSize = this.calculateItBlockSize(this.data, funcStart + itBlockOffset);
 
 		// Generate inline color selection code (no B instructions, just fall through)
 		const colorCode = this.generateInlineColorCode(flacColors);
 		const COLOR_CODE_SIZE = colorCode.length; // Should be 64 bytes
 
 		// New function size = original size - IT block + color code
-		const expansionBytes = COLOR_CODE_SIZE - IT_BLOCK_SIZE; // How much bigger the function gets
+		const expansionBytes = COLOR_CODE_SIZE - itBlockSize; // How much bigger the function gets
 
 		// Build the new function:
 		// [code before IT block] [color code] [code after IT block]
 		const codeBeforeIT = this.data.slice(funcStart, funcStart + itBlockOffset);
-		const codeAfterIT = this.data.slice(funcStart + itBlockOffset + IT_BLOCK_SIZE, funcEnd);
+		const codeAfterIT = this.data.slice(funcStart + itBlockOffset + itBlockSize, funcEnd);
 
 		// Write new function to freed pool
 		let writeOffset = newFuncAddr;
@@ -1441,7 +1444,7 @@ export class ThemePatcher {
 			modifiedData,
 			newFuncAddr,
 			itBlockOffset + COLOR_CODE_SIZE, // Start of code after IT block in new function
-			funcSize - itBlockOffset - IT_BLOCK_SIZE, // Size of code after IT block
+			funcSize - itBlockOffset - itBlockSize, // Size of code after IT block
 			expansionBytes // How much to adjust offsets
 		);
 
@@ -1892,6 +1895,67 @@ export class ThemePatcher {
 		}
 
 		return currentLiteralOffset;
+	}
+
+	/**
+	 * Calculate the actual size of an IT block
+	 *
+	 * IT block structure:
+	 * - CMP R1, #imm8 (2 bytes)
+	 * - IT<x> instruction (2 bytes) - encodes how many instructions are conditional
+	 * - N conditional instructions (each 2 or 4 bytes)
+	 *
+	 * IT instruction encoding: 1011 1111 firstcond mask
+	 * - firstcond[3:0] = condition code
+	 * - mask[3:0] = determines number of conditional instructions
+	 *
+	 * Number of instructions = number of 1s in mask[3:0] + 1 (if firstcond[0]==0)
+	 *                        = number of 0s in mask[3:0] + 1 (if firstcond[0]==1)
+	 */
+	private calculateItBlockSize(data: Uint8Array, itBlockOffset: number): number {
+		// IT instruction is at offset + 2 (after CMP)
+		const itHw = data[itBlockOffset + 2] | (data[itBlockOffset + 3] << 8);
+
+		// Verify this is an IT instruction (0xBFxx)
+		if ((itHw & 0xFF00) !== 0xBF00) {
+			throw new PatchError('Expected IT instruction not found');
+		}
+
+		const firstcond = (itHw >> 4) & 0xF;
+		const mask = itHw & 0xF;
+
+		// Calculate number of conditional instructions
+		const firstcondLsb = firstcond & 1;
+		let itCount: number;
+
+		if (firstcondLsb === 0) {
+			// Count 1s in mask
+			itCount = (mask.toString(2).match(/1/g) || []).length + 1;
+		} else {
+			// Count 0s in mask
+			itCount = (mask.toString(2).match(/0/g) || []).length + 1;
+		}
+
+		// Calculate total size: CMP (2) + IT (2) + conditional instructions
+		let size = 4; // CMP + IT
+		let offset = itBlockOffset + 4;
+
+		for (let i = 0; i < itCount; i++) {
+			const hw = data[offset] | (data[offset + 1] << 8);
+
+			// Check if 32-bit instruction (Thumb-2)
+			const is32bit = (hw & 0xF800) >= 0xE800 || (hw & 0xF000) === 0xF000;
+
+			if (is32bit) {
+				size += 4;
+				offset += 4;
+			} else {
+				size += 2;
+				offset += 2;
+			}
+		}
+
+		return size;
 	}
 
 	/**

@@ -149,6 +149,83 @@ describe('Register Preservation Tests', () => {
 
 				expect(isPush).toBe(true);
 			});
+
+			it(`${firmware.version}: code after color code should match original code after IT block`, () => {
+				// This test catches the IT block size bug where patcher assumed 12 bytes
+				// but actual IT block could be larger (e.g., 14 bytes for ITTT EQ)
+				const data = readFileSync(firmware.path);
+				const patcher = new ThemePatcher(data);
+
+				const outputPath = join(OUTPUT_DIR, `${firmware.version}_it_block_test.bin`);
+				const result = patcher.patch(
+					{ flacColors: TEST_COLORS.flac, menuColors: TEST_COLORS.menu },
+					outputPath,
+					true
+				);
+
+				expect(result.success).toBe(true);
+
+				const patchedData = readFileSync(outputPath);
+				const scanResult = scanForPatchWithRelocation(patchedData);
+				expect(scanResult).not.toBeNull();
+
+				const { reloHeader } = scanResult!;
+				const newFuncAddr = reloHeader.flacFuncAddr;
+				const colorCodeOffset = reloHeader.flacColorCodeOffset;
+				const COLOR_CODE_SIZE = 64;
+
+				// Find original FLAC function using analysis
+				const originalPatcher = new ThemePatcher(data);
+				const originalAnalysis = originalPatcher.analyze();
+				const originalFlacFunc = originalAnalysis.themeFunctions.find(f => f.type === 'flac');
+				expect(originalFlacFunc).toBeDefined();
+				// Use funcAddr instead of addr (PatchPointInfo interface)
+				const origFuncAddr = originalFlacFunc!.funcAddr;
+
+				// Find IT block in original function (CMP R1, #4 + IT pattern)
+				let itBlockOffset = -1;
+				for (let offset = 0; offset < 0x600; offset += 2) {
+					const hw1 = data[origFuncAddr + offset] | (data[origFuncAddr + offset + 1] << 8);
+					const hw2 = data[origFuncAddr + offset + 2] | (data[origFuncAddr + offset + 3] << 8);
+					// CMP R1, #4 = 0x2904, IT instruction = 0xBFxx
+					if (hw1 === 0x2904 && (hw2 & 0xFF00) === 0xBF00) {
+						itBlockOffset = offset;
+						break;
+					}
+				}
+				expect(itBlockOffset).toBeGreaterThanOrEqual(0);
+
+				// Calculate actual IT block size
+				const itHw = data[origFuncAddr + itBlockOffset + 2] | (data[origFuncAddr + itBlockOffset + 3] << 8);
+				const firstcond = (itHw >> 4) & 0xF;
+				const mask = itHw & 0xF;
+				const firstcondLsb = firstcond & 1;
+				const itCount = firstcondLsb === 0
+					? (mask.toString(2).match(/1/g) || []).length + 1
+					: (mask.toString(2).match(/0/g) || []).length + 1;
+
+				let actualItBlockSize = 4; // CMP + IT
+				let offset = itBlockOffset + 4;
+				for (let i = 0; i < itCount; i++) {
+					const hw = data[origFuncAddr + offset] | (data[origFuncAddr + offset + 1] << 8);
+					const is32bit = (hw & 0xF800) >= 0xE800 || (hw & 0xF000) === 0xF000;
+					actualItBlockSize += is32bit ? 4 : 2;
+					offset += is32bit ? 4 : 2;
+				}
+
+				// Compare code after color code in patched function with code after IT block in original
+				const patchedCodeAfterColorCode = newFuncAddr + colorCodeOffset + COLOR_CODE_SIZE;
+				const origCodeAfterITBlock = origFuncAddr + itBlockOffset + actualItBlockSize;
+
+				// Read 20 bytes from both locations
+				const patchedBytes = patchedData.slice(patchedCodeAfterColorCode, patchedCodeAfterColorCode + 20);
+				const origBytes = data.slice(origCodeAfterITBlock, origCodeAfterITBlock + 20);
+
+				// They should match (code after IT block should be correctly copied)
+				for (let i = 0; i < 20; i++) {
+					expect(patchedBytes[i]).toBe(origBytes[i]);
+				}
+			});
 		}
 	});
 
