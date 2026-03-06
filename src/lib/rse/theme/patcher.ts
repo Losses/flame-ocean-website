@@ -1434,18 +1434,31 @@ export class ThemePatcher {
 		modifiedData.set(codeAfterIT, writeOffset);
 		// writeOffset += codeAfterIT.length;
 
+		// New function size
+		const newFuncSize = funcSize + expansionBytes;
+
 		// Calculate where things are in the new function
 		const colorCodeAddr = newFuncAddr + itBlockOffset; // Address of color code
-		const afterColorCodeAddr = colorCodeAddr + COLOR_CODE_SIZE; // Address of original code after IT block
+		// const afterColorCodeAddr = colorCodeAddr + COLOR_CODE_SIZE; // Address of original code after IT block
 
-		// Fix PC-relative LDR instructions in the code after IT block
-		// These instructions' targets have shifted by expansionBytes
-		this.fixPcRelativeInCodeAfter(
+		// Fix PC-relative LDR instructions in the entire relocated function
+		// Instructions before IT block must adjust for moved literal pool.
+		// Instructions after IT block move WITH the pool, so relative offset stays same.
+		this.fixRelocatedLdrs(
 			modifiedData,
 			newFuncAddr,
-			itBlockOffset + COLOR_CODE_SIZE, // Start of code after IT block in new function
-			funcSize - itBlockOffset - itBlockSize, // Size of code after IT block
-			expansionBytes // How much to adjust offsets
+			itBlockOffset, // Point of expansion
+			newFuncSize,
+			expansionBytes
+		);
+
+		// Fix internal branches that cross the expansion point
+		this.fixRelocatedBranches(
+			modifiedData,
+			newFuncAddr,
+			itBlockOffset,
+			newFuncSize,
+			expansionBytes
 		);
 
 		// Fix BL instructions in the relocated function
@@ -1473,9 +1486,6 @@ export class ThemePatcher {
 		// Modify the caller's BL to point to the new function
 		const newBlBytes = encodeBl(callerAddr, newFuncAddr);
 		modifiedData.set(newBlBytes, callerAddr);
-
-		// New function size
-		const newFuncSize = funcSize + expansionBytes;
 
 		// Generate Menu handler and place it after FLAC function (only if menuColors provided)
 		let menuHandlerAddr = 0;
@@ -1630,6 +1640,7 @@ export class ThemePatcher {
 
 		// Search for the function end (POP {..., PC}, POP.W {..., PC}, or BX LR pattern)
 		const maxSearch = 2000;
+		let funcEnd = 0;
 
 		for (let offset = 0; offset < maxSearch; ) {
 			const addr = funcStart + offset;
@@ -1642,35 +1653,24 @@ export class ThemePatcher {
 				// Check if PC is in the register list (bit 7 = PC)
 				const regList = hw & 0xFF;
 				if (regList & 0x80) { // PC is in the list
-					return {
-						start: funcStart,
-						end: addr + 2,
-						size: addr + 2 - funcStart
-					};
+					funcEnd = addr + 2;
+					break;
 				}
 			}
 
 			// Check for 32-bit POP.W {..., PC} (0xE8BD pattern)
-			// POP.W is encoded as: E8BD xxxx where xxxx is the register list
-			// Bit 15 of the register list indicates PC
 			if (hw === 0xE8BD) {
 				const hw2 = this.data[addr + 2] | (this.data[addr + 3] << 8);
 				if (hw2 & 0x8000) { // PC is in the list
-					return {
-						start: funcStart,
-						end: addr + 4,
-						size: addr + 4 - funcStart
-					};
+					funcEnd = addr + 4;
+					break;
 				}
 			}
 
 			// Check for BX LR (0x4770)
 			if (hw === 0x4770) {
-				return {
-					start: funcStart,
-					end: addr + 2,
-					size: addr + 2 - funcStart
-				};
+				funcEnd = addr + 2;
+				break;
 			}
 
 			// Check for 32-bit instruction prefix
@@ -1678,7 +1678,43 @@ export class ThemePatcher {
 			offset += is32bit ? 4 : 2;
 		}
 
-		return null;
+		if (funcEnd === 0) return null;
+
+		// CRITICAL: Scan for literal pool targets after the function end
+		// Many compilers place constant data (literals) after the function body.
+		// We must include these in the relocated block.
+		let maxTarget = funcEnd;
+
+		for (let offset = 0; offset < funcEnd - funcStart; offset += 2) {
+			const addr = funcStart + offset;
+			const hw1 = this.data[addr] | (this.data[addr + 1] << 8);
+
+			// Check for 16-bit LDR Rt, [PC, #imm]
+			if ((hw1 & 0xF800) === 0x4800) {
+				const imm8 = hw1 & 0xFF;
+				const target = ((addr + 4) & ~3) + (imm8 << 2);
+				if (target > maxTarget && target < funcStart + maxSearch + 512) {
+					maxTarget = Math.max(maxTarget, target + 4);
+				}
+			}
+			// Check for 32-bit LDR.W Rt, [PC, #imm12]
+			else if ((hw1 & 0xFF7F) === 0xF85F) {
+				const hw2 = this.data[addr + 2] | (this.data[addr + 3] << 8);
+				const u = (hw1 >> 7) & 1;
+				const imm12 = hw2 & 0xFFF;
+				const pc = (addr + 4) & ~3;
+				const target = u ? (pc + imm12) : (pc - imm12);
+				if (target > maxTarget && target < funcStart + maxSearch + 512) {
+					maxTarget = Math.max(maxTarget, target + 4);
+				}
+			}
+		}
+
+		return {
+			start: funcStart,
+			end: maxTarget,
+			size: maxTarget - funcStart
+		};
 	}
 
 	/**
@@ -2317,43 +2353,72 @@ export class ThemePatcher {
 	}
 
 	/**
-	 * Fix PC-relative instructions in code that was shifted after color code insertion
+	 * Fix PC-relative LDR instructions in a relocated function
 	 *
-	 * When we insert the color code (56 bytes) in place of IT block (12 bytes),
-	 * code after IT block shifts by 44 bytes. This breaks PC-relative LDR instructions.
+	 * When we insert the color code (e.g. 64 bytes) in place of IT block (12 bytes),
+	 * code and literal pool after the IT block shift by the expansion amount.
+	 *
+	 * - LDR instructions BEFORE the expansion point:
+	 *   PC stays the same, but the target (literal pool at the end) shifts.
+	 *   We must increase the immediate offset by shiftAmount.
+	 *
+	 * - LDR instructions AFTER the expansion point:
+	 *   Both PC and target shift by the same amount.
+	 *   The relative offset stays the same, so NO adjustment is needed.
+	 *
+	 * @param data Modified firmware data
+	 * @param funcAddr New function address
+	 * @param expansionPoint Offset within function where expansion occurred
+	 * @param totalSize Total size of the NEW relocated function
+	 * @param shiftAmount Expansion amount (e.g. 64 - 12 = 52)
 	 */
-	private fixPcRelativeInCodeAfter(
+	private fixRelocatedLdrs(
 		data: Uint8Array,
 		funcAddr: number,
-		codeAfterOffset: number,
-		codeAfterSize: number,
+		expansionPoint: number,
+		totalSize: number,
 		shiftAmount: number
 	): void {
-		// Scan for LDR.W Rt, [PC, #imm12] instructions
-		// These load from a literal pool relative to PC
-		for (let offset = 0; offset < codeAfterSize - 4; offset += 2) {
-			const addr = funcAddr + codeAfterOffset + offset;
+		// Scan entire function for LDR instructions
+		for (let offset = 0; offset < totalSize - 4; offset += 2) {
+			const addr = funcAddr + offset;
 			const hw1 = data[addr] | (data[addr + 1] << 8);
-			const hw2 = data[addr + 2] | (data[addr + 3] << 8);
 
-			// LDR.W Rt, [PC, #imm12] = hw1:F8DF, hw2:imm12
+			// Check for 32-bit LDR.W Rt, [PC, #imm12] (F85F or F8DF)
 			if ((hw1 & 0xFF7F) === 0xF85F) {
-				// This is LDR.W Rt, [PC, #imm12] or LDR.W Rt, [PC, Rm]
-				const isImm = (hw1 & 0x0800) === 0;
-				if (isImm) {
-					const imm12 = hw2 & 0xFFF;
-					// PC = (addr + 4) & ~3
-					const pc = (addr + 4) & ~3;
-					const oldTarget = pc + imm12;
+				const hw2 = data[addr + 2] | (data[addr + 3] << 8);
+				const u = (hw1 >> 7) & 1;
+				const imm12 = hw2 & 0xFFF;
+				const rt = (hw2 >> 12) & 0xF;
 
-					// The literal pool is also shifted by shiftAmount
-					// So we need to adjust imm12 to point to the new location
-					const newTarget = oldTarget + shiftAmount;
-					const newImm12 = newTarget - pc;
+				// Only fix positive offsets (pointing to literal pool at end)
+				if (u && offset < expansionPoint) {
+					const newImm12 = imm12 + shiftAmount;
+					if (newImm12 <= 0xFFF) {
+						const newHw2 = (rt << 12) | newImm12;
+						data[addr + 2] = newHw2 & 0xFF;
+						data[addr + 3] = (newHw2 >> 8) & 0xFF;
+					} else {
+						console.error(`LDR.W at offset 0x${offset.toString(16)} offset 0x${newImm12.toString(16)} exceeds 12-bit range`);
+					}
+				}
+				offset += 2; // Skip 32-bit instruction
+			}
+			// Check for 16-bit LDR Rt, [PC, #imm8] (48XX)
+			else if ((hw1 & 0xF800) === 0x4800) {
+				const imm8 = hw1 & 0xFF;
+				const rt = (hw1 >> 8) & 0x7;
 
-					// Write new imm12
-					data[addr + 2] = newImm12 & 0xFF;
-					data[addr + 3] = (data[addr + 3] & 0xF000) | ((newImm12 >> 8) & 0xFF);
+				if (offset < expansionPoint) {
+					const newImm32 = (imm8 << 2) + shiftAmount;
+					if ((newImm32 & 3) === 0 && newImm32 <= 1020) {
+						const newImm8 = newImm32 >> 2;
+						const newHw1 = 0x4800 | (rt << 8) | newImm8;
+						data[addr] = newHw1 & 0xFF;
+						data[addr + 1] = (newHw1 >> 8) & 0xFF;
+					} else {
+						console.error(`LDR at offset 0x${offset.toString(16)} offset 0x${newImm32.toString(16)} exceeds 8-bit range or alignment`);
+					}
 				}
 			}
 		}
@@ -2489,6 +2554,75 @@ export class ThemePatcher {
 		data[addr + 1] = (newHw1 >> 8) & 0xFF;
 		data[addr + 2] = newHw2 & 0xFF;
 		data[addr + 3] = (newHw2 >> 8) & 0xFF;
+	}
+
+	/**
+	 * Fix internal branches in a relocated function
+	 *
+	 * When a function is expanded, internal branches that cross the expansion point
+	 * need their offsets adjusted.
+	 */
+	private fixRelocatedBranches(
+		data: Uint8Array,
+		funcAddr: number,
+		expansionPoint: number,
+		totalSize: number,
+		shiftAmount: number
+	): void {
+		const shiftHalfwords = shiftAmount >> 1;
+
+		for (let offset = 0; offset < totalSize - 2; offset += 2) {
+			const addr = funcAddr + offset;
+			const hw1 = data[addr] | (data[addr + 1] << 8);
+
+			// Check for 16-bit conditional branch (D0-DE)
+			if ((hw1 & 0xF000) === 0xD000 && (hw1 & 0x0F00) !== 0x0F00) {
+				const imm8 = hw1 & 0xFF;
+				const signedImm = imm8 >= 0x80 ? imm8 - 0x100 : imm8;
+				const originalTargetOffset = offset + 4 + (signedImm * 2);
+
+				// Case 1: Branch starts before expansion, ends after expansion
+				if (offset < expansionPoint && originalTargetOffset > expansionPoint) {
+					const newImm = signedImm + shiftHalfwords;
+					if (newImm >= -128 && newImm <= 127) {
+						data[addr] = newImm & 0xFF;
+					}
+				}
+				// Case 2: Branch starts after expansion, ends before expansion
+				else if (offset > expansionPoint && originalTargetOffset < expansionPoint) {
+					const newImm = signedImm - shiftHalfwords;
+					if (newImm >= -128 && newImm <= 127) {
+						data[addr] = newImm & 0xFF;
+					}
+				}
+			}
+			// Check for 16-bit unconditional branch (E000-E7FF)
+			else if ((hw1 & 0xF800) === 0xE000) {
+				const imm11 = hw1 & 0x7FF;
+				const signedImm = imm11 >= 0x400 ? imm11 - 0x800 : imm11;
+				const originalTargetOffset = offset + 4 + (signedImm * 2);
+
+				if (offset < expansionPoint && originalTargetOffset > expansionPoint) {
+					const newImm = signedImm + shiftHalfwords;
+					if (newImm >= -1024 && newImm <= 1023) {
+						const newHw1 = 0xE000 | (newImm & 0x7FF);
+						data[addr] = newHw1 & 0xFF;
+						data[addr + 1] = (newHw1 >> 8) & 0xFF;
+					}
+				} else if (offset > expansionPoint && originalTargetOffset < expansionPoint) {
+					const newImm = signedImm - shiftHalfwords;
+					if (newImm >= -1024 && newImm <= 1023) {
+						const newHw1 = 0xE000 | (newImm & 0x7FF);
+						data[addr] = newHw1 & 0xFF;
+						data[addr + 1] = (newHw1 >> 8) & 0xFF;
+					}
+				}
+			}
+			// 32-bit instructions (B.W, etc.) could be added here if needed
+			else if ((hw1 & 0xF800) >= 0xE800) {
+				offset += 2;
+			}
+		}
 	}
 }
 
