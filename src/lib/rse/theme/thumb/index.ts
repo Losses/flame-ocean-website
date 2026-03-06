@@ -15,6 +15,7 @@ export { ThumbDecoder, isMovwInstruction, readMovwImmediate } from './decoder.js
 export {
 	encodeBl,
 	encodeB16bit,
+	encodeB32bit,
 	encodeMovw,
 	encodeMovt,
 	encodePush,

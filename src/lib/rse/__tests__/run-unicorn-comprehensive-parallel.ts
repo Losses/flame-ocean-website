@@ -874,6 +874,60 @@ if is_relocation and is_flac:
     elif bl_count == 0:
         print(f"⚠️ No BL instructions found in scanned regions (may need larger scan range)")
 
+# LDR instruction validation for relocation patches
+# This catches bugs where literal pool isn't moved or LDR offsets aren't fixed
+if is_relocation:
+    print("\\n🔍 LDR Instruction Validation:")
+    ldr_count = 0
+    invalid_ldr_count = 0
+
+    def check_ldr_target(offset, target):
+        global invalid_ldr_count
+        # Target should be inside the firmware
+        if target < FLASH_BASE or target >= FLASH_BASE + FLASH_SIZE:
+            print(f"❌ LDR at 0x{offset:X} has INVALID target 0x{target:X} (outside firmware bounds)")
+            invalid_ldr_count += 1
+            return False
+        # Read the literal value to see if it's potentially garbage (00000000 or FFFFFFFF are common if uninitialized)
+        # But 0 or -1 can be valid constants. We just ensure we can read it.
+        try:
+            val = struct.unpack('<I', data[target:target+4])[0]
+            # print(f"   LDR at 0x{offset:X} -> 0x{target:X} (Value: 0x{val:08X}) ✓")
+            return True
+        except:
+            print(f"❌ LDR at 0x{offset:X} has INVALID target 0x{target:X} (cannot read 4 bytes)")
+            invalid_ldr_count += 1
+            return False
+
+    scan_start = HANDLER_START - 0x800
+    if scan_start < 0: scan_start = 0
+    scan_end = min(HANDLER_START + 0x800, len(data) - 4)
+
+    for offset in range(scan_start, scan_end, 2):
+        hw1 = data[offset] | (data[offset + 1] << 8)
+        
+        # Check for 32-bit LDR.W Rt, [PC, #imm12] (F85F or F8DF)
+        if (hw1 & 0xFF7F) == 0xF85F:
+            hw2 = data[offset + 2] | (data[offset + 3] << 8)
+            u = (hw1 >> 7) & 1
+            imm12 = hw2 & 0xFFF
+            pc = (offset + 4) & ~3
+            target = (pc + imm12) if u else (pc - imm12)
+            ldr_count += 1
+            if not check_ldr_target(offset, target):
+                all_success = False
+            
+        # Check for 16-bit LDR Rt, [PC, #imm8] (48XX)
+        elif (hw1 & 0xF800) == 0x4800:
+            imm8 = hw1 & 0xFF
+            target = ((offset + 4) & ~3) + (imm8 << 2)
+            ldr_count += 1
+            if not check_ldr_target(offset, target):
+                all_success = False
+
+    print(f"   Total PC-relative LDR instructions found: {ldr_count}, Invalid: {invalid_ldr_count}")
+    if ldr_count > 0 and invalid_ldr_count == 0:
+        print(f"✅ All LDR instructions have valid targets")
 
 if all_success: print("✅ PASS"); sys.exit(0)
 else: print("❌ FAIL"); sys.exit(1)

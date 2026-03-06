@@ -99,7 +99,50 @@ export function encodeB16bit(fromAddr: number, toAddr: number): Uint8Array {
 }
 
 /**
+ * Encode a 32-bit B.W instruction (unconditional branch) for ARM Thumb
+ *
+ * Format:
+ * hw1: 11110 S imm10
+ * hw2: 10 J1 1 J2 imm11
+ *
+ * The target is calculated as:
+ * target = PC + signExtend(S:I1:I2:imm10:imm11:0)
+ *
+ * Range: ±16MB (±16777216 bytes)
+ */
+export function encodeB32bit(fromAddr: number, toAddr: number): Uint8Array {
+	const offset = toAddr - (fromAddr + 4);
+
+	// B.W range is ±16MB
+	if (offset > 16777214 || offset < -16777216) {
+		throw new ThumbEncodingError(`B.W offset out of range: ${offset}`);
+	}
+
+	if (offset & 1) {
+		throw new ThumbEncodingError(`B.W offset must be even (Thumb alignment): ${offset}`);
+	}
+	const imm25 = offset & 0x1FFFFFF;
+
+	const S = imm25 >> 24 & 1;
+	const imm10 = (imm25 >> 12) & 0x3ff;
+	const imm11 = (imm25 >> 1) & 0x7ff;
+	
+	const I1 = (imm25 >> 23) & 1;
+	const I2 = (imm25 >> 22) & 1;
+
+	const J1 = (~(S ^ I1)) & 1;
+	const J2 = (~(S ^ I2)) & 1;
+
+	// Encode (hw2 starts with 10 instead of 11 for B.W vs BL)
+	const hw1 = 0xf000 | (S << 10) | imm10;
+	const hw2 = 0x9000 | (J1 << 13) | (1 << 12) | (J2 << 11) | imm11;
+
+	return new Uint8Array([hw1 & 0xff, (hw1 >> 8) & 0xff, hw2 & 0xff, (hw2 >> 8) & 0xff]);
+}
+
+/**
  * Encode a MOVW instruction for ARM Thumb
+
  *
  * MOVW Rd, #imm16 (move wide)
  * DDI0403 A6.3.2 T3: hw1 = 11110 i 10 0100 imm4, hw2 = 0 imm3 Rd imm8
