@@ -6,7 +6,7 @@
  * and modifies the caller's BL to point to the new location.
  */
 
-import { encodeBl, encodeMovw, encodeMovt, decodeBlTarget, encodePush, encodePop, encodeMov } from './thumb/encoders.js';
+import { encodeBl, encodeB32bit, encodeMovw, encodeMovt, decodeBlTarget, encodePush, encodePop, encodeMov, encodeNop } from './thumb/encoders.js';
 import { fileIO } from '../utils/file-io.js';
 import { NopSlideFinder } from './nop-slide.js';
 import { CodeReferenceAnalyzer, type LandingPoint, type NopSlideAnalysis } from './code-reference-analyzer.js';
