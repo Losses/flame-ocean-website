@@ -1890,8 +1890,8 @@ export class ThemePatcher {
 			    data[addr + 2] === pattern[2] && data[addr + 3] === pattern[3]) {
 				
 				// 2. Semantically verify the following BL instruction
-				// We search forward a few bytes because there might be a MOVW R0 in between
-				for (let search = 0; search <= 4; search += 2) {
+				// We search forward up to 8 bytes because there is a MOVW R0 in between
+				for (let search = 0; search <= 8; search += 2) {
 					const nextAddr = addr + 4 + search;
 					if (nextAddr + 4 > funcAddr + funcSize) break;
 
