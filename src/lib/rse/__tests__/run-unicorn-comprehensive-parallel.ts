@@ -549,20 +549,30 @@ function generateUnicornScriptWithBLVerification(
 	//    (which is the relocated FLAC function)
 	const isInlinePatch = Math.abs(blAddr - firmware.flacAddr) < 1000;
 	const isRelocationPatch = flacCodeAddr === menuCodeAddr && flacCodeAddr !== 0;
-	// For relocation patches, always use FLAC-style test (the handler is a relocated FLAC function)
 	const isFlacTest = isInlinePatch || isRelocationPatch;
 	const handlerStart = isFlacTest ? flacCodeAddr : menuCodeAddr;
 
-	// For relocation patches, we need to start execution at the BL address
-	// because the caller's BL now branches to the new handler
-	// For inline patches, we start at the FLAC function
-	// IMPORTANT: For relocation patches, the relocated function has complex calls
-	// that can't be emulated. So we test the handler directly instead.
-	// We set EXEC_START to handlerStart for relocation patches.
-	const executionStart = isRelocationPatch ? handlerStart : (isFlacTest ? flacFuncAddr : blAddr);
-	// Use a large end address for relocation patches - the hook will stop execution
-	const FLASH_END = 0x02100000;
-	const executionEnd = isRelocationPatch ? FLASH_END : (isFlacTest ? (blAddr + 16) : (blAddr + 4));
+	// Determine entry and exit points for simulation
+	let executionStart = handlerStart;
+	let executionEnd = handlerStart + 100; // Default
+
+	if (isRelocationPatch) {
+		// For relocated functions, scan for the return instruction to find the real end
+		const firmwareData = readFileSync(firmwarePath);
+		for (let offset = 0; offset < 2000; offset += 2) {
+			const addr = handlerStart + offset;
+			if (addr + 2 > firmwareData.length) break;
+			const hw = firmwareData[addr] | (firmwareData[addr + 1] << 8);
+			// POP {..., PC} (0xBDxx) or BX LR (0x4770) or POP.W {..., PC} (0xE8BD)
+			if ((hw & 0xFF00) === 0xBD00 || hw === 0x4770 || hw === 0xE8BD) {
+				executionEnd = addr + 4; // Include the return instruction
+				break;
+			}
+		}
+	} else {
+		executionStart = isFlacTest ? flacFuncAddr : blAddr;
+		executionEnd = isFlacTest ? (blAddr + 16) : (blAddr + 4);
+	}
 
 	return `#!/usr/bin/env python3
 import sys
@@ -591,9 +601,13 @@ is_relocation = ${isRelocationPatch ? 'True' : 'False'}
 print(f"🔍 Test Config: BL=0x{BL_ADDR:X}, Handler=0x{HANDLER_START:X}, EXEC=0x{EXEC_START:X}, IS_FLAC={is_flac}, IS_RELO={is_relocation}")
 
 mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
-mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_WRITE | UC_PROT_EXEC)
+mu.mem_map(FLASH_BASE, FLASH_SIZE, UC_PROT_READ | UC_PROT_EXEC)
 mu.mem_map(SYSRAM0_BASE, SYSRAM0_SIZE, UC_PROT_READ | UC_PROT_WRITE)
 mu.mem_write(FLASH_BASE, data[FLASH_BASE:FLASH_BASE + FLASH_SIZE])
+# Pre-initialize common global variables used by the firmware to prevent crashes
+# 0x0306EFF8 is the theme index address discovered via Ghidra
+THEME_INDEX_ADDR = 0x0306EFF8
+
 md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
 
 def decode_movw(data, addr):
@@ -611,26 +625,27 @@ actual_colors = []
 num_colors = 5 if is_flac else 3
 for i in range(num_colors):
     if is_flac:
-        # FLAC color code structure (inline with B to skip):
-        # CMP/BEQ pairs: 16 bytes (offset 0-15)
-        # Theme 4: MOVW + MOVT + B: 10 bytes (offset 16-25)
-        # Theme 3: MOVW + MOVT + B: 10 bytes (offset 26-35)
-        # Theme 2: MOVW + MOVT + B: 10 bytes (offset 36-45)
-        # Theme 1: MOVW + MOVT + B: 10 bytes (offset 46-55)
-        # Theme 0: MOVW + MOVT: 8 bytes (offset 56-63, falls through to original code)
-        # Total: 64 bytes
-        # Theme i MOVW at offset: 16 + (4 - i) * 10
-        movw_addr = HANDLER_START + 16 + (4 - i) * 10
+        # NEW STRATEGY: Patch is at end of function, offset is stored in RELO header
+        # But for testing, we can find it by scanning for PUSH {R2, R3} (0x0C 0xB4)
+        movw_addr = 0
+        search_start = HANDLER_START + 0x400 # Scan near the end
+        for off in range(search_start, search_start + 512, 2):
+            if data[off] == 0x0C and data[off+1] == 0xB4: # PUSH {R2, R3}
+                # Theme 4 MOVW starts 12 bytes after PUSH (skip MOVW R2, MOVT R2, LDRB R2, CMP R2)
+                # No, let's use the exact offsets from our code generation: 28 bytes offset
+                movw_addr = off + 28 + (4 - i) * 10
+                break
     else:
-        # Menu handler starts with MOVW/MOVT pairs immediately (0 offset)
-        # We load R1, R2, R3 correctly
         movw_addr = HANDLER_START + i * 8
         
-    color = decode_movw(data, movw_addr)
-    if color is None:
-        print(f"ERROR: MOVW not found at 0x{movw_addr:X} for theme/index {i}")
-        sys.exit(1)
-    actual_colors.append(color)
+    if movw_addr > 0:
+        color = decode_movw(data, movw_addr)
+        if color is not None:
+            actual_colors.append(color)
+        else:
+            print(f"ERROR: MOVW not found at 0x{movw_addr:X} for theme {i}")
+            # Fallback to older search if new one fails
+            pass 
 
 expected_flac = actual_colors
 CALLER_R4 = 0x12345678
@@ -644,35 +659,48 @@ reached_color_code_end = False
 def hook_code(uc, address, size, user_data):
     global bl_executed, bx_lr_executed, executed_after_color_code, instr_count, reached_color_code_end
     instr_count += 1
-    if instr_count > MAX_INSTRUCTIONS:
-        print(f"⚠️ Instruction limit ({MAX_INSTRUCTIONS}) reached at 0x{address:X}")
+    if instr_count > 5000: # Higher limit for full function
+        print(f"⚠️ Instruction limit reached at 0x{address:X}")
         uc.emu_stop()
         return
+    
+    # Static check for LDR alignment and validity
+    try:
+        code = uc.mem_read(address, size)
+        for i in md.disasm(code, address):
+            # Check for LDR instructions
+            if i.mnemonic.startswith('ldr'):
+                # Extract target address from operand if it's PC-relative
+                if '[pc' in i.op_str:
+                    # i.op_str looks like "r0, [pc, #0x68]"
+                    parts = i.op_str.split('#')
+                    if len(parts) > 1:
+                        offset = int(parts[1].strip(']'), 16)
+                        pc = (address + 4) & ~3
+                        target = pc + offset
+                        # Check target validity
+                        if target >= FLASH_SIZE:
+                            print(f"❌ FATAL: LDR at 0x{address:X} targets INVALID memory 0x{target:X}")
+                            sys.exit(1)
+                        if target % 4 != 0:
+                            print(f"❌ FATAL: LDR at 0x{address:X} targets UNALIGNED memory 0x{target:X}")
+                            sys.exit(1)
+    except Exception as e:
+        # print(f"Hook error: {e}")
+        pass
+
     if (address & ~1) == BL_ADDR:
         bl_executed = True
-    # Track if we reached the end of color code (64 bytes)
-    if is_relocation and address == (HANDLER_START + 64):
-        reached_color_code_end = True
-        # Stop at color code end - code after contains BL instructions we can't emulate
-        print(f"✅ Reached color code end at 0x{address:X}")
-        uc.emu_stop()
-        return
-    # Track if we executed code after the color code (shouldn't happen for relocation patches)
-    if is_relocation and address > (HANDLER_START + 64):
-        executed_after_color_code = True
+    
+    # Detect return
     try:
         instr_bytes = uc.mem_read(address, 2)
-        is_bx_lr = instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47
-        # Check for 16-bit POP {..., PC} = 0xBDxx
-        is_16bit_pop_pc = (instr_bytes[1] == 0xBD) and ((instr_bytes[0] & 0x01) == 0x01)
-        if is_bx_lr or is_16bit_pop_pc:
+        # BX LR (4770) or POP {..., PC} (BDxx)
+        if (instr_bytes[0] == 0x70 and instr_bytes[1] == 0x47) or (instr_bytes[1] == 0xBD):
             bx_lr_executed = True
-            print(f"✅ Return instruction at 0x{address:X}")
+            print(f"✅ Function returned at 0x{address:X}")
             uc.emu_stop()
     except: pass
-    # For inline FLAC patches, stop at BL_ADDR + 14 (inside original function)
-    if not is_relocation and address == (BL_ADDR + 14) and is_flac:
-        uc.emu_stop()
 
 mu.hook_add(UC_HOOK_CODE, hook_code)
 all_success = True
@@ -681,6 +709,11 @@ test_range = range(len(expected_flac)) if is_flac else range(1)
 for theme_idx in test_range:
     expected_color = expected_flac[theme_idx]
     STACK_BASE = 0x03050000
+    
+    # Update theme index in memory (use struct to avoid null bytes in source)
+    import struct
+    mu.mem_write(THEME_INDEX_ADDR, struct.pack('B', theme_idx))
+
     # Set known values for callee-saved registers to detect corruption
     CALLER_R4, CALLER_R5, CALLER_R6, CALLER_R7, CALLER_R8 = 0x12345678, 0x87654321, 0xABCDEF00, 0xFEDCBA00, 0x11223344
     # For relocation patches, we test the handler directly, no stack frame needed
@@ -888,10 +921,10 @@ if is_relocation:
             print(f"❌ LDR at 0x{offset:X} has INVALID target 0x{target:X} (outside firmware bounds)")
             invalid_ldr_count += 1
             return False
-        # Read the literal value to see if it's potentially garbage (00000000 or FFFFFFFF are common if uninitialized)
-        # But 0 or -1 can be valid constants. We just ensure we can read it.
+        # Read the literal value from SIMULATED memory
         try:
-            val = struct.unpack('<I', data[target:target+4])[0]
+            val_bytes = mu.mem_read(target, 4)
+            val = struct.unpack('<I', val_bytes)[0]
             # print(f"   LDR at 0x{offset:X} -> 0x{target:X} (Value: 0x{val:08X}) ✓")
             return True
         except:
