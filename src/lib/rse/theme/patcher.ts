@@ -2285,41 +2285,35 @@ export class ThemePatcher {
 	 * Generate inline color selection code with B instructions to skip remaining themes
 	 *
 	 * This code replaces the original IT block (12 bytes) in the FLAC function.
-	 * It uses CMP/BEQ pairs to select the theme and loads the color into R1.
-	 * After loading the color, it branches to the end to skip remaining themes.
 	 *
-	 * Structure:
-	 *   CMP R1, #0; BEQ theme_0
-	 *   CMP R1, #1; BEQ theme_1
-	 *   CMP R1, #2; BEQ theme_2
-	 *   CMP R1, #3; BEQ theme_3
-	 *   ; fall through to theme_4
-	 * theme_4: MOVW R1, #color; MOVT R1, #0; B end  (10 bytes)
-	 * theme_3: MOVW R1, #color; MOVT R1, #0; B end  (10 bytes)
-	 * theme_2: MOVW R1, #color; MOVT R1, #0; B end  (10 bytes)
-	 * theme_1: MOVW R1, #color; MOVT R1, #0; B end  (10 bytes)
-	 * theme_0: MOVW R1, #color; MOVT R1, #0  (8 bytes, falls through to original code)
-	 * end: (original code continues here)
-	 *
-	 * Total: 16 + 48 = 64 bytes
+	 * CRITICAL: This version is context-safe. It saves R2/R3, loads the ACTUAL theme
+	 * index from global memory (0x0306EFF8), and only modifies R1.
 	 */
 	private generateInlineColorCode(colors: number[]): Uint8Array {
 		const code: number[] = [];
 
-		// Record BEQ positions for patching
-		const beqPositions: Array<{ index: number; beqCodeAddr: number }> = [];
+		// 1. Save context (R2, R3)
+		code.push(0x0C, 0xB4); // PUSH {R2, R3}
 
-		// Generate CMP/BEQ pairs for themes 0-3
+		// 2. Load theme index from 0x0306EFF8 into R2
+		// MOVW R2, #0xEFF8
+		// MOVT R2, #0x0306
+		// LDRB R2, [R2]
+		code.push(...encodeMovw(2, 0xEFF8));
+		code.push(...encodeMovt(2, 0x0306));
+		code.push(0x12, 0x78); // LDRB R2, [R2, #0]
+
+		// 3. Theme selection logic using R2
+		const beqPositions: Array<{ index: number; beqCodeAddr: number }> = [];
 		for (let i = 0; i < 4; i++) {
-			code.push(0x00 | i, 0x29);  // CMP R1, #i
+			code.push(i, 0x2A); // CMP R2, #i
 			beqPositions.push({ index: i, beqCodeAddr: code.length });
-			code.push(0x00, 0xD0);  // BEQ placeholder
+			code.push(0x00, 0xD0); // BEQ placeholder
 		}
 
 		// Theme sections (theme 4 first, then 3, 2, 1, 0)
-		// Each section is MOVW + MOVT + B end, except theme 0 which falls through
 		const themeSectionStarts: number[] = [];
-		const bPositions: number[] = []; // Record B instruction positions for themes 4-1
+		const bPositions: number[] = [];
 
 		for (let theme = 4; theme >= 0; theme--) {
 			themeSectionStarts[theme] = code.length;
@@ -2329,44 +2323,30 @@ export class ThemePatcher {
 			code.push(...encodeMovw(1, color & 0xffff));
 			code.push(...encodeMovt(1, (color >> 16) & 0xffff));
 
-			// For themes 4-1, add B instruction to skip remaining themes
-			// Theme 0 falls through to original code
 			if (theme > 0) {
 				bPositions.push(code.length);
-				code.push(0x00, 0xE0);  // B placeholder (unconditional branch)
+				code.push(0x00, 0xE0); // B placeholder
 			}
 		}
 
-		// The end address (where original code continues)
-		const endAddr = code.length;
+		// 4. End section (Restore context and return point)
+		const endLabelPos = code.length;
+		code.push(0x0C, 0xBC); // POP {R2, R3}
 
 		// Patch BEQ offsets
 		for (const { index, beqCodeAddr } of beqPositions) {
 			const pc = beqCodeAddr + 4;
 			const target = themeSectionStarts[index];
 			const offset = (target - pc) >> 1;
-
-			if (offset < -128 || offset > 127) {
-				throw new PatchError('BEQ offset out of range for theme selection');
-			}
-
-			const imm8 = offset & 0xFF;
-			code[beqCodeAddr] = imm8;
-			code[beqCodeAddr + 1] = 0xD0;
+			code[beqCodeAddr] = offset & 0xFF;
 		}
 
-		// Patch B offsets (for themes 4-1, branch to end)
+		// Patch B offsets to endLabel
 		for (const bAddr of bPositions) {
 			const pc = bAddr + 4;
-			const offset = (endAddr - pc) >> 1;
-
-			if (offset < -128 || offset > 127) {
-				throw new PatchError('B offset out of range for theme skip');
-			}
-
-			const imm8 = offset & 0xFF;
-			code[bAddr] = imm8;
-			code[bAddr + 1] = 0xE0;  // B (unconditional)
+			const target = endLabelPos;
+			const offset = (target - pc) >> 1;
+			code[bAddr] = offset & 0xFF;
 		}
 
 		return new Uint8Array(code);
