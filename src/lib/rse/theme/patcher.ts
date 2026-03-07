@@ -1406,10 +1406,11 @@ export class ThemePatcher {
 		let newFuncAddr = freedPoolAddr;
 
 		// CRITICAL: Preserve 4-byte alignment phase for literal pool
-		// LDR instructions use (PC+4 & ~3) + offset. If we change the alignment phase
-		// (e.g. from addr%4==2 to addr%4==0), all LDR instructions will point to wrong data.
-		if ((newFuncAddr % 4) !== (funcStart % 4)) {
-			newFuncAddr += 2;
+		// LDR instructions use (PC+4 & ~3) + offset. We must match the original function's
+		// alignment relative to the 4-byte boundary exactly.
+		const originalPhase = funcStart % 4;
+		while ((newFuncAddr % 4) !== originalPhase) {
+			newFuncAddr++;
 		}
 
 		// Find the IT block offset in the ORIGINAL function
@@ -1732,7 +1733,18 @@ export class ThemePatcher {
 					maxTarget = Math.max(maxTarget, target + 4);
 				}
 			}
+			// Check for 16-bit ADR Rd, label (0xA0xx)
+			else if ((hw1 & 0xF800) === 0xA000) {
+				const imm8 = hw1 & 0xFF;
+				const target = ((addr + 4) & ~3) + (imm8 << 2);
+				if (target > maxTarget && target < funcStart + maxSearch + 512) {
+					maxTarget = Math.max(maxTarget, target + 4);
+				}
+			}
 		}
+
+		// Ensure maxTarget is 4-byte aligned to include the full last word
+		maxTarget = (maxTarget + 3) & ~3;
 
 		return {
 			start: funcStart,
