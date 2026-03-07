@@ -1907,28 +1907,6 @@ export class ThemePatcher {
 	}
 
 	/**
-	 * Find the offset of the IT block (color code location) in the function
-	 */
-	private findColorCodeOffset_legacy(data: Uint8Array, funcAddr: number, funcSize: number): number {
-		// Since we use encodeB32bit, the first two bytes are often 00 F0 or similar
-		for (let offset = 0; offset < funcSize - 12; offset += 2) {
-			const addr = funcAddr + offset;
-			const hw1 = data[addr] | (data[addr + 1] << 8);
-			const hw2 = data[addr + 2] | (data[addr + 3] << 8);
-			
-			// Check for B.W (unconditional branch)
-			if ((hw1 & 0xF800) === 0xF000 && (hw2 & 0xD000) === 0x9000) {
-				// Verify if it's followed by NOPs (which we use to fill the IT block)
-				if (data[addr + 4] === 0x00 && data[addr + 5] === 0xBF) {
-					return offset;
-				}
-			}
-		}
-
-		throw new PatchError('Could not find theme selection point in FLAC function (original or patched)');
-	}
-
-	/**
 	 * Generate inline color selection code with B instructions to skip remaining themes
 	 *
 	 * This code replaces the original IT block (12 bytes) in the FLAC function.
