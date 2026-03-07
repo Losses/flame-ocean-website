@@ -678,21 +678,22 @@ export class ThemePatcher {
 		// Clone firmware data
 		const patchedData = new Uint8Array(this.data);
 
-		// Patch the MOVW immediate values in the FLAC inline color code
-		// Color code structure:
-		//   CMP/BEQ pairs: 16 bytes (offset 0-15)
-		//   theme_4: MOVW + MOVT + B: 10 bytes (offset 16-25)
-		//   theme_3: MOVW + MOVT + B: 10 bytes (offset 26-35)
-		//   theme_2: MOVW + MOVT + B: 10 bytes (offset 36-45)
-		//   theme_1: MOVW + MOVT + B: 10 bytes (offset 46-55)
-		//   theme_0: MOVW + MOVT: 8 bytes (offset 56-63)
+		// Re-generate the entire FLAC color selection block
+		// This is safer than individual MOVW patching because the code structure may have changed.
 		const flacColorCodeAddr = reloHeader.flacFuncAddr + reloHeader.flacColorCodeOffset;
-		const themeMovwOffsets = [56, 46, 36, 26, 16]; // theme 0, 1, 2, 3, 4
+		let newColorCode = this.generateInlineColorCode(flacColors);
 
-		for (let i = 0; i < 5; i++) {
-			const movwAddr = flacColorCodeAddr + themeMovwOffsets[i];
-			this.patchMovwImmediate(patchedData, movwAddr, flacColors[i]);
-		}
+		// Re-append the return branch (B.W jump back to main function)
+		const returnAddr = reloHeader.flacFuncAddr + this.findColorCodeOffset(this.data, reloHeader.flacFuncAddr, reloHeader.flacFuncSize) + 12; // 12 is original block size
+		const colorCodeEndAddr = flacColorCodeAddr + newColorCode.length;
+		const returnBranch = encodeB32bit(colorCodeEndAddr, returnAddr);
+
+		const finalColorCode = new Uint8Array(newColorCode.length + returnBranch.length);
+		finalColorCode.set(newColorCode, 0);
+		finalColorCode.set(returnBranch, newColorCode.length);
+		
+		// Write the new block
+		patchedData.set(finalColorCode, flacColorCodeAddr);
 
 		// Re-patch Menu handler if it exists
 		let menuHandlerAddr = reloHeader.menuHandlerAddr;
@@ -1562,7 +1563,7 @@ export class ThemePatcher {
 		const reloHeader = encodeRelocationHeader({
 			flacFuncAddr: newFuncAddr,
 			flacFuncSize: newFuncSize,
-			flacColorCodeOffset: itBlockOffset, // Color code offset in new function
+			flacColorCodeOffset: colorCodeStartAddr - newFuncAddr, // Point to the appended logic after the gap
 			flacCallerAddr: callerAddr,
 			menuHandlerAddr,
 			menuHandlerSize,
@@ -2006,8 +2007,7 @@ export class ThemePatcher {
 	 * Find the offset of the IT block (color code location) in the function
 	 */
 	private findColorCodeOffset(data: Uint8Array, funcAddr: number, funcSize: number): number {
-		// Pattern: CMP R1, #4; ITE EQ
-		// Machine code: 04 29 0C BF
+		// Pattern 1: Original CMP R1, #4; ITE EQ (04 29 0C BF)
 		const pattern = [0x04, 0x29, 0x0C, 0xBF];
 
 		for (let offset = 0; offset < funcSize - 12; offset += 2) {
@@ -2020,7 +2020,23 @@ export class ThemePatcher {
 			}
 		}
 
-		throw new PatchError('Could not find theme selection IT block in FLAC function');
+		// Pattern 2: Already patched B.W jump (00 F0 XX BX)
+		// Since we use encodeB32bit, the first two bytes are often 00 F0 or similar
+		for (let offset = 0; offset < funcSize - 12; offset += 2) {
+			const addr = funcAddr + offset;
+			const hw1 = data[addr] | (data[addr + 1] << 8);
+			const hw2 = data[addr + 2] | (data[addr + 3] << 8);
+			
+			// Check for B.W (unconditional branch)
+			if ((hw1 & 0xF800) === 0xF000 && (hw2 & 0xD000) === 0x9000) {
+				// Verify if it's followed by NOPs (which we use to fill the IT block)
+				if (data[addr + 4] === 0x00 && data[addr + 5] === 0xBF) {
+					return offset;
+				}
+			}
+		}
+
+		throw new PatchError('Could not find theme selection point in FLAC function (original or patched)');
 	}
 
 	/**
