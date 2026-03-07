@@ -1982,10 +1982,11 @@ export class ThemePatcher {
 		// 4. End section (Restore context)
 		const endLabelPos = code.length;
 		
-		// IMPORTANT: Restore R2 to the value expected by original code (0x76)
-		code.push(0x76, 0x22); // MOVS R2, #0x76
-		
 		code.push(0x0C, 0xBC); // POP {R2, R3}
+
+		// IMPORTANT: Restore R2 to the value expected by original code (0x76)
+		// This must happen AFTER POP {R2, R3}, otherwise POP will overwrite the value.
+		code.push(0x76, 0x22); // MOVS R2, #0x76
 
 		// Patch BEQ offsets
 		for (const { index, beqCodeAddr } of beqPositions) {
