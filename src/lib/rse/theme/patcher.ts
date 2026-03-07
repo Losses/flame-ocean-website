@@ -1995,91 +1995,29 @@ export class ThemePatcher {
 	 * - xxx1: 4 instructions
 	 */
 	private calculateItBlockSize(data: Uint8Array, itBlockOffset: number): number {
-		// IT instruction is at offset + 2 (after CMP)
-		const itHw = data[itBlockOffset + 2] | (data[itBlockOffset + 3] << 8);
-
-		// Verify this is an IT instruction (0xBFxx)
-		if ((itHw & 0xFF00) !== 0xBF00) {
-			throw new PatchError('Expected IT instruction not found');
-		}
-
-		const mask = itHw & 0xF;
-		if (mask === 0) {
-			throw new PatchError('Invalid IT instruction mask (0)');
-		}
-
-		// Calculate number of conditional instructions based on LSB of mask
-		let itCount = 0;
-		if (mask & 1) itCount = 4;
-		else if (mask & 2) itCount = 3;
-		else if (mask & 4) itCount = 2;
-		else if (mask & 8) itCount = 1;
-
-		// Calculate total size: CMP (2) + IT (2) + conditional instructions
-		let size = 4; // CMP + IT
-		let offset = itBlockOffset + 4;
-
-		for (let i = 0; i < itCount; i++) {
-			if (offset + 2 > data.length) break;
-			const hw = data[offset] | (data[offset + 1] << 8);
-
-			// Check if 32-bit instruction (Thumb-2)
-			const is32bit = (hw & 0xF800) >= 0xE800;
-
-			if (is32bit) {
-				size += 4;
-				offset += 4;
-			} else {
-				size += 2;
-				offset += 2;
-			}
-		}
-
-		return size;
+		// We are now replacing exactly 4 bytes (76 22 FC 21)
+		return 4;
 	}
 
 	/**
 	 * Find the offset of the IT block (color code location) in the function
 	 */
 	private findColorCodeOffset(data: Uint8Array, funcAddr: number, funcSize: number): number {
-		// Find the IT block pattern: CMP R1, #4 + IT EQ
-		const cmpPattern = new Uint8Array([0x04, 0x29, 0x0c, 0xbf]); // CMP R1,#4 + ITE EQ
+		// Pattern: MOVS R2, #0x76; MOVS R1, #0xFC
+		// Machine code: 76 22 FC 21
+		const pattern = [0x76, 0x22, 0xFC, 0x21];
 
-		// Search for the pattern
-		for (let offset = 0; offset < funcSize - 20; offset += 2) {
+		for (let offset = 0; offset < funcSize - 4; offset += 2) {
 			const addr = funcAddr + offset;
-
-			if (data[addr] === cmpPattern[0] &&
-			    data[addr + 1] === cmpPattern[1] &&
-			    data[addr + 2] === cmpPattern[2] &&
-			    data[addr + 3] === cmpPattern[3]) {
-				// We found the CMP + IT.
-				// In original firmware, this is followed by:
-				// theme_4: MOVW R0, #color + B ... (10 bytes)
-				// theme_other: MOVW R0, #color (4 bytes)
-				// FINAL: STRH R0, [R12, #0] (2 bytes)
-				// Total logic length is 10 bytes after IT block (14 bytes from CMP)
+			if (data[addr] === pattern[0] &&
+			    data[addr + 1] === pattern[1] &&
+			    data[addr + 2] === pattern[2] &&
+			    data[addr + 3] === pattern[3]) {
 				return offset;
 			}
 		}
 
-		// Try flexible search for CMP R1, #4
-		for (let offset = 0; offset < funcSize - 20; offset += 2) {
-			const addr = funcAddr + offset;
-			const hw = data[addr] | (data[addr + 1] << 8);
-
-			if ((hw & 0xFF00) === 0x2900) {
-				const imm = hw & 0xFF;
-				if (imm === 4) {
-					const nextHw = data[addr + 2] | (data[addr + 3] << 8);
-					if ((nextHw & 0xFF00) === 0xBF00) {
-						return offset;
-					}
-				}
-			}
-		}
-
-		throw new PatchError('Cannot find IT block pattern in FLAC function');
+		throw new PatchError('Cannot find color loading instructions in FLAC function');
 	}
 
 	/**
@@ -2331,6 +2269,10 @@ export class ThemePatcher {
 
 		// 4. End section (Restore context and return point)
 		const endLabelPos = code.length;
+		
+		// IMPORTANT: Restore R2 to the value expected by the original code (0x76)
+		code.push(0x76, 0x22); // MOVS R2, #0x76
+		
 		code.push(0x0C, 0xBC); // POP {R2, R3}
 
 		// Patch BEQ offsets
