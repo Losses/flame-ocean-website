@@ -1429,8 +1429,12 @@ export class ThemePatcher {
 		// [colorCode] (appended at newFuncAddr + funcSize)
 		// colorCode ends with B.W back to newFuncAddr + itBlockOffset + itBlockSize
 
+		const safetyGap = 32;
+		const colorCodeStartAddr = (newFuncAddr + funcSize + safetyGap - 1) & ~(safetyGap - 1);
+
+		// Append B.W jump back to main function
 		const returnAddr = newFuncAddr + itBlockOffset + itBlockSize;
-		const colorCodeEndAddr = newFuncAddr + funcSize + colorCode.length;
+		const colorCodeEndAddr = colorCodeStartAddr + colorCode.length;
 		const returnBranch = encodeB32bit(colorCodeEndAddr, returnAddr);
 
 		// Append the return branch to colorCode
@@ -1441,11 +1445,11 @@ export class ThemePatcher {
 
 		const COLOR_CODE_SIZE = colorCode.length; // 64 + 4 = 68 bytes
 
-		// New function size = original size + color code
-		const newFuncSize = funcSize + COLOR_CODE_SIZE;
+		// New function size = original size + safety gap + color code
+		const newFuncSize = (colorCodeStartAddr - newFuncAddr) + COLOR_CODE_SIZE;
 
 		// Build the new function:
-		// [code before IT block] [B.W jump + NOPs] [code after IT block] [color code]
+		// [code before IT block] [B.W jump + NOPs] [code after IT block] [GAP] [color code]
 		const codeBeforeIT = this.data.slice(funcStart, funcStart + itBlockOffset);
 		const codeAfterIT = this.data.slice(funcStart + itBlockOffset + itBlockSize, funcEnd);
 
@@ -1455,7 +1459,6 @@ export class ThemePatcher {
 		writeOffset += codeBeforeIT.length;
 
 		// Inject jump to color code
-		const colorCodeStartAddr = newFuncAddr + funcSize;
 		const jumpToColorCode = encodeB32bit(newFuncAddr + itBlockOffset, colorCodeStartAddr);
 		modifiedData.set(jumpToColorCode, writeOffset);
 		writeOffset += jumpToColorCode.length;
@@ -1471,10 +1474,10 @@ export class ThemePatcher {
 
 		// Write the rest of the function (including literal pool!)
 		modifiedData.set(codeAfterIT, writeOffset);
-		writeOffset += codeAfterIT.length;
+		// writeOffset += codeAfterIT.length;
 
-		// Write the color code at the end
-		modifiedData.set(colorCode, writeOffset);
+		// Write the color code at the end (at the gap-aligned address)
+		modifiedData.set(colorCode, colorCodeStartAddr);
 
 		// Fix BL instructions in the relocated function
 		// BL instructions are PC-relative and need to be re-encoded for the new address
@@ -1995,19 +1998,19 @@ export class ThemePatcher {
 	 * - xxx1: 4 instructions
 	 */
 	private calculateItBlockSize(data: Uint8Array, itBlockOffset: number): number {
-		// We are now replacing exactly 4 bytes (76 22 FC 21)
-		return 4;
+		// CMP (2) + ITE (2) + MOVW.EQ (4) + MOVW.NE (4) = 12 bytes
+		return 12;
 	}
 
 	/**
 	 * Find the offset of the IT block (color code location) in the function
 	 */
 	private findColorCodeOffset(data: Uint8Array, funcAddr: number, funcSize: number): number {
-		// Pattern: MOVS R2, #0x76; MOVS R1, #0xFC
-		// Machine code: 76 22 FC 21
-		const pattern = [0x76, 0x22, 0xFC, 0x21];
+		// Pattern: CMP R1, #4; ITE EQ
+		// Machine code: 04 29 0C BF
+		const pattern = [0x04, 0x29, 0x0C, 0xBF];
 
-		for (let offset = 0; offset < funcSize - 4; offset += 2) {
+		for (let offset = 0; offset < funcSize - 12; offset += 2) {
 			const addr = funcAddr + offset;
 			if (data[addr] === pattern[0] &&
 			    data[addr + 1] === pattern[1] &&
@@ -2017,7 +2020,7 @@ export class ThemePatcher {
 			}
 		}
 
-		throw new PatchError('Cannot find color loading instructions in FLAC function');
+		throw new PatchError('Could not find theme selection IT block in FLAC function');
 	}
 
 	/**
@@ -2234,14 +2237,11 @@ export class ThemePatcher {
 		code.push(0x0C, 0xB4); // PUSH {R2, R3}
 
 		// 2. Load theme index from 0x0306EFF8 into R2
-		// MOVW R2, #0xEFF8
-		// MOVT R2, #0x0306
-		// LDRB R2, [R2]
 		code.push(...encodeMovw(2, 0xEFF8));
 		code.push(...encodeMovt(2, 0x0306));
 		code.push(0x12, 0x78); // LDRB R2, [R2, #0]
 
-		// 3. Theme selection logic using R2
+		// 3. Theme selection logic using R2 (Switch-case for theme 0-4)
 		const beqPositions: Array<{ index: number; beqCodeAddr: number }> = [];
 		for (let i = 0; i < 4; i++) {
 			code.push(i, 0x2A); // CMP R2, #i
@@ -2267,12 +2267,8 @@ export class ThemePatcher {
 			}
 		}
 
-		// 4. End section (Restore context and return point)
+		// 4. End section (Restore context)
 		const endLabelPos = code.length;
-		
-		// IMPORTANT: Restore R2 to the value expected by the original code (0x76)
-		code.push(0x76, 0x22); // MOVS R2, #0x76
-		
 		code.push(0x0C, 0xBC); // POP {R2, R3}
 
 		// Patch BEQ offsets
