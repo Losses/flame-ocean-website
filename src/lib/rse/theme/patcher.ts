@@ -1402,7 +1402,14 @@ export class ThemePatcher {
 
 		// Copy FLAC function to the new location
 		// The freed pool starts at freedPoolAddr
-		const newFuncAddr = freedPoolAddr;
+		let newFuncAddr = freedPoolAddr;
+
+		// CRITICAL: Preserve 4-byte alignment phase for literal pool
+		// LDR instructions use (PC+4 & ~3) + offset. If we change the alignment phase
+		// (e.g. from addr%4==2 to addr%4==0), all LDR instructions will point to wrong data.
+		if ((newFuncAddr % 4) !== (funcStart % 4)) {
+			newFuncAddr += 2;
+		}
 
 		// Find the IT block offset in the ORIGINAL function
 		const itBlockOffset = this.findColorCodeOffset(this.data, funcStart, funcSize);
