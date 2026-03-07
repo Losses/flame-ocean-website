@@ -2011,28 +2011,38 @@ export class ThemePatcher {
 	 * - xxx1: 4 instructions
 	 */
 	private calculateItBlockSize(data: Uint8Array, itBlockOffset: number): number {
-		// CMP (2) + ITE (2) + MOVW.EQ (4) + MOVW.NE (4) = 12 bytes
-		return 12;
+		// We are now replacing exactly 4 bytes (76 22 FC 21)
+		return 4;
 	}
 
 	/**
-	 * Find the offset of the IT block (color code location) in the function
+	 * Find the offset of the color loading instructions in FLAC function
 	 */
 	private findColorCodeOffset(data: Uint8Array, funcAddr: number, funcSize: number): number {
-		// Pattern 1: Original CMP R1, #4; ITE EQ (04 29 0C BF)
-		const pattern = [0x04, 0x29, 0x0C, 0xBF];
+		// Pattern: MOVS R2, #0x76; MOVS R1, #0xFC
+		// Machine code: 76 22 FC 21
+		const pattern = [0x76, 0x22, 0xFC, 0x21];
 
-		for (let offset = 0; offset < funcSize - 12; offset += 2) {
+		for (let offset = 0; offset < funcSize - 4; offset += 2) {
 			const addr = funcAddr + offset;
 			if (data[addr] === pattern[0] &&
 			    data[addr + 1] === pattern[1] &&
 			    data[addr + 2] === pattern[2] &&
 			    data[addr + 3] === pattern[3]) {
-				return offset;
+				// Search for the main rendering point near the end
+				if (offset > 0x400) {
+					return offset;
+				}
 			}
 		}
 
-		// Pattern 2: Already patched B.W jump (00 F0 XX BX)
+		throw new PatchError('Cannot find color loading instructions in FLAC function');
+	}
+
+	/**
+	 * Find the offset of the IT block (color code location) in the function
+	 */
+	private findColorCodeOffset_legacy(data: Uint8Array, funcAddr: number, funcSize: number): number {
 		// Since we use encodeB32bit, the first two bytes are often 00 F0 or similar
 		for (let offset = 0; offset < funcSize - 12; offset += 2) {
 			const addr = funcAddr + offset;
@@ -2297,6 +2307,10 @@ export class ThemePatcher {
 
 		// 4. End section (Restore context)
 		const endLabelPos = code.length;
+		
+		// IMPORTANT: Restore R2 to the value expected by original code (0x76)
+		code.push(0x76, 0x22); // MOVS R2, #0x76
+		
 		code.push(0x0C, 0xBC); // POP {R2, R3}
 
 		// Patch BEQ offsets
