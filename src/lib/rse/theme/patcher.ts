@@ -1879,21 +1879,40 @@ export class ThemePatcher {
 	 * Find the offset of the color loading instructions in FLAC function
 	 */
 	private findColorCodeOffset(data: Uint8Array, funcAddr: number, funcSize: number): number {
-		// Strategy A: Drawing Call Hijack (V3.x+)
-		// Pattern: MOVS R2, #0x76; MOVS R1, #0xFC; MOVW R0, #ID
-		const patternA = [0x76, 0x22, 0xFC, 0x21, 0x40, 0xF2, 0x37, 0x10];
+		// Pattern: MOVS R2, #0x76; MOVS R1, #0xFC
+		const pattern = [0x76, 0x22, 0xFC, 0x21];
+
 		for (let offset = 0; offset < funcSize - 8; offset += 2) {
 			const addr = funcAddr + offset;
-			if (data[addr] === patternA[0] && data[addr + 1] === patternA[1] &&
-			    data[addr + 2] === patternA[2] && data[addr + 3] === patternA[3] &&
-			    data[addr + 4] === patternA[4] && data[addr + 5] === patternA[5] &&
-			    data[addr + 6] === patternA[6] && data[addr + 7] === patternA[7]) {
-				return offset;
+			
+			// 1. Match the color parameter setup
+			if (data[addr] === pattern[0] && data[addr + 1] === pattern[1] &&
+			    data[addr + 2] === pattern[2] && data[addr + 3] === pattern[3]) {
+				
+				// 2. Semantically verify the following BL instruction
+				// We search forward a few bytes because there might be a MOVW R0 in between
+				for (let search = 0; search <= 4; search += 2) {
+					const nextAddr = addr + 4 + search;
+					if (nextAddr + 4 > funcAddr + funcSize) break;
+
+					const hw1 = data[nextAddr] | (data[nextAddr + 1] << 8);
+					const hw2 = data[nextAddr + 2] | (data[nextAddr + 3] << 8);
+
+					// Check if it's a BL instruction
+					if ((hw1 & 0xF800) === 0xF000 && (hw2 & 0xD000) === 0xD000) {
+						try {
+							const target = decodeBlTarget(nextAddr, data.slice(nextAddr, nextAddr + 4));
+							// If it targets drawing API (0x70A8E), this is our hijack point
+							if (Math.abs(target - 0x70A8E) <= 1) {
+								return offset;
+							}
+						} catch (e) { /* ignore and continue */ }
+					}
+				}
 			}
 		}
 
 		// Strategy B: Original Theme Selection Fallback (V1.8 - V2.8)
-		// Pattern: CMP R1, #4; ITE EQ
 		const patternB = [0x04, 0x29, 0x0C, 0xBF];
 		for (let offset = 0; offset < funcSize - 4; offset += 2) {
 			const addr = funcAddr + offset;
@@ -1904,13 +1923,11 @@ export class ThemePatcher {
 		}
 
 		// Strategy C: Already patched B.W jump
-		for (let offset = 0; offset < funcSize - 4; offset += 2) {
+		for (let offset = funcSize - 4; offset > 0x400; offset -= 2) {
 			const addr = funcAddr + offset;
 			const hw1 = data[addr] | (data[addr + 1] << 8);
 			const hw2 = data[addr + 2] | (data[addr + 3] << 8);
-			if ((hw1 & 0xF800) === 0xF000 && (hw2 & 0xD000) === 0x9000) {
-				if (offset > 0x400) return offset;
-			}
+			if ((hw1 & 0xF800) === 0xF000 && (hw2 & 0xD000) === 0x9000) return offset;
 		}
 
 		throw new PatchError(`No compatible patching pattern found for firmware version ${this.version}`);
