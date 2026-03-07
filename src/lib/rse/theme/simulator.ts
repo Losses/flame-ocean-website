@@ -279,10 +279,10 @@ export class ControlFlowSimulator {
 				if (target % 4 !== 0) {
 					throw new Error(`[SIM] FATAL: Unaligned LDR access at 0x${addr.toString(16)} targets 0x${target.toString(16)}`);
 				}
-				// Load value from decoder's data
+				// Load value from decoder's data as unsigned 32-bit
 				const data = this.decoder['getData']();
 				if (target + 4 <= data.length) {
-					const val = data[target] | (data[target+1] << 8) | (data[target+2] << 16) | (data[target+3] << 24);
+					const val = (data[target] | (data[target+1] << 8) | (data[target+2] << 16) | (data[target+3] << 24)) >>> 0;
 					registers.set(instr.rd, val);
 				}
 				break;
@@ -382,7 +382,7 @@ export class ControlFlowSimulator {
 		const write: ColorWrite = {
 			addr: instr.addr,
 			instr,
-			colorValue: color,
+			colorValue: color & 0xFFFF,
 			targetReg: rn,
 			sourceReg: rt,
 			themeCondition: themeValue,

@@ -293,7 +293,7 @@ export class ThemePatcher {
 		const flacFunc = result.themeFunctions.find(f => f.type === 'flac');
 		let flacColors: number[] = [];
 		if (flacFunc) {
-			flacColors = extractor.getColorsForFunction('flac');
+			flacColors = extractor.getColorsForFunction('flac').map(c => c & 0xFFFF);
 		} else {
 			throw new ThemeError('FLAC function not found in firmware');
 		}
@@ -302,10 +302,7 @@ export class ThemePatcher {
 		const menuFunc = result.themeFunctions.find(f => f.type === 'menu');
 		let menuColors: number[] = [];
 		if (menuFunc) {
-			// getColorsForFunction returns: [T0_R1, T0_R2, T0_R3, T1_R1, T1_R2, T1_R3, ...]
-			// We keep this order for simplicity.
-			const rawColors = extractor.getColorsForFunction('menu');
-			menuColors = Array.from(rawColors);
+			menuColors = Array.from(extractor.getColorsForFunction('menu')).map(c => c & 0xFFFF);
 		} else {
 			throw new ThemeError('Menu function not found in firmware');
 		}
