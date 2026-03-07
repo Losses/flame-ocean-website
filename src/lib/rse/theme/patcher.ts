@@ -2020,39 +2020,31 @@ export class ThemePatcher {
 	 * Find the offset of the color loading instructions in FLAC function
 	 */
 	private findColorCodeOffset(data: Uint8Array, funcAddr: number, funcSize: number): number {
-		// Pattern 1: Original color loading instructions (MOVS R2, #0x76; MOVS R1, #0xFC; MOVW R0, #ID)
-		// Machine code: 76 22 FC 21 40 F2
-		const pattern = [0x76, 0x22, 0xFC, 0x21, 0x40, 0xF2];
-
-		for (let offset = 0; offset < funcSize - 6; offset += 2) {
+		// Pattern 1: Original color loading instructions (MOVS R2, #0x76; MOVS R1, #0xFC; MOVW R0, #ANY_ID)
+		// Machine code: 76 22 FC 21 + MOVW R0 (F24x / F64x)
+		for (let offset = 0; offset < funcSize - 8; offset += 2) {
 			const addr = funcAddr + offset;
-			if (data[addr] === pattern[0] &&
-			    data[addr + 1] === pattern[1] &&
-			    data[addr + 2] === pattern[2] &&
-			    data[addr + 3] === pattern[3] &&
-			    data[addr + 4] === pattern[4] &&
-			    data[addr + 5] === pattern[5]) {
-				return offset;
-			}
-		}
-
-		// Pattern 2: Already patched B.W jump (unconditional branch to our logic)
-		// We search for the B.W instruction that replaced the color loading sequence.
-		for (let offset = 0; offset < funcSize - 4; offset += 2) {
-			const addr = funcAddr + offset;
-			const hw1 = data[addr] | (data[addr + 1] << 8);
-			const hw2 = data[addr + 2] | (data[addr + 3] << 8);
-			
-			// Check for B.W (11110.S... 10.J1.1.J2.imm11)
-			if ((hw1 & 0xF800) === 0xF000 && (hw2 & 0xD000) === 0x9000) {
-				// To be sure, check if it's in the later part of the function where we expect it
-				if (offset > 0x400) {
+			if (data[addr] === 0x76 && data[addr + 1] === 0x22 &&
+			    data[addr + 2] === 0xFC && data[addr + 3] === 0x21) {
+				
+				const nextHw1 = data[addr + 4] | (data[addr + 5] << 8);
+				if ((nextHw1 & 0xFBF0) === 0xF240) { // MOVW R0, #imm16
 					return offset;
 				}
 			}
 		}
 
-		throw new PatchError('Cannot find specific color loading pattern in FLAC function (original or patched)');
+		// Pattern 2: Already patched B.W jump
+		for (let offset = 0; offset < funcSize - 4; offset += 2) {
+			const addr = funcAddr + offset;
+			const hw1 = data[addr] | (data[addr + 1] << 8);
+			const hw2 = data[addr + 2] | (data[addr + 3] << 8);
+			if ((hw1 & 0xF800) === 0xF000 && (hw2 & 0xD000) === 0x9000) {
+				if (offset > 0x400) return offset;
+			}
+		}
+
+		throw new PatchError(`Compatible color loading pattern not found in this firmware version (${this.version})`);
 	}
 
 	/**
