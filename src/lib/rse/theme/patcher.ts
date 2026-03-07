@@ -1893,6 +1893,7 @@ export class ThemePatcher {
 				// We search forward up to 8 bytes because there is a MOVW R0 in between
 				for (let search = 0; search <= 8; search += 2) {
 					const nextAddr = addr + 4 + search;
+
 					if (nextAddr + 4 > funcAddr + funcSize) break;
 
 					const hw1 = data[nextAddr] | (data[nextAddr + 1] << 8);
@@ -2036,69 +2037,42 @@ export class ThemePatcher {
 		itBlockSize: number
 	): { fixed: number; skipped: number; errors: string[] } {
 		const result = { fixed: 0, skipped: 0, errors: [] as string[] };
+		const totalScanSize = data.length - newFuncAddr; 
 
-		// Scan regions for BL instructions
-		// BL format: hw1 = 11110 S imm10, hw2 = 11 J1 1 J2 imm11
+		for (let offset = 0; offset < totalScanSize - 2; ) {
+			const addr = newFuncAddr + offset;
+			const hw1 = data[addr] | (data[addr + 1] << 8);
 
-		const fixBlAtOffset = (newOffset: number, originalOffset: number) => {
-			const hw1 = data[newFuncAddr + newOffset] | (data[newFuncAddr + newOffset + 1] << 8);
-			
-			// Check for BL instruction pattern (Thumb-2)
 			if ((hw1 & 0xF800) === 0xF000) {
-				const hw2 = data[newFuncAddr + newOffset + 2] | (data[newFuncAddr + newOffset + 3] << 8);
-
+				const hw2 = data[addr + 2] | (data[addr + 3] << 8);
 				if ((hw2 & 0xD000) === 0xD000) {
-					// This is a BL instruction.
-					// Decode the original target from the ORIGINAL location.
-					const originalBlBytes = originalData.slice(
-						originalFuncAddr + originalOffset,
-						originalFuncAddr + originalOffset + 4
-					);
-
 					try {
-						// Get the absolute target address the original code was calling
-						const absoluteTarget = decodeBlTarget(
-							originalFuncAddr + originalOffset,
-							originalBlBytes
-						);
-
-						// Now re-encode a BL instruction at the NEW location 
-						// that points to the SAME absolute target.
-						const newBlBytes = encodeBl(newFuncAddr + newOffset, absoluteTarget);
-
-						// Write to new function
-						data.set(newBlBytes, newFuncAddr + newOffset);
+						let target;
+						if (offset < funcSize) {
+							target = decodeBlTarget(originalFuncAddr + offset, originalData.slice(originalFuncAddr + offset, originalFuncAddr + offset + 4));
+						} else {
+							const hijackOffset = this.findColorCodeOffset(originalData, originalFuncAddr, funcSize);
+							let originalBlAddr = originalFuncAddr + hijackOffset;
+							while (originalBlAddr < originalFuncAddr + funcSize - 4) {
+								const h1 = originalData[originalBlAddr] | (originalData[originalBlAddr+1] << 8);
+								if ((h1 & 0xF800) === 0xF000) break;
+								originalBlAddr += 2;
+							}
+							target = decodeBlTarget(originalBlAddr, originalData.slice(originalBlAddr, originalBlAddr + 4));
+						}
+						const newBlBytes = encodeBl(addr, target);
+						data.set(newBlBytes, addr);
 						result.fixed++;
 					} catch (e) {
-						result.errors.push(
-							`BL at offset ${newOffset}: ${(e as Error).message}`
-						);
+						result.errors.push(`BL at offset ${offset}: ${(e as Error).message}`);
 						result.skipped++;
 					}
-					return true; // Was 32-bit instruction
+					offset += 4;
+					continue;
 				}
 			}
-			
-			// Check for other 32-bit instructions to maintain alignment
-			return (hw1 & 0xF800) >= 0xE800;
-		};
-
-		// Region 1: Before color code
-		for (let offset = 0; offset < colorCodeOffset - 2; ) {
-			const is32bit = fixBlAtOffset(offset, offset);
-			offset += is32bit ? 4 : 2;
+			offset += (hw1 >= 0xE800) ? 4 : 2;
 		}
-
-		// Region 2: After color code
-		const region2OriginalStart = colorCodeOffset + itBlockSize;
-		const region2NewStart = colorCodeOffset + colorCodeSize;
-		const region2Size = funcSize - region2OriginalStart;
-
-		for (let i = 0; i < region2Size - 2; ) {
-			const is32bit = fixBlAtOffset(region2NewStart + i, region2OriginalStart + i);
-			i += is32bit ? 4 : 2;
-		}
-
 		return result;
 	}
 }
