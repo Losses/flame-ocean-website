@@ -269,6 +269,24 @@ export class ControlFlowSimulator {
 				newItBlockRemaining = this.setupItBlock(instr, lastCmpResult, itConditions);
 				break;
 
+			case InstructionType.LDR:
+			case InstructionType.LDR_W:
+				// CRITICAL: Simulate LDR alignment check
+				// ARM Thumb-2 LDR uses (PC+4 & ~3) + offset. 
+				// We must ensure the resulting target is word-aligned.
+				const pc = (addr + 4) & ~3;
+				const target = pc + instr.imm;
+				if (target % 4 !== 0) {
+					throw new Error(`[SIM] FATAL: Unaligned LDR access at 0x${addr.toString(16)} targets 0x${target.toString(16)}`);
+				}
+				// Load value from decoder's data
+				const data = this.decoder['getData']();
+				if (target + 4 <= data.length) {
+					const val = data[target] | (data[target+1] << 8) | (data[target+2] << 16) | (data[target+3] << 24);
+					registers.set(instr.rd, val);
+				}
+				break;
+
 			case InstructionType.STRH:
 			case InstructionType.STRH_W:
 				this.handleStrh(instr, registers, themeValue, registerSources, colorWrites);
