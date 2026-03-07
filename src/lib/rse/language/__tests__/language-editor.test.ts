@@ -268,12 +268,11 @@ describe('Language Editor', () => {
 			expect(isValidLanguageIndex(1.5)).toBe(false);
 		});
 
-		it('should calculate addresses correctly', () => {
-			// Name entry address
-			expect(LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS).toBe(0x778360);
-			expect(LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS).toBe(0x7625A8);
+		it('should have correct constants', () => {
+			// These constants are still defined
 			expect(LANGUAGE_CONSTANTS.POOL_SPACING).toBe(0x1C584);
 			expect(LANGUAGE_CONSTANTS.ENTRY_SIZE).toBe(0x102);
+			expect(LANGUAGE_CONSTANTS.MAX_LANGUAGES).toBe(21);
 		});
 	});
 

@@ -1369,6 +1369,12 @@ export class ThemePatcher {
 		const langInfo = langExtractor.getLanguage(knockDownIndex);
 		const langName = langInfo?.name ?? `Language ${knockDownIndex}`;
 
+		// Get the first pool address from the extractor (dynamically discovered)
+		const langSystemInfo = langExtractor.getSystemInfo();
+		if (!langSystemInfo) {
+			throw new ValidationError('Language system not discovered. Cannot determine pool address.');
+		}
+
 		// Clone data for patching
 		const patchedData = new Uint8Array(this.data);
 
@@ -1377,7 +1383,7 @@ export class ThemePatcher {
 
 		// Calculate the address where the freed pool will be
 		// After knock down, the pool at index knockDownIndex will be freed
-		const freedPoolAddr = LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS + knockDownIndex * LANGUAGE_CONSTANTS.POOL_SPACING;
+		const freedPoolAddr = langSystemInfo.firstPoolAddress + knockDownIndex * LANGUAGE_CONSTANTS.POOL_SPACING;
 
 		// Verify BL can reach the new location
 		const distance = Math.abs(freedPoolAddr - callerAddr);

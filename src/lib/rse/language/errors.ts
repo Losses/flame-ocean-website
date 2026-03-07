@@ -157,6 +157,33 @@ export class LanguageEncodingError extends LanguageError {
 }
 
 /**
+ * Address validation error - hardcoded address doesn't match expected pattern
+ *
+ * This error is thrown when the firmware doesn't contain expected data at
+ * hardcoded addresses, indicating version incompatibility or firmware corruption.
+ */
+export class AddressValidationError extends LanguageError {
+	constructor(
+		public readonly address: number,
+		public readonly expectedPattern: string,
+		public readonly actualBytes: Uint8Array,
+		message?: string
+	) {
+		super(
+			message ??
+			`Address validation failed at 0x${address.toString(16).toUpperCase()}: ` +
+			`expected ${expectedPattern}, found ${Array.from(actualBytes).map(b => b.toString(16).padStart(2, '0')).join(' ')}`
+		);
+		this.name = 'AddressValidationError';
+		Object.setPrototypeOf(this, AddressValidationError.prototype);
+	}
+
+	getErrorCode(): string {
+		return 'ADDRESS_VALIDATION_ERROR';
+	}
+}
+
+/**
  * Check if an error is a LanguageError
  */
 export function isLanguageError(error: unknown): error is LanguageError {

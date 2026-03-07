@@ -36,6 +36,8 @@ export class LanguageExtractor {
 	private detectedNameTableAddr: number | null = null;
 	/** Detected first pool address */
 	private detectedFirstPoolAddr: number | null = null;
+	/** Detected language count check address (CMP R0, #N instruction) */
+	private detectedLanguageCountCheckAddr: number | null = null;
 
 	/**
 	 * Create a new LanguageExtractor
@@ -76,16 +78,33 @@ export class LanguageExtractor {
 				}
 			}
 
-			// Build system info
+			// Build system info - FAIL if addresses not discovered
+			if (this.detectedNameTableAddr === null) {
+				return {
+					success: false,
+					error: 'Failed to discover language name table address. Could not find UTF-16 LE "简体中文" pattern in firmware.'
+				};
+			}
+
+			if (this.detectedFirstPoolAddr === null) {
+				return {
+					success: false,
+					error: 'Failed to discover first menu pool address. Could not find FF FF prefix pattern.'
+				};
+			}
+
+			const languageCountCheckAddr = this.discoverLanguageCountCheckAddress();
+			// Note: languageCountCheckAddr can be null (not all operations need it)
+
 			this.cachedSystemInfo = {
 				version: this.version,
 				languageCount,
-				nameTableAddress: this.detectedNameTableAddr ?? LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS,
+				nameTableAddress: this.detectedNameTableAddr,
 				nameTableSize: languageCount * LANGUAGE_CONSTANTS.ENTRY_SIZE,
-				firstPoolAddress: this.detectedFirstPoolAddr ?? LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS,
+				firstPoolAddress: this.detectedFirstPoolAddr,
 				poolSpacing: LANGUAGE_CONSTANTS.POOL_SPACING,
-				languageCountCheckAddress: LANGUAGE_CONSTANTS.LANGUAGE_COUNT_CHECK_ADDRESS,
-				originalLanguageCountValue: LANGUAGE_CONSTANTS.MAX_LANGUAGES - 1, // 20 (0-indexed check)
+				languageCountCheckAddress: languageCountCheckAddr ?? 0, // 0 means not discovered
+				originalLanguageCountValue: languageCount,
 				languages
 			};
 
@@ -168,11 +187,6 @@ export class LanguageExtractor {
 			return true;
 		}
 
-		// Try hardcoded V3.1.0 addresses first (fast path)
-		if (this.tryDetectAtAddress(LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS, LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS)) {
-			return true;
-		}
-
 		// Search for Chinese name "简体中文" in UTF-16 LE
 		// Pattern: 80 7B 53 4F 2D 4E 87 65 (简体中文)
 		const chinesePattern = new Uint8Array([0x80, 0x7B, 0x53, 0x4F, 0x2D, 0x4E, 0x87, 0x65]);
@@ -209,44 +223,15 @@ export class LanguageExtractor {
 	}
 
 	/**
-	 * Try to detect language system at specific addresses
-	 */
-	private tryDetectAtAddress(nameTableAddr: number, poolAddr: number): boolean {
-		if (nameTableAddr + 4 > this.data.length) {
-			return false;
-		}
-		if (poolAddr + 4 > this.data.length) {
-			return false;
-		}
-
-		// Check first language name entry (Chinese) - should NOT have FF FF prefix
-		const firstEntry = this.data.slice(nameTableAddr, nameTableAddr + 4);
-		if (firstEntry[0] === 0xFF && firstEntry[1] === 0xFF) {
-			return false;
-		}
-
-		// Check first menu pool - should have FF FF prefix
-		const firstPoolEntry = this.data.slice(poolAddr, poolAddr + 2);
-		if (firstPoolEntry[0] !== 0xFF || firstPoolEntry[1] !== 0xFF) {
-			return false;
-		}
-
-		// Valid detection
-		this.detectedNameTableAddr = nameTableAddr;
-		this.detectedFirstPoolAddr = poolAddr;
-		return true;
-	}
-
-	/**
 	 * Find first menu pool from name table address
 	 *
 	 * The pool is typically at a fixed offset before the name table.
 	 * We search backwards for FF FF pattern that indicates menu pool start.
 	 */
 	private findFirstPoolFromNameTable(nameTableAddr: number): number | null {
-		// Try V3.1.0 offset first (0x15DB8)
-		const v310Offset = LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS - LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS;
-		const expectedPool = nameTableAddr - v310Offset;
+		// Try typical offset first (V3.1.0: 0x15DB8 = name_table - first_pool)
+		const typicalOffset = 0x15DB8;
+		const expectedPool = nameTableAddr - typicalOffset;
 
 		if (expectedPool >= 0 && expectedPool + 4 <= this.data.length) {
 			if (this.data[expectedPool] === 0xFF && this.data[expectedPool + 1] === 0xFF) {
@@ -298,19 +283,112 @@ export class LanguageExtractor {
 	}
 
 	/**
+	 * Discover language count check address dynamically
+	 *
+	 * Searches for CMP R0, #N instruction where N is in a reasonable range (15-25).
+	 * The language count check is typically in the code region (0x30000-0x50000).
+	 *
+	 * @returns The address of the CMP instruction, or null if not found
+	 */
+	discoverLanguageCountCheckAddress(): number | null {
+		if (this.detectedLanguageCountCheckAddr !== null) {
+			return this.detectedLanguageCountCheckAddr;
+		}
+
+		// Get the expected language count for validation
+		const languageCount = this.discoverLanguageCount();
+		if (languageCount === 0) {
+			return null;
+		}
+
+		// Search for CMP R0, #N instruction in code region
+		// ARM Thumb CMP R0, #N is encoded as [N, 0x28] in little-endian
+		// We look for N in range 15-25 (reasonable for language counts)
+		const searchStart = 0x30000;
+		const searchEnd = Math.min(0x50000, this.data.length - 2);
+
+		// First try exact match with language count
+		for (let addr = searchStart; addr < searchEnd; addr += 2) {
+			if (this.data[addr] === languageCount && this.data[addr + 1] === 0x28) {
+				if (addr + 4 <= this.data.length) {
+					const nextHw = this.data[addr + 2] | (this.data[addr + 3] << 8);
+					if ((nextHw & 0xF000) === 0xD000) {
+						this.detectedLanguageCountCheckAddr = addr;
+						return addr;
+					}
+				}
+			}
+		}
+
+		// If exact match not found, try range 15-25
+		for (let addr = searchStart; addr < searchEnd; addr += 2) {
+			const imm = this.data[addr];
+			if (imm >= 15 && imm <= 25 && this.data[addr + 1] === 0x28) {
+				if (addr + 4 <= this.data.length) {
+					const nextHw = this.data[addr + 2] | (this.data[addr + 3] << 8);
+					if ((nextHw & 0xF000) === 0xD000) {
+						this.detectedLanguageCountCheckAddr = addr;
+						return addr;
+					}
+				}
+			}
+		}
+
+		return null;
+	}
+
+	/**
+	 * Validate that an address contains a valid language count check instruction
+	 */
+	private validateLanguageCountCheckAt(addr: number, expectedCount: number): boolean {
+		if (addr + 4 > this.data.length) {
+			return false;
+		}
+
+		// Check for CMP R0, #N pattern: [N, 0x28]
+		if (this.data[addr] !== expectedCount || this.data[addr + 1] !== 0x28) {
+			return false;
+		}
+
+		// Check for following conditional branch
+		const nextHw = this.data[addr + 2] | (this.data[addr + 3] << 8);
+		if ((nextHw & 0xF000) !== 0xD000) {
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Get the detected language count check address
+	 */
+	getDetectedLanguageCountCheckAddress(): number | null {
+		if (this.detectedLanguageCountCheckAddr === null) {
+			this.discoverLanguageCountCheckAddress();
+		}
+		return this.detectedLanguageCountCheckAddr;
+	}
+
+	/**
 	 * Calculate name entry address using detected base
+	 * @throws Error if name table address not discovered
 	 */
 	private getNameEntryAddress(languageIndex: number): number {
-		const baseAddr = this.detectedNameTableAddr ?? LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS;
-		return baseAddr + languageIndex * LANGUAGE_CONSTANTS.ENTRY_SIZE;
+		if (this.detectedNameTableAddr === null) {
+			throw new LanguageSystemNotFoundError('Name table address not discovered. Call detectLanguageSystem() first.');
+		}
+		return this.detectedNameTableAddr + languageIndex * LANGUAGE_CONSTANTS.ENTRY_SIZE;
 	}
 
 	/**
 	 * Calculate pool address using detected base
+	 * @throws Error if first pool address not discovered
 	 */
 	private getPoolAddress(languageIndex: number): number {
-		const baseAddr = this.detectedFirstPoolAddr ?? LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS;
-		return baseAddr + languageIndex * LANGUAGE_CONSTANTS.POOL_SPACING;
+		if (this.detectedFirstPoolAddr === null) {
+			throw new LanguageSystemNotFoundError('First pool address not discovered. Call detectLanguageSystem() first.');
+		}
+		return this.detectedFirstPoolAddr + languageIndex * LANGUAGE_CONSTANTS.POOL_SPACING;
 	}
 
 	/**

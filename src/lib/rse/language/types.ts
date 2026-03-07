@@ -238,6 +238,14 @@ export interface LanguageReplacementResult {
 
 /**
  * Constants for language system
+ *
+ * IMPORTANT: All addresses are DISCOVERED DYNAMICALLY at runtime.
+ * There are NO fallback hardcoded addresses - if discovery fails, the operation fails.
+ *
+ * Discovery methods:
+ * - Name table: Search for UTF-16 LE "简体中文" pattern in firmware
+ * - First pool: Relative to name table, validated by FF FF prefix
+ * - Count check: Search for CMP R0, #N instruction followed by conditional branch
  */
 export const LANGUAGE_CONSTANTS = {
 	/** Entry size in bytes (258) */
@@ -246,22 +254,13 @@ export const LANGUAGE_CONSTANTS = {
 	/** Menu string prefix */
 	PREFIX: 0xFFFF,
 
-	/** Language name table address (V3.1.0) */
-	NAME_TABLE_ADDRESS: 0x778360,
-
-	/** First menu pool address (V3.1.0) */
-	FIRST_POOL_ADDRESS: 0x7625A8,
-
 	/** Per-language pool spacing */
 	POOL_SPACING: 0x1C584,
 
-	/** Total languages supported */
+	/** Maximum languages supported */
 	MAX_LANGUAGES: 21,
 
-	/** Language count check address (V3.1.0) */
-	LANGUAGE_COUNT_CHECK_ADDRESS: 0x3542A,
-
-	/** Protected language indices */
+	/** Protected language indices (cannot be knocked down) */
 	PROTECTED_LANGUAGES: [0, 2], // Chinese, English
 
 	/** Language names in order */
@@ -295,21 +294,8 @@ export function isLanguageProtected(languageIndex: number): boolean {
 }
 
 /**
- * Calculate language name entry address
- */
-export function calculateNameEntryAddress(languageIndex: number): number {
-	return LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS + languageIndex * LANGUAGE_CONSTANTS.ENTRY_SIZE;
-}
-
-/**
- * Calculate language pool address
- */
-export function calculatePoolAddress(languageIndex: number): number {
-	return LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS + languageIndex * LANGUAGE_CONSTANTS.POOL_SPACING;
-}
-
-/**
  * Calculate string entry address within a pool
+ * Note: poolAddress must be provided by caller (from dynamic discovery)
  */
 export function calculateStringEntryAddress(poolAddress: number, stringIndex: number): number {
 	return poolAddress + stringIndex * LANGUAGE_CONSTANTS.ENTRY_SIZE;

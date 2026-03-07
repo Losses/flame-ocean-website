@@ -73,8 +73,6 @@ export {
 	LANGUAGE_CONSTANTS,
 	getLanguageEncoding,
 	isLanguageProtected,
-	calculateNameEntryAddress,
-	calculatePoolAddress,
 	calculateStringEntryAddress,
 	isValidLanguageIndex,
 	validateStringContent
@@ -92,6 +90,7 @@ export {
 	UnicornVerificationError,
 	EntryValidationError,
 	LanguageEncodingError,
+	AddressValidationError,
 	isLanguageError,
 	getLanguageErrorMessage
 } from './errors.js';

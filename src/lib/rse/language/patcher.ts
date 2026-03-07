@@ -19,8 +19,6 @@ import {
 	LANGUAGE_CONSTANTS,
 	getLanguageEncoding,
 	isLanguageProtected,
-	calculateNameEntryAddress,
-	calculatePoolAddress,
 	isValidLanguageIndex
 } from './types.js';
 import { LanguageExtractor } from './extractor.js';
@@ -32,7 +30,8 @@ import {
 	LanguageKnockDownError,
 	DataRearrangementError,
 	UnicornVerificationError,
-	EntryValidationError
+	EntryValidationError,
+	AddressValidationError
 } from './errors.js';
 
 /**
@@ -45,6 +44,7 @@ export class LanguagePatcher {
 	private readonly version: string;
 	private readonly extractor: LanguageExtractor;
 	private originalData: Uint8Array | null = null;
+	private addressValidationCache: { valid: boolean; error?: AddressValidationError } | null = null;
 
 	/**
 	 * Create a new LanguagePatcher
@@ -53,6 +53,128 @@ export class LanguagePatcher {
 		this.data = new Uint8Array(firmwareData);
 		this.version = version;
 		this.extractor = new LanguageExtractor(this.data, version);
+	}
+
+	/**
+	 * Validate that language system was discovered successfully
+	 *
+	 * Uses dynamic address discovery via LanguageExtractor instead of hardcoded addresses.
+	 *
+	 * @throws AddressValidationError if language system cannot be discovered
+	 */
+	validateHardcodedAddresses(): void {
+		if (this.addressValidationCache) {
+			if (!this.addressValidationCache.valid && this.addressValidationCache.error) {
+				throw this.addressValidationCache.error;
+			}
+			return;
+		}
+
+		// Use extractor's dynamic discovery mechanism
+		const systemInfo = this.extractor.getSystemInfo();
+		if (!systemInfo) {
+			const error = new AddressValidationError(
+				0,
+				'Language system',
+				new Uint8Array(0),
+				`Language system not found in firmware. ` +
+				`Cannot find Chinese language name pattern "简体中文". ` +
+				`This firmware version may not support the language system or uses a different format.`
+			);
+			this.addressValidationCache = { valid: false, error };
+			throw error;
+		}
+
+		// Validate discovered addresses
+		const nameTableAddr = systemInfo.nameTableAddress;
+		if (nameTableAddr + 4 > this.data.length) {
+			const error = new AddressValidationError(
+				nameTableAddr,
+				'UTF-16 language name data',
+				new Uint8Array(0),
+				`Discovered name table address 0x${nameTableAddr.toString(16)} is outside firmware bounds.`
+			);
+			this.addressValidationCache = { valid: false, error };
+			throw error;
+		}
+
+		const firstPoolAddr = systemInfo.firstPoolAddress;
+		if (firstPoolAddr + 2 > this.data.length) {
+			const error = new AddressValidationError(
+				firstPoolAddr,
+				'FF FF menu string prefix',
+				new Uint8Array(0),
+				`Discovered first pool address 0x${firstPoolAddr.toString(16)} is outside firmware bounds.`
+			);
+			this.addressValidationCache = { valid: false, error };
+			throw error;
+		}
+
+		// Note: languageCountCheckAddress is optional - only needed for knock down operations
+		// It will be validated separately in knockDownLanguage methods
+
+		this.addressValidationCache = { valid: true };
+	}
+
+	/**
+	 * Get the discovered name table address
+	 * @throws AddressValidationError if not discovered
+	 */
+	private getNameTableAddress(): number {
+		const systemInfo = this.extractor.getSystemInfo();
+		if (!systemInfo) {
+			throw new AddressValidationError(
+				0,
+				'Language system',
+				new Uint8Array(0),
+				'Language system not discovered. Cannot determine name table address.'
+			);
+		}
+		return systemInfo.nameTableAddress;
+	}
+
+	/**
+	 * Get the discovered first pool address
+	 * @throws AddressValidationError if not discovered
+	 */
+	private getFirstPoolAddress(): number {
+		const systemInfo = this.extractor.getSystemInfo();
+		if (!systemInfo) {
+			throw new AddressValidationError(
+				0,
+				'Language system',
+				new Uint8Array(0),
+				'Language system not discovered. Cannot determine first pool address.'
+			);
+		}
+		return systemInfo.firstPoolAddress;
+	}
+
+	/**
+	 * Get the discovered language count check address
+	 * @throws AddressValidationError if not discovered
+	 */
+	private getLanguageCountCheckAddress(): number {
+		const systemInfo = this.extractor.getSystemInfo();
+		if (!systemInfo) {
+			throw new AddressValidationError(
+				0,
+				'Language system',
+				new Uint8Array(0),
+				'Language system not discovered. Cannot determine language count check address.'
+			);
+		}
+		if (systemInfo.languageCountCheckAddress === 0) {
+			throw new AddressValidationError(
+				0,
+				'CMP R0, #N instruction for language count check',
+				new Uint8Array(0),
+				`Language count check instruction not found. ` +
+				`Cannot perform knock down operation without this address. ` +
+				`This firmware version may have a different language count check implementation.`
+			);
+		}
+		return systemInfo.languageCountCheckAddress;
 	}
 
 	/**
@@ -94,6 +216,9 @@ export class LanguagePatcher {
 	replaceEntry(options: LanguageReplacementOptions): LanguageReplacementResult {
 		const { languageIndex, stringIndex, newString, force = false } = options;
 
+		// Validate hardcoded addresses before using them
+		this.validateHardcodedAddresses();
+
 		// Validate language index
 		if (!isValidLanguageIndex(languageIndex)) {
 			throw new InvalidLanguageIndexError(languageIndex, LANGUAGE_CONSTANTS.MAX_LANGUAGES);
@@ -125,7 +250,8 @@ export class LanguagePatcher {
 		encoding: LanguageEncoding,
 		force: boolean
 	): LanguageReplacementResult {
-		const address = calculateNameEntryAddress(languageIndex);
+		const nameTableAddr = this.getNameTableAddress();
+		const address = nameTableAddr + languageIndex * LANGUAGE_CONSTANTS.ENTRY_SIZE;
 
 		// Get original entry
 		const originalEntry = this.extractor.getLanguage(languageIndex);
@@ -202,7 +328,8 @@ export class LanguagePatcher {
 		encoding: LanguageEncoding,
 		force: boolean
 	): LanguageReplacementResult {
-		const poolAddress = calculatePoolAddress(languageIndex);
+		const firstPoolAddr = this.getFirstPoolAddress();
+		const poolAddress = firstPoolAddr + languageIndex * LANGUAGE_CONSTANTS.POOL_SPACING;
 		const address = poolAddress + stringIndex * LANGUAGE_CONSTANTS.ENTRY_SIZE;
 
 		// Get original entry
@@ -290,6 +417,9 @@ export class LanguagePatcher {
 			verifyWithUnicorn = true,
 			dryRun = false
 		} = options;
+
+		// Validate hardcoded addresses before using them
+		this.validateHardcodedAddresses();
 
 		// Validate language index
 		if (!isValidLanguageIndex(languageIndex)) {
@@ -381,6 +511,9 @@ export class LanguagePatcher {
 			dryRun = false
 		} = options;
 
+		// Validate hardcoded addresses before using them
+		this.validateHardcodedAddresses();
+
 		// Validate language index
 		if (!isValidLanguageIndex(languageIndex)) {
 			throw new InvalidLanguageIndexError(languageIndex, LANGUAGE_CONSTANTS.MAX_LANGUAGES);
@@ -463,7 +596,7 @@ export class LanguagePatcher {
 	 * Rearrange language name table after deletion
 	 */
 	private rearrangeNameTable(deletedIndex: number, modifications: AddressModification[]): void {
-		const nameTableAddr = LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS;
+		const nameTableAddr = this.getNameTableAddress();
 		const entrySize = LANGUAGE_CONSTANTS.ENTRY_SIZE;
 		const systemInfo = this.extractor.getSystemInfo();
 
@@ -495,7 +628,7 @@ export class LanguagePatcher {
 	 * Rearrange menu string pools after deletion
 	 */
 	private rearrangeMenuPools(deletedIndex: number, modifications: AddressModification[]): void {
-		const firstPoolAddr = LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS;
+		const firstPoolAddr = this.getFirstPoolAddress();
 		const poolSpacing = LANGUAGE_CONSTANTS.POOL_SPACING;
 		const systemInfo = this.extractor.getSystemInfo();
 
@@ -525,22 +658,66 @@ export class LanguagePatcher {
 
 	/**
 	 * Update language count check instruction
+	 *
+	 * Uses dynamically discovered address from LanguageExtractor.
+	 * FAIL-FAST if the address doesn't contain expected CMP R0, #N instruction.
 	 */
 	private updateLanguageCountCheck(modifications: AddressModification[]): void {
-		const checkAddr = LANGUAGE_CONSTANTS.LANGUAGE_COUNT_CHECK_ADDRESS;
+		const checkAddr = this.getLanguageCountCheckAddress();
 		const systemInfo = this.extractor.getSystemInfo();
 
 		if (!systemInfo) {
 			throw new DataRearrangementError('Cannot get system info for count check update');
 		}
 
-		// Read current CMP instruction
+		// Check if address was discovered
+		if (checkAddr === 0) {
+			throw new AddressValidationError(
+				0,
+				'CMP R0, #N instruction for language count check',
+				new Uint8Array(0),
+				`Language count check address not discovered. ` +
+				`Cannot update language count check without a valid address.`
+			);
+		}
+
+		// Read current instruction
 		const originalBytes = this.data.slice(checkAddr, checkAddr + 2);
 
+		// CRITICAL: Validate this is actually a CMP R0, #N instruction
 		// ARM Thumb is little-endian: CMP R0, #N is encoded as [N, 0x28]
 		// Example: CMP R0, #20 = 0x2814 -> bytes [0x14, 0x28]
-		// We need to decrement the count
+		// The second byte MUST be 0x28 for CMP R0, #N
+		if (originalBytes[1] !== 0x28) {
+			// This is NOT a CMP R0, #N instruction!
+			// It could be a BL instruction (0xF7xx, 0xF8xx) or something else
+			// FAIL-FAST: Throw error instead of silently skipping
+			throw new AddressValidationError(
+				checkAddr,
+				'CMP R0, #N instruction ([N, 0x28])',
+				originalBytes,
+				`Language count check address 0x${checkAddr.toString(16)} does not contain ` +
+				`a valid CMP R0, #N instruction (found: 0x${originalBytes[1].toString(16).padStart(2, '0')}` +
+				`${originalBytes[0].toString(16).padStart(2, '0')}). ` +
+				`This firmware may have already been patched or uses a different address for language count check.`
+			);
+		}
+
 		const currentCount = originalBytes[0]; // Low byte is the immediate value
+
+		// Additional validation: count should be in reasonable range (10-30 for languages)
+		// If the count is way off (like 251 = 0xFB), this is definitely not the language count check
+		if (currentCount < 10 || currentCount > 30) {
+			throw new AddressValidationError(
+				checkAddr,
+				`CMP R0, #N with N in range 10-30 (language count)`,
+				originalBytes,
+				`Language count check value ${currentCount} at 0x${checkAddr.toString(16)} ` +
+				`is outside expected range (10-30). ` +
+				`This address likely does not contain the language count check for this firmware version.`
+			);
+		}
+
 		const newCount = currentCount - 1;
 
 		// Create new CMP instruction (little-endian)
@@ -567,8 +744,11 @@ export class LanguagePatcher {
 			return;
 		}
 
+		const nameTableAddr = this.getNameTableAddress();
+		const firstPoolAddr = this.getFirstPoolAddress();
+
 		// Clear freed name entry space
-		const lastNameAddr = LANGUAGE_CONSTANTS.NAME_TABLE_ADDRESS +
+		const lastNameAddr = nameTableAddr +
 			(systemInfo.languageCount - 1) * LANGUAGE_CONSTANTS.ENTRY_SIZE;
 		const originalNameBytes = this.data.slice(lastNameAddr, lastNameAddr + LANGUAGE_CONSTANTS.ENTRY_SIZE);
 		this.data.fill(0, lastNameAddr, lastNameAddr + LANGUAGE_CONSTANTS.ENTRY_SIZE);
@@ -581,7 +761,7 @@ export class LanguagePatcher {
 		});
 
 		// Clear freed pool space
-		const lastPoolAddr = LANGUAGE_CONSTANTS.FIRST_POOL_ADDRESS +
+		const lastPoolAddr = firstPoolAddr +
 			(systemInfo.languageCount - 1) * LANGUAGE_CONSTANTS.POOL_SPACING;
 		const originalPoolBytes = this.data.slice(lastPoolAddr, lastPoolAddr + LANGUAGE_CONSTANTS.POOL_SPACING);
 		this.data.fill(0, lastPoolAddr, lastPoolAddr + LANGUAGE_CONSTANTS.POOL_SPACING);
@@ -629,6 +809,17 @@ export class LanguagePatcher {
 	async verifyKnockDown(languageIndex: number): Promise<{ safe: boolean; errors: string[] }> {
 		const errors: string[] = [];
 
+		// Validate hardcoded addresses first (FAIL-FAST)
+		try {
+			this.validateHardcodedAddresses();
+		} catch (error) {
+			if (error instanceof AddressValidationError) {
+				errors.push(error.message);
+				return { safe: false, errors };
+			}
+			throw error;
+		}
+
 		// Check language exists
 		const langInfo = this.extractor.getLanguage(languageIndex);
 		if (!langInfo) {
@@ -647,16 +838,23 @@ export class LanguagePatcher {
 			errors.push('Cannot knock down the last remaining language');
 		}
 
-		// Check language count check address is valid (optional - may vary by version)
-		const checkAddr = LANGUAGE_CONSTANTS.LANGUAGE_COUNT_CHECK_ADDRESS;
-		if (checkAddr + 2 <= this.data.length) {
-			const cmpBytes = this.data.slice(checkAddr, checkAddr + 2);
-			// ARM Thumb is little-endian: CMP R0, #N is encoded as [N, 0x28]
-			// Example: CMP R0, #20 = 0x2814 -> bytes [0x14, 0x28]
-			// This is a soft check - if it doesn't match, we warn but don't fail
-			if (cmpBytes[1] !== 0x28) {
-				// Non-fatal: Language count check address may vary by version
-				console.warn(`Warning: Language count check instruction at 0x${checkAddr.toString(16)} may not be correct for this firmware version`);
+		// Validate language count check address was discovered (FAIL-FAST)
+		if (systemInfo) {
+			const checkAddr = systemInfo.languageCountCheckAddress;
+			if (checkAddr === 0) {
+				errors.push(
+					`Language count check instruction not found. ` +
+					`This firmware version may be incompatible with language patching.`
+				);
+			} else if (checkAddr + 2 <= this.data.length) {
+				const cmpBytes = this.data.slice(checkAddr, checkAddr + 2);
+				// ARM Thumb is little-endian: CMP R0, #N is encoded as [N, 0x28]
+				if (cmpBytes[1] !== 0x28 || cmpBytes[0] < 10 || cmpBytes[0] > 30) {
+					errors.push(
+						`Language count check address 0x${checkAddr.toString(16)} does not contain ` +
+						`a valid CMP R0, #N instruction with language count.`
+					);
+				}
 			}
 		}
 
