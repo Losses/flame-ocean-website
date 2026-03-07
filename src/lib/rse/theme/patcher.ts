@@ -682,7 +682,7 @@ export class ThemePatcher {
 
 		// Re-append the return branch (B.W jump back to main function)
 		const patchOffset = this.findColorCodeOffset(this.data, reloHeader.flacFuncAddr, reloHeader.flacFuncSize);
-		const returnAddr = reloHeader.flacFuncAddr + patchOffset + 4; // 4 is the size of instructions we replaced
+		const returnAddr = reloHeader.flacFuncAddr + patchOffset + 12; // Skip original labels resetting R1 to 0xFC
 		const colorCodeEndAddr = flacColorCodeAddr + newColorCode.length;
 		const returnBranch = encodeB32bit(colorCodeEndAddr, returnAddr);
 
@@ -1433,7 +1433,7 @@ export class ThemePatcher {
 		const colorCodeStartAddr = (newFuncAddr + funcSize + safetyGap - 1) & ~(safetyGap - 1);
 
 		// Append B.W jump back to main function
-		const returnAddr = newFuncAddr + itBlockOffset + itBlockSize;
+		const returnAddr = newFuncAddr + itBlockOffset + 12; // Skip original labels resetting R1 to 0xFC
 		const colorCodeEndAddr = colorCodeStartAddr + colorCode.length;
 		const returnBranch = encodeB32bit(colorCodeEndAddr, returnAddr);
 
