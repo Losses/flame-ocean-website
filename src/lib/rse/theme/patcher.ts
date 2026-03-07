@@ -1871,29 +1871,39 @@ export class ThemePatcher {
 	 * - xxx1: 4 instructions
 	 */
 	private calculateItBlockSize(data: Uint8Array, itBlockOffset: number): number {
-		// We are now replacing exactly 4 bytes (76 22 FC 21)
-		return 4;
+		// Replacing 8 bytes of color load + 4 bytes of next logic to ensure we skip reset labels
+		return 12;
 	}
 
 	/**
 	 * Find the offset of the color loading instructions in FLAC function
 	 */
 	private findColorCodeOffset(data: Uint8Array, funcAddr: number, funcSize: number): number {
-		// Pattern 1: Original color loading instructions (MOVS R2, #0x76; MOVS R1, #0xFC; MOVW R0, #ANY_ID)
-		// Machine code: 76 22 FC 21 + MOVW R0 (F24x / F64x)
+		// Strategy A: Drawing Call Hijack (V3.x+)
+		// Pattern: MOVS R2, #0x76; MOVS R1, #0xFC; MOVW R0, #ID
+		const patternA = [0x76, 0x22, 0xFC, 0x21, 0x40, 0xF2, 0x37, 0x10];
 		for (let offset = 0; offset < funcSize - 8; offset += 2) {
 			const addr = funcAddr + offset;
-			if (data[addr] === 0x76 && data[addr + 1] === 0x22 &&
-			    data[addr + 2] === 0xFC && data[addr + 3] === 0x21) {
-				
-				const nextHw1 = data[addr + 4] | (data[addr + 5] << 8);
-				if ((nextHw1 & 0xFBF0) === 0xF240) { // MOVW R0, #imm16
-					return offset;
-				}
+			if (data[addr] === patternA[0] && data[addr + 1] === patternA[1] &&
+			    data[addr + 2] === patternA[2] && data[addr + 3] === patternA[3] &&
+			    data[addr + 4] === patternA[4] && data[addr + 5] === patternA[5] &&
+			    data[addr + 6] === patternA[6] && data[addr + 7] === patternA[7]) {
+				return offset;
 			}
 		}
 
-		// Pattern 2: Already patched B.W jump
+		// Strategy B: Original Theme Selection Fallback (V1.8 - V2.8)
+		// Pattern: CMP R1, #4; ITE EQ
+		const patternB = [0x04, 0x29, 0x0C, 0xBF];
+		for (let offset = 0; offset < funcSize - 4; offset += 2) {
+			const addr = funcAddr + offset;
+			if (data[addr] === patternB[0] && data[addr + 1] === patternB[1] &&
+			    data[addr + 2] === patternB[2] && data[addr + 3] === patternB[3]) {
+				return offset;
+			}
+		}
+
+		// Strategy C: Already patched B.W jump
 		for (let offset = 0; offset < funcSize - 4; offset += 2) {
 			const addr = funcAddr + offset;
 			const hw1 = data[addr] | (data[addr + 1] << 8);
@@ -1903,7 +1913,7 @@ export class ThemePatcher {
 			}
 		}
 
-		throw new PatchError(`Compatible color loading pattern not found in this firmware version (${this.version})`);
+		throw new PatchError(`No compatible patching pattern found for firmware version ${this.version}`);
 	}
 
 	/**
