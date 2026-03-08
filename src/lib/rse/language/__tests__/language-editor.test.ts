@@ -290,6 +290,73 @@ describe('Language Editor', () => {
 			expect(LANGUAGE_CONSTANTS.CJK_LANGUAGES).not.toContain(2); // English
 		});
 	});
+
+	describe('Dynamic Address Discovery', () => {
+		it.skipIf(!firmwareExists)('should discover name table address dynamically', () => {
+			const firmwareData = readFileSync(FIRMWARE_PATH);
+			const extractor = new LanguageExtractor(firmwareData, 'V3.1.0');
+
+			const systemInfo = extractor.getSystemInfo();
+			expect(systemInfo).toBeDefined();
+
+			// Name table address should be discovered (not hardcoded)
+			expect(systemInfo!.nameTableAddress).toBeGreaterThan(0);
+			expect(systemInfo!.nameTableAddress).toBeLessThan(firmwareData.length);
+
+			// Verify it address contains expected data (UTF-16 LE "简")
+			const nameAddr = systemInfo!.nameTableAddress;
+			expect(firmwareData[nameAddr]).toBe(0x80); // '简' low byte in UTF-16 LE
+			expect(firmwareData[nameAddr + 1]).toBe(0x7B); // '简' high byte in UTF-16 LE
+		});
+
+		it.skipIf(!firmwareExists)('should discover first pool address dynamically', () => {
+			const firmwareData = readFileSync(FIRMWARE_PATH);
+			const extractor = new LanguageExtractor(firmwareData, 'V3.1.0');
+
+			const systemInfo = extractor.getSystemInfo();
+			expect(systemInfo).toBeDefined();
+
+			// First pool address should be discovered (not hardcoded)
+			expect(systemInfo!.firstPoolAddress).toBeGreaterThan(0);
+			expect(systemInfo!.firstPoolAddress).toBeLessThan(firmwareData.length);
+
+			// Verify the address contains FF FF prefix
+			const poolAddr = systemInfo!.firstPoolAddress;
+			expect(firmwareData[poolAddr]).toBe(0xFF);
+			expect(firmwareData[poolAddr + 1]).toBe(0xFF);
+		});
+
+		it.skipIf(!firmwareExists)('should discover language count check address dynamically', () => {
+			const firmwareData = readFileSync(FIRMWARE_PATH);
+			const extractor = new LanguageExtractor(firmwareData, 'V3.1.0');
+
+			const systemInfo = extractor.getSystemInfo();
+			expect(systemInfo).toBeDefined();
+
+			// Language count check address should be discovered (may be 0 if not found)
+			// But if found, it should contain valid CMP R0, #N instruction
+			if (systemInfo!.languageCountCheckAddress !== 0) {
+				const checkAddr = systemInfo!.languageCountCheckAddress;
+				expect(firmwareData[checkAddr + 1]).toBe(0x28); // CMP R0 encoding
+
+				// The immediate value should be reasonable range
+				const immValue = firmwareData[checkAddr];
+				expect(immValue).toBeGreaterThanOrEqual(15);
+				expect(immValue).toBeLessThanOrEqual(25);
+			}
+		});
+
+		it.skipIf(!firmwareExists)('should fail for invalid firmware without language system', () => {
+			// Create a buffer that doesn't contain the language system pattern
+			const invalidData = new Uint8Array(1024).fill(0);
+
+			const extractor = new LanguageExtractor(invalidData, 'Unknown');
+			const result = extractor.extract();
+
+			expect(result.success).toBe(false);
+			expect(result.error).toBeDefined();
+		});
+	});
 });
 
 describe('Language Editor Integration Tests', () => {
@@ -368,3 +435,58 @@ describe('Error Handling', () => {
 		}).toThrow('String too long');
 	});
 });
+
+
+describe('Dynamic Address Discovery', () => {
+	it.skipIf(!firmwareExists)('should discover name table address dynamically', () => {
+		const firmwareData = readFileSync(FIRMWARE_PATH);
+		const extractor = new LanguageExtractor(firmwareData, 'V3.1.0');
+
+		const systemInfo = extractor.getSystemInfo();
+		expect(systemInfo).toBeDefined();
+
+		expect(systemInfo!.nameTableAddress).toBeGreaterThan(0);
+		expect(systemInfo!.nameTableAddress).toBeLessThan(firmwareData.length);
+
+		const nameAddr = systemInfo!.nameTableAddress;
+		expect(firmwareData[nameAddr]).toBe(0x80);
+		expect(firmwareData[nameAddr + 1]).toBe(0x7B);
+	});
+
+	it.skipIf(!firmwareExists)('should discover first pool address dynamically', () => {
+		const firmwareData = readFileSync(FIRMWARE_PATH);
+		const extractor = new LanguageExtractor(firmwareData, 'V3.1.0');
+
+		const systemInfo = extractor.getSystemInfo();
+		expect(systemInfo).toBeDefined();
+
+		expect(systemInfo!.firstPoolAddress).toBeGreaterThan(0);
+		expect(systemInfo!.firstPoolAddress).toBeLessThan(firmwareData.length);
+
+		const poolAddr = systemInfo!.firstPoolAddress;
+		expect(firmwareData[poolAddr]).toBe(0xFF);
+		expect(firmwareData[poolAddr + 1]).toBe(0xFF);
+	});
+
+	it.skipIf(!firmwareExists)('should discover language count check address dynamically', () => {
+		const firmwareData = readFileSync(FIRMWARE_PATH);
+		const extractor = new LanguageExtractor(firmwareData, 'V3.1.0');
+
+		const systemInfo = extractor.getSystemInfo();
+		expect(systemInfo).toBeDefined();
+
+		if (systemInfo!.languageCountCheckAddress !== 0) {
+			const checkAddr = systemInfo!.languageCountCheckAddress;
+			expect(firmwareData[checkAddr + 1]).toBe(0x28);
+		}
+	});
+
+	it.skipIf(!firmwareExists)('should fail for invalid firmware without language system', () => {
+		const invalidData = new Uint8Array(1024).fill(0);
+		const extractor = new LanguageExtractor(invalidData, 'Unknown');
+		const result = extractor.extract();
+		expect(result.success).toBe(false);
+		expect(result.error).toBeDefined();
+	});
+});
+
