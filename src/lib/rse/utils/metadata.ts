@@ -90,7 +90,15 @@ export function findMetadataTableByRock26Anchor(
 	// Search for all matching positions in Part 5
 	const matchingPositionsInPart5: number[] = [];
 
-	for (let pos = 0; pos < part5Data.length - METADATA_ENTRY_SIZE; pos += 4) {
+	// The table is not always 4-byte aligned (e.g. V4.0.0), so every position must be
+	// considered. Jump straight to the next occurrence of the anchor's first byte
+	// instead of testing positions one by one.
+	const scanEnd = part5Data.length - METADATA_ENTRY_SIZE;
+	const anchorByte0 = anchorOffset & 0xff;
+	for (let pos = 0; pos < scanEnd; pos++) {
+		const next = part5Data.indexOf(anchorByte0, pos + 20);
+		if (next === -1 || next - 20 >= scanEnd) break;
+		pos = next - 20;
 		try {
 			const entryOffset = readU32LE(part5Data, pos + 20);
 
