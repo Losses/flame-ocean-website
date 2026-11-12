@@ -90,7 +90,9 @@ export function findMetadataTableByRock26Anchor(
 	// Search for all matching positions in Part 5
 	const matchingPositionsInPart5: number[] = [];
 
-	for (let pos = 0; pos < part5Data.length - METADATA_ENTRY_SIZE; pos += 4) {
+	// Step by 1 byte: the table is not guaranteed to be 4-byte aligned within Part 5
+	// (e.g. HIFIEC40.IMG / V4.0.0 places it at an offset of 2 mod 4).
+	for (let pos = 0; pos < part5Data.length - METADATA_ENTRY_SIZE; pos++) {
 		try {
 			const entryOffset = readU32LE(part5Data, pos + 20);
 
